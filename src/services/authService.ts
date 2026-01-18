@@ -1,5 +1,5 @@
-import { supabase } from '../supabaseClient';
-import { User, PlanType } from '../types';
+import { supabase } from '@/services/supabaseClient';
+import { User, PlanType } from '@/types/types';
 
 function mapPlanCodeToPlanType(planCode: string | null): PlanType {
   if (!planCode) return PlanType.INACTIVE;

@@ -1,5 +1,5 @@
 // src/services/accountService.ts
-import { supabase } from '@/supabaseClient';
+import { supabase } from '@/services/supabaseClient';
 
 const APP_CODE = 'DEBACU_EVAL'; // el que usas en el login
 

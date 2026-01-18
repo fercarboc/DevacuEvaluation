@@ -13,8 +13,9 @@ export interface User {
   fullName: string;
   email: string;
   plan: PlanType;
-  planStartDate: string;
-  monthlyFee: number;
+  customerId?: string;
+  planStartDate?: string;
+  monthlyFee?: number;
 }
 
 export interface ClientData {
