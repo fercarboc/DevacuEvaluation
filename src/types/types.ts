@@ -69,3 +69,46 @@ export interface Invoice {
 export interface SearchFilters {
   query: string;
 }
+// ======================
+// Plan codes (BD/Stripe)
+// ======================
+export type PlanCode = "FREE" | "BASIC" | "MEDIUM" | "PREMIUM";
+export type PaidPlanCode = Exclude<PlanCode, "FREE">; // BASIC | MEDIUM | PREMIUM
+
+export const PAID_PLAN_CODES: PaidPlanCode[] = ["BASIC", "MEDIUM", "PREMIUM"];
+
+// Type guard útil para UI
+export function isPaidPlanCode(code: PlanCode): code is PaidPlanCode {
+  return code !== "FREE";
+}
+
+// ======================
+// Mapeos UI <-> BD/Stripe
+// ======================
+export function planTypeToPlanCode(planType: PlanType): PlanCode {
+  switch (planType) {
+    case PlanType.BASIC:
+      return "BASIC";
+    case PlanType.PROFESSIONAL:
+      return "MEDIUM";
+    case PlanType.ENTERPRISE:
+      return "PREMIUM";
+    case PlanType.INACTIVE:
+    default:
+      return "FREE";
+  }
+}
+
+export function planCodeToPlanType(code: PlanCode | null | undefined): PlanType {
+  switch ((code ?? "").toUpperCase()) {
+    case "BASIC":
+      return PlanType.BASIC;
+    case "MEDIUM":
+      return PlanType.PROFESSIONAL;
+    case "PREMIUM":
+      return PlanType.ENTERPRISE;
+    case "FREE":
+    default:
+      return PlanType.INACTIVE;
+  }
+}

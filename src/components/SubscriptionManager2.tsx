@@ -1,9 +1,12 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/services/supabaseClient";
 import type { User, Invoice } from "@/types/types";
-import { PlanType } from "@/types/types";
 import { CreditCard, FileText, Loader2, Eye, EyeOff } from "lucide-react";
-import { changePlan, type PlanCode } from "@/services/subscriptionManage";
+import { changePlan } from "@/services/subscriptionManage";
+import { use_subscription_state } from "@/services/debacu_eval_subscription_state.service";
+import type { PlanCode, PaidPlanCode } from "@/types/types";
+import { PAID_PLAN_CODES, isPaidPlanCode, planTypeToPlanCode } from "@/types/types";
+
 
 interface SubscriptionProps {
   user: User;
@@ -12,31 +15,12 @@ interface SubscriptionProps {
 
 type TabKey = "plan" | "empresa" | "banco" | "seguridad";
 
-type ActivePlanSummary = {
-  planType: PlanType;
-  label: string;
-  priceMonthly: number;
-  startDate: string | null;
-  nextBillingDate: string | null;
-  billingFrequency: string | null;
-  status: string | null;
-  planCode: PlanCode;
-  planName: string;
-};
-
 const TAB_LIST: { key: TabKey; label: string }[] = [
   { key: "plan", label: "Planes" },
   { key: "empresa", label: "Datos empresa" },
   { key: "banco", label: "Datos bancarios" },
   { key: "seguridad", label: "Seguridad" },
 ];
-
-const planFeatures: Record<PlanType, { price: number; label: string; limits: string }> = {
-  [PlanType.BASIC]: { price: 19.99, label: "Basico", limits: "Hasta 50 consultas/mes" },
-  [PlanType.PROFESSIONAL]: { price: 49.99, label: "Profesional", limits: "Consultas ilimitadas" },
-  [PlanType.ENTERPRISE]: { price: 99.99, label: "Enterprise", limits: "API + multiusuario" },
-  [PlanType.INACTIVE]: { price: 0, label: "Inactivo", limits: "Sin acceso activo" },
-};
 
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(value);
@@ -45,14 +29,17 @@ const formatDate = (value?: string | null) => (value ? new Date(value).toLocaleD
 
 type AvailablePlan = {
   id: string;
-  code: PlanCode;
+  code: PaidPlanCode;
   name: string;
   priceMonthly: number;
   description: string;
   maxQueries: number;
 };
 
-const PLAN_METADATA: Record<PlanCode, { name: string; description: string; maxQueries: number; defaultPrice: number }> = {
+const PLAN_METADATA: Record<
+  PlanCode,
+  { name: string; description: string; maxQueries: number; defaultPrice: number }
+> = {
   BASIC: {
     name: "Básico",
     description: "Ideal para validar la plataforma con hasta 150 consultas/mes.",
@@ -79,16 +66,8 @@ const PLAN_METADATA: Record<PlanCode, { name: string; description: string; maxQu
   },
 };
 
-const PLAN_SEQUENCE: PlanCode[] = ["BASIC", "MEDIUM", "PREMIUM"];
+const PLAN_SEQUENCE = PAID_PLAN_CODES;
 
-const planTypeFromCode = (code?: string): PlanType => {
-  if (!code) return PlanType.BASIC;
-  const normalized = code.toUpperCase();
-  if (normalized.includes("BASIC")) return PlanType.BASIC;
-  if (normalized.includes("PRO")) return PlanType.PROFESSIONAL;
-  if (normalized.includes("ENTER")) return PlanType.ENTERPRISE;
-  return PlanType.BASIC;
-};
 
 const PLAN_RANK: Record<PlanCode, number> = {
   FREE: 0,
@@ -97,25 +76,8 @@ const PLAN_RANK: Record<PlanCode, number> = {
   PREMIUM: 3,
 };
 
-const mapPlanTypeToCode = (planType?: PlanType): PlanCode => {
-  if (!planType) return "BASIC";
-  switch (planType) {
-    case PlanType.BASIC:
-      return "BASIC";
-    case PlanType.PROFESSIONAL:
-      return "MEDIUM";
-    case PlanType.ENTERPRISE:
-      return "PREMIUM";
-    case PlanType.INACTIVE:
-      return "FREE";
-    default:
-      return "BASIC";
-  }
-};
-
-export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user, onUserUpdate }) => {
+export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user }) => {
   const [activeTab, setActiveTab] = useState<TabKey>("plan");
-  const [activePlan, setActivePlan] = useState<ActivePlanSummary | null>(null);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [profileSaving, setProfileSaving] = useState(false);
@@ -132,7 +94,6 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user, onUser
   const [isChangingPlan, setIsChangingPlan] = useState(false);
   const [selectedPlanCode, setSelectedPlanCode] = useState<PlanCode | null>(null);
   const [availablePlans, setAvailablePlans] = useState<AvailablePlan[]>([]);
-  const [pendingChange, setPendingChange] = useState(false);
 
   const [customerProfile, setCustomerProfile] = useState({
     name: "",
@@ -153,8 +114,55 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user, onUser
     bankAddress: "",
   });
 
-  const sb = supabase as any;
+  // customerId: si tu User tiene customerId en runtime, úsalo; si no, usa user.id
   const customerId = (user as any)?.customerId ?? user.id;
+
+  // Hook centralizado estado suscripción
+  const { state: subscriptionState, refresh: refreshSubscription } = use_subscription_state(customerId);
+
+  const activeSub = subscriptionState?.subscription ?? null;
+  const activePlanRow = subscriptionState?.plan ?? null;
+
+  const hasPendingChange = (activeSub?.status ?? subscriptionState?.status) === "PENDING_PAYMENT";
+
+  // Plan actual (code / precio / límites)
+  const currentPlanCode: PlanCode = useMemo(() => {
+    const code = String(subscriptionState?.plan_code ?? "").toUpperCase();
+    if (code === "BASIC" || code === "MEDIUM" || code === "PREMIUM") return code;
+    // si no hay plan_code, consideramos FREE (o lo que decidas)
+    return "FREE";
+  }, [subscriptionState?.plan_code]);
+
+  const currentPlanRank = PLAN_RANK[currentPlanCode] ?? 0;
+
+  const monthlyFee = useMemo(() => {
+    const fromDb = activePlanRow?.price_monthly;
+    if (typeof fromDb === "number") return fromDb;
+    const meta = PLAN_METADATA[currentPlanCode];
+    return meta?.defaultPrice ?? 0;
+  }, [activePlanRow?.price_monthly, currentPlanCode]);
+
+  const planDisplayName =
+    activePlanRow?.name ?? PLAN_METADATA[currentPlanCode]?.name ?? subscriptionState?.plan_display_name ?? "Plan";
+
+  const limitDescription =
+    PLAN_METADATA[currentPlanCode]?.description ??
+    (subscriptionState?.limits_max_queries_per_month
+      ? `Hasta ${subscriptionState.limits_max_queries_per_month.toLocaleString("es-ES")} consultas/mes`
+      : "Límites según plan");
+
+  const maxQueries =
+    subscriptionState?.limits_max_queries_per_month ??
+    PLAN_METADATA[currentPlanCode]?.maxQueries ??
+    null;
+
+  const isFreePlan =
+    currentPlanCode === "FREE" || activeSub?.billing_frequency === "FREE_TRIAL" || monthlyFee === 0;
+
+  const planPriceLabel = isFreePlan ? "Gratis" : formatCurrency(monthlyFee);
+
+  // supabase typed as any por si tu client está sin types completos aquí
+  const sb = supabase as any;
 
   useEffect(() => {
     if (!customerId) {
@@ -167,19 +175,14 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user, onUser
     const load = async () => {
       setLoading(true);
       setPlanError(null);
+
       try {
-        const [subscriptionResult, customerResult, receiptsResult, plansResult, pendingResult] = await Promise.all([
-          sb
-            .from("subscriptions")
-            .select("id,billing_frequency,start_date,next_billing_date,status,plan_id,app_id")
-            .eq("customer_id", customerId)
-            .eq("app_id", "DEBACU_EVAL")
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .maybeSingle(),
+        const [customerResult, receiptsResult, plansResult] = await Promise.all([
           sb
             .from("customers")
-            .select("name,nif,address,postal_code,city,province,country,phone,email,iban,swift,bank_name,bank_address")
+            .select(
+              "name,nif,address,postal_code,city,province,country,phone,email,iban,swift,bank_name,bank_address"
+            )
             .eq("id", customerId)
             .maybeSingle(),
           sb
@@ -190,104 +193,82 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user, onUser
             .limit(5),
           sb
             .from("plans")
-            .select("id,name,code,price_monthly")
+            .select("id,name,code,price_monthly,max_queries_per_month")
             .eq("app_id", "DEBACU_EVAL")
             .in("code", PLAN_SEQUENCE),
-          sb
-            .from("subscriptions")
-            .select("id,status")
-            .eq("customer_id", customerId)
-            .eq("app_id", "DEBACU_EVAL")
-            .eq("status", "PENDING_PAYMENT")
-            .limit(1)
-            .maybeSingle(),
-            
         ]);
-        
-        console.log("🔎 subscriptionResult:", subscriptionResult);
-        console.log("🔎 subscriptionResult.data:", subscriptionResult?.data);
 
+        if (cancelled) return;
 
-        if (!cancelled) {
-          const subscription = subscriptionResult?.data;
-          const planRows = (plansResult?.data ?? []) as Array<{
-            id: string;
-            code: string | null;
-            name: string;
-            price_monthly: number | null;
-          }>;
-
-          if (subscription) {
-          const rowForPlan = planRows.find((plan) => plan.id === subscription.plan_id);
-
-              const normalizedCode = (rowForPlan?.code ?? "BASIC").toUpperCase() as PlanCode;
-              const planCode: PlanCode =
-                PLAN_SEQUENCE.includes(normalizedCode as PlanCode) ? (normalizedCode as PlanCode) : "BASIC";
-
-              const planName = rowForPlan?.name ?? PLAN_METADATA[planCode].name;
-
-            setActivePlan({
-              planType: planTypeFromCode(rowForPlan?.code),
-              label: planName,
-              planName,
-              planCode,
-              priceMonthly: Number(rowForPlan?.price_monthly ?? user.monthlyFee ?? 0),
-             startDate: subscription.start_date ?? null,
-              nextBillingDate: subscription.next_billing_date ?? null,
-              billingFrequency: subscription.billing_frequency ?? null,
-              status: subscription.status ?? null,
-             });
-
-          }
-
-          const profile = customerResult?.data;
-          if (profile) {
-            setCustomerProfile((prev) => ({
-              ...prev,
-              name: profile.name ?? prev.name,
-              nif: profile.nif ?? prev.nif,
-              address: profile.address ?? prev.address,
-              postalCode: profile.postal_code ?? prev.postalCode,
-              city: profile.city ?? prev.city,
-              province: profile.province ?? prev.province,
-              country: profile.country ?? prev.country,
-              phone: profile.phone ?? prev.phone,
-              email: profile.email ?? prev.email,
-            }));
-            setBankData({
-              iban: profile.iban ?? "",
-              swift: profile.swift ?? "",
-              bankName: profile.bank_name ?? "",
-              bankAddress: profile.bank_address ?? "",
-            });
-          }
-
-          const receipts = (receiptsResult?.data ?? []) as any[];
-          setInvoices(
-            receipts.map((row) => ({
-              id: row.id,
-              date: row.date,
-              amount: Number(row.amount) || 0,
-              description: row.concept ?? "Factura",
-              status: row.status === "PAID" ? "Paid" : "Pending",
-            }))
-          );
-
-          const constructedPlans: AvailablePlan[] = PLAN_SEQUENCE.map((code) => {
-            const row = planRows.find((plan) => String(plan.code ?? "").toUpperCase() === code);
-            const meta = PLAN_METADATA[code];
-            return {
-              id: row?.id ?? code,
-              code,
-              name: row?.name ?? meta.name,
-              priceMonthly: Number(row?.price_monthly ?? meta.defaultPrice),
-              description: meta.description,
-              maxQueries: meta.maxQueries,
-            };
+        // Profile
+        const profile = customerResult?.data;
+        if (profile) {
+          setCustomerProfile((prev) => ({
+            ...prev,
+            name: profile.name ?? prev.name,
+            nif: profile.nif ?? prev.nif,
+            address: profile.address ?? prev.address,
+            postalCode: profile.postal_code ?? prev.postalCode,
+            city: profile.city ?? prev.city,
+            province: profile.province ?? prev.province,
+            country: profile.country ?? prev.country,
+            phone: profile.phone ?? prev.phone,
+            email: profile.email ?? prev.email,
+          }));
+          setBankData({
+            iban: profile.iban ?? "",
+            swift: profile.swift ?? "",
+            bankName: profile.bank_name ?? "",
+            bankAddress: profile.bank_address ?? "",
           });
-          setAvailablePlans(constructedPlans);
+        }
 
-          setPendingChange(Boolean(pendingResult?.data));
+        // Receipts -> invoices
+        const receipts = (receiptsResult?.data ?? []) as any[];
+        setInvoices(
+          receipts.map((row) => ({
+            id: row.id,
+            date: row.date,
+            amount: Number(row.amount) || 0,
+            description: row.concept ?? "Factura",
+            status: row.status === "PAID" ? "Paid" : "Pending",
+          }))
+        );
+
+        // Available plans
+        const planRows = (plansResult?.data ?? []) as Array<{
+          id: string;
+          code: string | null;
+          name: string | null;
+          price_monthly: number | null;
+          max_queries_per_month: number | null;
+        }>;
+
+        const constructedPlans: AvailablePlan[] = PLAN_SEQUENCE.map((code) => {
+          const row = planRows.find((p) => String(p.code ?? "").toUpperCase() === code);
+          const meta = PLAN_METADATA[code];
+
+          return {
+            id: row?.id ?? code,
+            code,
+            name: row?.name ?? meta.name,
+            priceMonthly: Number(row?.price_monthly ?? meta.defaultPrice),
+            description: meta.description,
+            maxQueries: Number(row?.max_queries_per_month ?? meta.maxQueries),
+          };
+        });
+
+        setAvailablePlans(constructedPlans);
+
+        // Si volvemos de Stripe con session_id, refrescamos estado un pelín después
+        const url = new URL(window.location.href);
+        const hasSessionId = url.searchParams.has("session_id");
+        if (hasSessionId) {
+          url.searchParams.delete("session_id");
+          window.history.replaceState({}, "", url.toString());
+          setTimeout(() => {
+            void refreshSubscription();
+          }, 2500);
         }
       } catch (error: any) {
         console.error("Error cargando datos de plan:", error);
@@ -297,21 +278,12 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user, onUser
       }
     };
 
-      const url = new URL(window.location.href);
-      const hasSessionId = url.searchParams.has("session_id");
-      if (hasSessionId) {
-        // opcional: limpiar la URL para que no quede fea
-        url.searchParams.delete("session_id");
-        window.history.replaceState({}, "", url.toString());
-      }
     void load();
-    if (hasSessionId) {
-        setTimeout(() => { void load(); }, 2500);
-      }
+
     return () => {
       cancelled = true;
     };
-  }, [customerId, sb, user.monthlyFee, user]);
+  }, [customerId, sb, refreshSubscription]);
 
   const handleSaveProfile = async () => {
     if (!customerId) return;
@@ -387,25 +359,24 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user, onUser
     }
   };
 
-const handlePlanUpgrade = async (planCode: PlanCode) => {
+
+
+const handlePlanUpgrade = async (planCode: PaidPlanCode) => {
   setPlanError(null);
   setSelectedPlanCode(planCode);
   setIsChangingPlan(true);
 
-    try {
-      const { checkout_url } = await changePlan({
-        target_plan_code: planCode,
-        billing_frequency: "MONTHLY",
-        customer_id: customerId || user.id,
-      });
+  try {
+    const { checkout_url } = await changePlan({
+      target_plan_code: planCode, // ✅ ahora siempre es BASIC|MEDIUM|PREMIUM
+      billing_frequency: "MONTHLY",
+      customer_id: customerId || user.id,
+    });
 
-      // Redirige al checkout de Stripe
-      window.location.href = checkout_url;
+    window.location.href = checkout_url;
   } catch (error: any) {
     console.error("Error cambiando plan:", error);
-
     if (error?.code === "PENDING_CHANGE") {
-      setPendingChange(true);
       setPlanError("Ya existe un cambio de plan pendiente. Espera a la confirmación de Stripe.");
     } else {
       setPlanError(error?.message ?? "No se pudo iniciar el cambio de plan.");
@@ -415,16 +386,6 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
     setSelectedPlanCode(null);
   }
 };
-
-
-  const effectivePlanType = activePlan?.planType ?? (user.plan ?? PlanType.BASIC);
-  const planInfo = planFeatures[effectivePlanType];
-  const monthlyFee = activePlan?.priceMonthly ?? user.monthlyFee ?? planInfo.price;
-  const currentPlanCode: PlanCode = activePlan?.planCode ?? mapPlanTypeToCode(effectivePlanType);
-  const currentPlanRank = PLAN_RANK[currentPlanCode] ?? 0;
-  const limitDescription = PLAN_METADATA[currentPlanCode]?.description ?? planInfo.limits;
-  const isFreePlan = currentPlanCode === "FREE" || activePlan?.billingFrequency === "FREE_TRIAL";
-  const planPriceLabel = isFreePlan ? "Gratis" : formatCurrency(monthlyFee);
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -451,21 +412,22 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
         <section className="grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)]">
           <div className="space-y-6">
             <div className="bg-white border border-slate-200 rounded-2xl shadow-sm">
-                <div className="px-6 py-5 flex items-center justify-between border-b border-slate-100">
-                  <div className="flex items-center gap-2">
-                    <CreditCard className="w-5 h-5 text-slate-600" />
-                    <p className="text-sm font-semibold text-slate-900">Plan actual</p>
-                  </div>
-                  <span
-                    className={`text-[11px] uppercase tracking-wide px-3 py-1 rounded-full border ${
-                    activePlan?.status === "ACTIVE"
+              <div className="px-6 py-5 flex items-center justify-between border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <CreditCard className="w-5 h-5 text-slate-600" />
+                  <p className="text-sm font-semibold text-slate-900">Plan actual</p>
+                </div>
+                <span
+                  className={`text-[11px] uppercase tracking-wide px-3 py-1 rounded-full border ${
+                    (activeSub?.status ?? "ACTIVE") === "ACTIVE"
                       ? "border-green-200 text-green-700 bg-green-50"
                       : "border-slate-200 text-slate-600 bg-white"
-                    }`}
-                  >
-                    {activePlan?.status ?? "Activo"}
-                  </span>
-                </div>
+                  }`}
+                >
+                  {activeSub?.status ?? "ACTIVE"}
+                </span>
+              </div>
+
               <div className="p-6 space-y-5">
                 <div className="flex items-end justify-between">
                   <div>
@@ -473,14 +435,15 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                     {!isFreePlan && <p className="text-xs text-slate-500">/mes</p>}
                   </div>
                   <div className="text-right text-sm text-slate-600">
-                    <p>Inicio: {formatDate(activePlan?.startDate)}</p>
-                    <p>Próxima factura: {formatDate(activePlan?.nextBillingDate)}</p>
-                    <p>Facturación: {activePlan?.billingFrequency ?? "Mensual"}</p>
+                    <p>Inicio: {formatDate(activeSub?.start_date)}</p>
+                    <p>Próxima factura: {formatDate(activeSub?.next_billing_date ?? subscriptionState?.next_billing_date)}</p>
+                    <p>Facturación: {activeSub?.billing_frequency ?? "Mensual"}</p>
                   </div>
                 </div>
+
                 <div className="space-y-2">
                   <p className="text-xs uppercase tracking-wide text-slate-500">Plan</p>
-                  <p className="text-lg font-semibold text-slate-900">{activePlan?.planName ?? planInfo.label}</p>
+                  <p className="text-lg font-semibold text-slate-900">{planDisplayName}</p>
                   <p className="text-xs text-slate-500">{limitDescription}</p>
                 </div>
               </div>
@@ -488,10 +451,12 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
 
             <div className="bg-slate-50 rounded-2xl border border-slate-100 p-5 space-y-2">
               <span className="text-xs uppercase tracking-wide text-slate-500">Límites</span>
-              <p className="text-sm text-slate-700">{planInfo.limits}</p>
-              <p className="text-xs text-slate-500">
-                Estos límites se aplican al mes en curso y se reinician automáticamente.
+              <p className="text-sm text-slate-700">
+                {maxQueries
+                  ? `Hasta ${Number(maxQueries).toLocaleString("es-ES")} consultas/mes`
+                  : "Límites según plan"}
               </p>
+              <p className="text-xs text-slate-500">Estos límites se aplican al mes en curso y se reinician automáticamente.</p>
             </div>
 
             <div className="bg-white border border-slate-200 rounded-2xl shadow-sm">
@@ -501,6 +466,7 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                 </p>
                 <button className="text-xs text-indigo-600">Ver todas</button>
               </div>
+
               <div className="p-4 space-y-3">
                 {loading && invoices.length === 0 ? (
                   <div className="flex items-center gap-2 text-sm text-slate-500">
@@ -528,11 +494,10 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
               <div className="px-6 py-4 flex items-start justify-between border-b border-slate-100 gap-4">
                 <div>
                   <p className="text-sm font-semibold text-slate-900">Planes disponibles</p>
-                  <p className="text-xs text-slate-500">
-                    Actualiza tu plan en segundos y completa el pago seguro en Stripe.
-                  </p>
+                  <p className="text-xs text-slate-500">Actualiza tu plan y completa el pago seguro en Stripe.</p>
                 </div>
               </div>
+
               <div className="space-y-4 px-6 py-5">
                 {availablePlans.length === 0 ? (
                   <p className="text-sm text-slate-500">Cargando planes...</p>
@@ -541,9 +506,11 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                     const isActive = option.code === currentPlanCode;
                     const optionRank = PLAN_RANK[option.code] ?? 0;
                     const canUpgrade = optionRank > currentPlanRank;
-                    const buttonDisabled = isChangingPlan || pendingChange || !canUpgrade || isActive;
+
+                    const buttonDisabled = isChangingPlan || hasPendingChange || !canUpgrade || isActive;
                     const actionAllowed = !buttonDisabled && !isActive && canUpgrade;
                     const buttonLabel = isActive ? "Plan actual" : "Ampliar plan";
+
                     return (
                       <PlanCard
                         key={option.code}
@@ -559,13 +526,15 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                   })
                 )}
               </div>
-              {pendingChange && (
+
+              {hasPendingChange && (
                 <div className="px-6 pb-4">
                   <p className="text-xs font-semibold text-amber-700 uppercase">
                     Cambio de plan pendiente · espera confirmación de Stripe
                   </p>
                 </div>
               )}
+
               {planError && (
                 <div className="px-6 pb-5">
                   <p className="text-sm text-red-600">{planError}</p>
@@ -583,15 +552,16 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
               <h3 className="text-lg font-semibold text-slate-900">Datos profesionales</h3>
               <p className="text-xs text-slate-500">Actualiza nombre, CIF y dirección del hotel.</p>
             </div>
+
             <div className="grid gap-4 md:grid-cols-2">
-              <label className="text-xs font-semibold text-slate-600">Nombre comercial</label>
-              <input
-                className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                value={customerProfile.name}
-                onChange={(event) => setCustomerProfile((prev) => ({ ...prev, name: event.target.value }))}
-              />
-            </div>
-            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="text-xs font-semibold text-slate-600">Nombre comercial</label>
+                <input
+                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+                  value={customerProfile.name}
+                  onChange={(event) => setCustomerProfile((prev) => ({ ...prev, name: event.target.value }))}
+                />
+              </div>
               <div>
                 <label className="text-xs font-semibold text-slate-600">CIF / NIF</label>
                 <input
@@ -600,6 +570,9 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                   onChange={(event) => setCustomerProfile((prev) => ({ ...prev, nif: event.target.value }))}
                 />
               </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="text-xs font-semibold text-slate-600">Teléfono</label>
                 <input
@@ -608,8 +581,6 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                   onChange={(event) => setCustomerProfile((prev) => ({ ...prev, phone: event.target.value }))}
                 />
               </div>
-            </div>
-            <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="text-xs font-semibold text-slate-600">Email de contacto</label>
                 <input
@@ -618,6 +589,9 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                   onChange={(event) => setCustomerProfile((prev) => ({ ...prev, email: event.target.value }))}
                 />
               </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="text-xs font-semibold text-slate-600">Código postal</label>
                 <input
@@ -626,8 +600,6 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                   onChange={(event) => setCustomerProfile((prev) => ({ ...prev, postalCode: event.target.value }))}
                 />
               </div>
-            </div>
-            <div className="grid gap-4 md:grid-cols-3">
               <div>
                 <label className="text-xs font-semibold text-slate-600">Ciudad</label>
                 <input
@@ -636,6 +608,9 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                   onChange={(event) => setCustomerProfile((prev) => ({ ...prev, city: event.target.value }))}
                 />
               </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="text-xs font-semibold text-slate-600">Provincia</label>
                 <input
@@ -653,6 +628,7 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                 />
               </div>
             </div>
+
             <div className="flex items-center gap-3 pt-2">
               <button
                 disabled={profileSaving}
@@ -674,6 +650,7 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
               <h3 className="text-lg font-semibold text-slate-900">Datos bancarios</h3>
               <p className="text-xs text-slate-500">Mantén actualizado IBAN, SWIFT y entidad.</p>
             </div>
+
             <div className="grid gap-4">
               <div>
                 <label className="text-xs font-semibold text-slate-600">IBAN</label>
@@ -708,6 +685,7 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                 />
               </div>
             </div>
+
             <div className="flex items-center gap-3">
               <button
                 onClick={handleSaveBankData}
@@ -729,6 +707,7 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
               <h3 className="text-lg font-semibold text-slate-900">Seguridad</h3>
               <p className="text-xs text-slate-500">Cambia la contraseña y protege tu acceso.</p>
             </div>
+
             <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="text-xs font-semibold text-slate-600">Contraseña actual</label>
@@ -748,6 +727,7 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                   </button>
                 </div>
               </div>
+
               <div>
                 <label className="text-xs font-semibold text-slate-600">Nueva contraseña</label>
                 <div className="mt-1 relative">
@@ -767,6 +747,7 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
                 </div>
               </div>
             </div>
+
             <div className="flex items-center gap-3">
               <button
                 onClick={handleChangePassword}
@@ -783,6 +764,10 @@ const handlePlanUpgrade = async (planCode: PlanCode) => {
     </div>
   );
 };
+
+
+
+
 
 type PlanCardProps = {
   option: AvailablePlan;
