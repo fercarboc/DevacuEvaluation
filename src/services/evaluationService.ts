@@ -1,12 +1,10 @@
+// src/services/evaluationService.ts
 import { supabase } from "@/services/supabaseClient";
 import type { Rating } from "@/types/types";
 import type { Database } from "@/types/database";
 
-export type EvaluationRow =
-  Database["public"]["Tables"]["debacu_evaluations"]["Row"];
-
-export type EvaluationInsert =
-  Database["public"]["Tables"]["debacu_evaluations"]["Insert"];
+export type EvaluationRow = Database["public"]["Tables"]["debacu_evaluations"]["Row"];
+export type EvaluationInsert = Database["public"]["Tables"]["debacu_evaluations"]["Insert"];
 
 export type ReputationCategory = "NO_RECOMMENDED" | "DUBIOUS" | "OK";
 
@@ -24,14 +22,16 @@ export interface ClientSummary {
 
 export interface AddEvaluationInput {
   document: string;
-  fullName: string;
-  nationality?: string;
-  phone?: string;
-  email?: string;
+  full_name: string;
+  nationality?: string | null;
+  phone?: string | null;
+  email?: string | null;
   rating: number;
-  comment?: string;
-  platform?: string;
-  evaluationDate?: string; // yyyy-mm-dd
+  comment?: string | null;
+  platform?: string | null;
+  evaluation_date?: string | null; // yyyy-mm-dd
+  creator_customer_id?: string | null;
+  creator_customer_name?: string | null;
 }
 
 function categorizeRating(avg: number): ReputationCategory {
@@ -77,12 +77,12 @@ function mapEvaluationToRating(row: EvaluationRow): Rating {
     id: row.id,
     value: row.rating,
     comment: row.comment || "",
-    createdAt: row.evaluationDate || row.created_at,
-    authorId: row.creatorCustomerId || "HISTORICO",
-    authorName: row.creatorCustomerName || row.platform || "Histórico",
+    createdAt: row.evaluation_date || row.created_at,
+    authorId: row.creator_customer_id || "HISTORICO",
+    authorName: row.creator_customer_name || row.platform || "Histórico",
     platform: row.platform || undefined,
     clientData: {
-      fullName: row.fullName,
+      fullName: row.full_name,
       document: maskDoc(row.document) ?? undefined,
       email: maskEmail(row.email) ?? undefined,
       phone: maskPhone(row.phone) ?? undefined,
@@ -99,8 +99,6 @@ export interface GlobalSummary {
 }
 
 export async function getGlobalSummary(): Promise<GlobalSummary> {
-  // Las vistas a veces no tipan bien con .from(). Si te falla TS aquí,
-  // deja este any SOLO para las vistas.
   const { data: platRows, error: platError } = await (supabase as any)
     .from("debacu_eval_platform_summary")
     .select("platform, cnt")
@@ -150,16 +148,16 @@ export async function searchRatingsInSupabase(query: string): Promise<Rating[]> 
       [
         "id",
         "document",
-        "fullName",
+        "full_name",
         "nationality",
         "phone",
         "email",
         "rating",
         "comment",
-        "creatorCustomerId",
-        "creatorCustomerName",
+        "creator_customer_id",
+        "creator_customer_name",
         "platform",
-        "evaluationDate",
+        "evaluation_date",
         "created_at",
         "updated_at",
       ].join(",")
@@ -169,10 +167,11 @@ export async function searchRatingsInSupabase(query: string): Promise<Rating[]> 
         `document.ilike.%${q}%`,
         `phone.ilike.%${q}%`,
         `email.ilike.%${q}%`,
-        `"fullName".ilike.%${q}%`,
+        `full_name.ilike.%${q}%`,
       ].join(",")
     )
-    .order("evaluationDate", { ascending: false });
+    .order("evaluation_date", { ascending: false })
+    .order("created_at", { ascending: false });
 
   if (error) return [];
 
@@ -193,10 +192,11 @@ export async function searchEvaluations(query: string): Promise<ClientSummary[]>
         `document.ilike.%${q}%`,
         `phone.ilike.%${q}%`,
         `email.ilike.%${q}%`,
-        `"fullName".ilike.%${q}%`,
+        `full_name.ilike.%${q}%`,
       ].join(",")
     )
-    .order("evaluationDate", { ascending: false });
+    .order("evaluation_date", { ascending: false })
+    .order("created_at", { ascending: false });
 
   if (error) return [];
 
@@ -205,7 +205,7 @@ export async function searchEvaluations(query: string): Promise<ClientSummary[]>
 
   for (const row of rows) {
     const key =
-      row.document || row.email || row.phone || `${row.fullName}_${row.evaluationDate}`;
+      row.document || row.email || row.phone || `${row.full_name}_${row.evaluation_date}`;
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(row);
   }
@@ -216,7 +216,7 @@ export async function searchEvaluations(query: string): Promise<ClientSummary[]>
     if (!evaluations.length) continue;
 
     const doc = evaluations[0].document || "";
-    const fullName = evaluations[0].fullName || "";
+    const fullName = evaluations[0].full_name || "";
     const phone = evaluations[0].phone;
     const email = evaluations[0].email;
 
@@ -227,7 +227,7 @@ export async function searchEvaluations(query: string): Promise<ClientSummary[]>
 
     const lastEvaluationDate =
       evaluations
-        .map((e) => e.evaluationDate)
+        .map((e) => e.evaluation_date)
         .filter(Boolean)
         .sort()
         .slice(-1)[0] || null;
@@ -253,47 +253,94 @@ export async function searchEvaluations(query: string): Promise<ClientSummary[]>
 }
 
 // ===== 3) History by document =====
-export async function getClientHistoryByDocument(
-  document: string
-): Promise<EvaluationRow[]> {
+export async function getClientHistoryByDocument(document: string): Promise<EvaluationRow[]> {
   const { data, error } = await supabase
     .from("debacu_evaluations")
     .select("*")
     .eq("document", document)
-    .order("evaluationDate", { ascending: false });
+    .order("evaluation_date", { ascending: false })
+    .order("created_at", { ascending: false });
 
   if (error) return [];
   return (data ?? []) as unknown as EvaluationRow[];
 }
 
-// ===== 4) Insert =====
+/** Helpers Edge */
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
+const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+
+function fnUrl(name: string) {
+  return `${SUPABASE_URL}/functions/v1/${name}`;
+}
+
+async function readJsonSafe(res: Response) {
+  const text = await res.text();
+  try {
+    return { json: JSON.parse(text), text };
+  } catch {
+    return { json: null as any, text };
+  }
+}
+
+// ===== 4) Insert (via Edge Function) =====
 export async function addEvaluation(
   input: AddEvaluationInput,
   currentCustomerId: string,
   currentCustomerName: string
 ): Promise<EvaluationRow | null> {
+  // ✅ Este es el token de TU tabla debacu_eval_sessions (NO el access_token de supabase auth)
+  const session_token = localStorage.getItem("debacu_eval_session_token") || "";
+  if (!session_token) {
+    console.error("Falta debacu_eval_session_token. Haz login otra vez.");
+    return null;
+  }
+
+  // payload 100% snake_case y con defaults
   const payload: EvaluationInsert = {
-    document: input.document.trim(),
-    fullName: input.fullName.trim(),
-    nationality: input.nationality?.trim() || null,
-    phone: input.phone?.trim() || null,
-    email: input.email?.trim() || null,
-    rating: input.rating,
-    comment: input.comment?.trim() || null,
-    platform: input.platform?.trim() || "DEBACU_EVAL",
-    evaluationDate: input.evaluationDate || todayISO(),
-    creatorCustomerId: currentCustomerId,
-    creatorCustomerName: currentCustomerName,
+    document: (input.document || "").trim(),
+    full_name: (input.full_name || "").trim(),
+    nationality: input.nationality ? String(input.nationality).trim() : null,
+    phone: input.phone ? String(input.phone).trim() : null,
+    email: input.email ? String(input.email).trim().toLowerCase() : null,
+    rating: Number(input.rating || 0),
+    comment: input.comment ? String(input.comment).trim() : null,
+    platform: input.platform ? String(input.platform).trim() : "DEBACU_EVAL",
+    evaluation_date: input.evaluation_date || todayISO(),
+    creator_customer_id: input.creator_customer_id ?? currentCustomerId ?? null,
+    creator_customer_name: input.creator_customer_name ?? currentCustomerName ?? null,
   };
 
-  const { data, error } = await supabase
-    .from("debacu_evaluations")
-    .insert([payload])
-    .select("*")
-    .single();
-     
+  // Body que espera tu Edge:
+  // { app_code, accept_declaration, input }
+  const body = {
+    app_code: "DEBACU_EVAL",
+    accept_declaration: true,
+    input: payload,
+  };
 
+  const res = await fetch(fnUrl("debacu-eval-add"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: ANON_KEY,
+      Authorization: `Bearer ${ANON_KEY}`,
+      "x-session-token": session_token, // ✅ CLAVE
+    },
+    body: JSON.stringify(body),
+  });
 
-  if (error) return null;
-  return data as unknown as EvaluationRow;
+  const { json, text } = await readJsonSafe(res);
+
+  if (!res.ok) {
+    console.error("debacu-eval-add failed:", res.status, text);
+    return null;
+  }
+
+  const row = json?.row;
+  if (!row) {
+    console.error("debacu-eval-add: missing row in response", json);
+    return null;
+  }
+
+  return row as EvaluationRow;
 }

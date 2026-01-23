@@ -1,6 +1,6 @@
 // src/services/evalApi.ts
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
+const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
 const APP_CODE = "DEBACU_EVAL";
 
@@ -31,10 +31,10 @@ export async function evalLogin(username: string, password: string) {
   const { json, text } = await readJsonSafe(res);
 
   if (!res.ok) {
-    // ⬇️ esto es lo que NECESITAS ver
-    console.error("LOGIN 500 BODY:", text);
-    throw new Error(json?.error || text || "Login error");
+    console.error("LOGIN ERROR BODY:", text);
+    throw new Error(json?.error || json?.detail || text || "Login error");
   }
 
-  return json as { token: string; user: any };
+  // Debe devolver: { authEmail, session_token, user }
+  return json as { authEmail: string; session_token: string; user: any };
 }

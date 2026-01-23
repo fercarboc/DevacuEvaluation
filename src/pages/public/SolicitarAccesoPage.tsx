@@ -75,16 +75,19 @@ export function SolicitarAccesoPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="max-w-3xl mx-auto px-4 py-12">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-slate-900">Solicitar acceso</h1>
-          <p className="text-slate-600 mt-2">
-            Acceso restringido a profesionales. Las solicitudes se revisan manualmente.
+<div className="min-h-screen bg-slate-50">
+  <div className="max-w-3xl mx-auto px-4 py-10">
+    <div className="mb-8">
+      <h1 className="text-3xl font-bold text-slate-900">Solicitar acceso</h1>
+      <p className="text-slate-600 mt-2">
+        Acceso restringido a profesionales. Las solicitudes se revisan manualmente.
           </p>
         </div>
 
-        <form onSubmit={submit} className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-8">
+    <form
+      onSubmit={submit}
+      className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-8 max-h-[74vh] overflow-y-auto"
+    >
           {/* Empresa */}
           <section className="space-y-4">
             <h2 className="text-sm font-semibold text-slate-900">Datos del establecimiento</h2>

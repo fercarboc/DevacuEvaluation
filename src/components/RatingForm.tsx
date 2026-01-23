@@ -34,16 +34,7 @@ const REASONS: { code: ReasonCode; label: string; kind: "risk" | "positive" | "n
   { code: "OTHER", label: "Otro", kind: "neutral" },
 ];
 
-const PLATFORM_OPTIONS = [
-  "BOOKING",
-  "EXPEDIA",
-  "AIRBNB",
-  "MOTOR_PROPIO",
-  "AGENCIA",
-  "WALK_IN",
-  "OTROS",
-] as const;
-
+const PLATFORM_OPTIONS = ["BOOKING", "EXPEDIA", "AIRBNB", "MOTOR_PROPIO", "AGENCIA", "WALK_IN", "OTROS"] as const;
 type Platform = (typeof PLATFORM_OPTIONS)[number];
 
 function clampText(s: string, max: number) {
@@ -67,10 +58,7 @@ function sanitizePhone(input: string) {
   return raw.replace(/\D/g, "").slice(0, 11);
 }
 
-export const RatingForm: React.FC<RatingFormProps> = ({
-  currentCustomerId,
-  currentCustomerName,
-}) => {
+export const RatingForm: React.FC<RatingFormProps> = ({ currentCustomerId, currentCustomerName }) => {
   const [status, setStatus] = useState<Status>("idle");
 
   const [form, setForm] = useState({
@@ -108,22 +96,15 @@ export const RatingForm: React.FC<RatingFormProps> = ({
     [form.reasons]
   );
 
-  const positiveSelected = useMemo(
-    () => form.reasons.includes("EXCELLENT_GUEST"),
-    [form.reasons]
-  );
-
   const handleToggleReason = (code: ReasonCode) => {
     setForm((prev) => {
       const exists = prev.reasons.includes(code);
       const next = exists ? prev.reasons.filter((x) => x !== code) : [...prev.reasons, code];
 
-      // regla simple: si marcas "Cliente excelente", no tiene sentido marcar daños/impagos a la vez
       if (!exists && code === "EXCELLENT_GUEST") {
         return { ...prev, reasons: ["EXCELLENT_GUEST"], severity: "LOW", hasEvidence: false };
       }
       if (!exists && prev.reasons.includes("EXCELLENT_GUEST")) {
-        // si ya estaba excelente y marcas otra cosa, quitamos excelente
         return { ...prev, reasons: next.filter((x) => x !== "EXCELLENT_GUEST") };
       }
       return { ...prev, reasons: next };
@@ -134,11 +115,9 @@ export const RatingForm: React.FC<RatingFormProps> = ({
     if (status === "submitting") return false;
     if (!form.value) return false;
     if (!form.fullName.trim()) return false;
-    // mínimo: 1 motivo seleccionado (evita “opinión libre”)
     if (form.reasons.length === 0) return false;
-    // si plataforma = OTROS, requiere texto
     if (form.platform === "OTROS" && !form.platformOther.trim()) return false;
-    // Si es riesgo, pedimos documento o email o teléfono (algún identificador)
+
     if (riskSelected) {
       const hasId = !!form.document.trim() || !!form.email.trim() || !!form.phone.trim();
       if (!hasId) return false;
@@ -157,13 +136,13 @@ export const RatingForm: React.FC<RatingFormProps> = ({
     setStatus("submitting");
 
     try {
-      // Construimos comment “controlado”: no es texto libre, es resumen estructurado.
       const reasonsText = form.reasons.join(",");
       const platformFinal =
         form.platform === "OTROS"
           ? `OTROS:${clampText(form.platformOther, 30)}`
           : (form.platform || "DEBACU_EVAL");
 
+      // Comment controlado
       const controlledCommentParts: string[] = [];
       controlledCommentParts.push(`reasons=${reasonsText}`);
       controlledCommentParts.push(`severity=${form.severity}`);
@@ -171,20 +150,27 @@ export const RatingForm: React.FC<RatingFormProps> = ({
       const notes = clampText(form.notes, 240);
       if (notes) controlledCommentParts.push(`notes=${notes}`);
 
-      const result = await addEvaluation(
-        {
-          document: form.document.trim() ? sanitizeDoc(form.document) : "GEN-SIN-DOC",
-          fullName: sanitizeUpperLettersAndSpaces(form.fullName).trim(),
-          nationality: form.nationality.trim() ? form.nationality.trim().toUpperCase() : null,
-          phone: form.phone.trim() ? sanitizePhone(form.phone) : null,
-          email: form.email.trim() ? form.email.trim().toLowerCase() : "",
-          rating: form.value,
-          comment: controlledCommentParts.join(" | "),
-          platform: platformFinal,
-        },
-        currentCustomerId,
-        currentCustomerName
-      );
+      // ✅ Payload en snake_case (según tu schema de debacu_evaluations)
+      const payload = {
+        document: form.document.trim() ? sanitizeDoc(form.document) : "GEN-SIN-DOC",
+        full_name: sanitizeUpperLettersAndSpaces(form.fullName).trim(),
+        nationality: form.nationality.trim() ? form.nationality.trim().toUpperCase() : null,
+        phone: form.phone.trim() ? sanitizePhone(form.phone) : null,
+        email: form.email.trim() ? form.email.trim().toLowerCase() : null,
+        rating: form.value,
+        comment: controlledCommentParts.join(" | "),
+        platform: platformFinal,
+
+        // 👇 importantísimo: columnas reales
+        creator_customer_id: currentCustomerId || null,
+        creator_customer_name: currentCustomerName || null,
+
+        // evaluation_date: puedes omitirlo porque tienes default CURRENT_DATE,
+        // pero lo dejo comentado por si lo quieres forzar:
+        // evaluation_date: new Date().toISOString().slice(0, 10),
+      };
+
+      const result = await addEvaluation(payload as any, currentCustomerId, currentCustomerName);
 
       if (!result) throw new Error("No se pudo guardar la valoración");
 
@@ -251,14 +237,14 @@ export const RatingForm: React.FC<RatingFormProps> = ({
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="md:col-span-2">
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Nombre completo *
-                      </label>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Nombre completo *</label>
                       <input
                         type="text"
                         required
                         value={form.fullName}
-                        onChange={(e) => setForm((p) => ({ ...p, fullName: sanitizeUpperLettersAndSpaces(e.target.value) }))}
+                        onChange={(e) =>
+                          setForm((p) => ({ ...p, fullName: sanitizeUpperLettersAndSpaces(e.target.value) }))
+                        }
                         className="block w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-indigo-500 focus:border-indigo-500 text-sm"
                         placeholder="NOMBRE Y APELLIDOS"
                       />
@@ -378,7 +364,9 @@ export const RatingForm: React.FC<RatingFormProps> = ({
                       return (
                         <label
                           key={r.code}
-                          className={`flex items-center gap-2 rounded-xl border px-3 py-2 cursor-pointer ${checked ? tone : "border-slate-200 bg-white"}`}
+                          className={`flex items-center gap-2 rounded-xl border px-3 py-2 cursor-pointer ${
+                            checked ? tone : "border-slate-200 bg-white"
+                          }`}
                         >
                           <input
                             type="checkbox"
@@ -400,7 +388,9 @@ export const RatingForm: React.FC<RatingFormProps> = ({
                           <label
                             key={s}
                             className={`flex-1 rounded-xl border px-3 py-2 text-center text-sm cursor-pointer ${
-                              form.severity === s ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-700"
+                              form.severity === s
+                                ? "border-slate-900 bg-slate-900 text-white"
+                                : "border-slate-200 bg-white text-slate-700"
                             }`}
                           >
                             <input
@@ -437,9 +427,7 @@ export const RatingForm: React.FC<RatingFormProps> = ({
 
                 {/* Valoración */}
                 <div className="rounded-2xl border border-slate-200 p-4">
-                  <label className="block text-xs font-semibold text-slate-700 mb-2">
-                    Valoración general *
-                  </label>
+                  <label className="block text-xs font-semibold text-slate-700 mb-2">Valoración general *</label>
                   <div className="flex items-center gap-4 mb-2">
                     <StarRating
                       rating={form.value}
@@ -449,16 +437,12 @@ export const RatingForm: React.FC<RatingFormProps> = ({
                     />
                     <span className="text-xs text-slate-500 font-semibold">{ratingLabel}</span>
                   </div>
-                  <p className="text-[11px] text-slate-400">
-                    La valoración debe ser coherente con los motivos seleccionados. Esto se audita.
-                  </p>
+                  <p className="text-[11px] text-slate-400">La valoración debe ser coherente con los motivos seleccionados. Esto se audita.</p>
                 </div>
 
-                {/* Observaciones (opcional y corto) */}
+                {/* Observaciones */}
                 <div className="rounded-2xl border border-slate-200 p-4">
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Observaciones (opcional, máx 240)
-                  </label>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Observaciones (opcional, máx 240)</label>
                   <textarea
                     rows={3}
                     value={form.notes}

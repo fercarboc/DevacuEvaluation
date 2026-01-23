@@ -1,12 +1,22 @@
 import React from "react";
-import { Navigate } from "react-router-dom";
-import { useAuth } from "@/context/AuthContext";
+import { Navigate, useLocation } from "react-router-dom";
+import { useEvalAuth } from "@/context/EvalAuthContext";
 
-export function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
+export function RequireAuth({
+  children,
+  redirectTo = "/login",
+}: {
+  children: React.ReactNode;
+  redirectTo?: string;
+}) {
+  const { user, loading } = useEvalAuth();
+  const location = useLocation();
 
-  if (loading) return null; // o tu spinner
-  if (!user) return <Navigate to="/login" replace />;
+  if (loading) return null;
+
+  if (!user) {
+    return <Navigate to={redirectTo} replace state={{ from: location }} />;
+  }
 
   return <>{children}</>;
 }

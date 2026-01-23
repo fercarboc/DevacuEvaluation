@@ -38,14 +38,103 @@ function parseControlledComment(comment?: string | null) {
   const raw = (comment || "").trim();
   const out: Record<string, string> = {};
   if (!raw) return out;
-  raw.split("|").map((p) => p.trim()).forEach((pair) => {
-    const idx = pair.indexOf("=");
-    if (idx === -1) return;
-    const k = pair.slice(0, idx).trim();
-    const v = pair.slice(idx + 1).trim();
-    out[k] = v;
-  });
+  raw
+    .split("|")
+    .map((p) => p.trim())
+    .forEach((pair) => {
+      const idx = pair.indexOf("=");
+      if (idx === -1) return;
+      const k = pair.slice(0, idx).trim();
+      const v = pair.slice(idx + 1).trim();
+      out[k] = v;
+    });
   return out;
+}
+
+/** -------------------------------
+ * Normalizadores (snake_case ⇄ camelCase)
+ * -------------------------------- */
+function toIsoDateString(v: unknown): string {
+  if (!v) return new Date().toISOString();
+  if (typeof v === "string") return v;
+  try {
+    // Date, number, etc.
+    return new Date(v as any).toISOString();
+  } catch {
+    return new Date().toISOString();
+  }
+}
+
+function normalizeRating(raw: any): Rating {
+  // raw puede venir desde tu service (camelCase) o directo supabase (snake_case)
+  const clientRaw = raw?.clientData ?? raw?.client_data ?? {};
+
+  const createdAt = raw?.createdAt ?? raw?.created_at ?? raw?.evaluationDate ?? raw?.evaluation_date ?? raw?.created ?? null;
+
+  const value =
+    typeof raw?.value === "number"
+      ? raw.value
+      : typeof raw?.rating === "number"
+      ? raw.rating
+      : Number(raw?.value ?? raw?.rating ?? 0);
+
+  const fullName = clientRaw?.fullName ?? clientRaw?.full_name ?? raw?.fullName ?? raw?.full_name ?? "";
+
+  const document = clientRaw?.document ?? raw?.document ?? "";
+  const email = clientRaw?.email ?? raw?.email ?? null;
+  const phone = clientRaw?.phone ?? raw?.phone ?? null;
+  const nationality = clientRaw?.nationality ?? raw?.nationality ?? null;
+
+  const authorId = raw?.authorId ?? raw?.author_id ?? raw?.creatorCustomerId ?? raw?.creator_customer_id ?? "";
+  const authorName = raw?.authorName ?? raw?.author_name ?? raw?.creatorCustomerName ?? raw?.creator_customer_name ?? "";
+
+  const platform = raw?.platform ?? null;
+
+  // comment: si viene comment o commentario o notes, etc.
+  const comment = raw?.comment ?? raw?.comments ?? raw?.notes ?? null;
+
+  return {
+    id: raw?.id ?? "",
+    value,
+    comment,
+    createdAt: toIsoDateString(createdAt),
+    authorId,
+    authorName,
+    clientData: {
+      document,
+      email,
+      phone,
+      fullName,
+      nationality,
+    },
+    platform,
+  } as Rating;
+}
+
+function normalizeSummary(raw: any): { totalCount: number; platformCounts: Record<string, number>; countryCounts: Record<string, number> } {
+  const totalCount = Number(raw?.totalCount ?? raw?.total_count ?? raw?.total ?? 0);
+
+  const platformCounts =
+    raw?.platformCounts ??
+    raw?.platform_counts ??
+    raw?.platformSummary ??
+    raw?.platform_summary ??
+    {};
+
+  const countryCounts =
+    raw?.countryCounts ??
+    raw?.country_counts ??
+    raw?.countrySummary ??
+    raw?.country_summary ??
+    {};
+
+  // Asegurar que son objetos {key:number}
+  const safeObj = (o: any) => (o && typeof o === "object" ? o : {});
+  return {
+    totalCount,
+    platformCounts: safeObj(platformCounts),
+    countryCounts: safeObj(countryCounts),
+  };
 }
 
 export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => {
@@ -62,12 +151,16 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
   useEffect(() => {
     const load = async () => {
       try {
-        const summary = await getGlobalSummary();
+        const rawSummary = await getGlobalSummary();
+        const summary = normalizeSummary(rawSummary);
         setGlobalTotal(summary.totalCount);
         setPlatformSummary(summary.platformCounts);
         setCountrySummary(summary.countryCounts);
       } catch (e) {
         console.error("Error cargando resumen global:", e);
+        setGlobalTotal(0);
+        setPlatformSummary({});
+        setCountrySummary({});
       }
     };
     load();
@@ -80,7 +173,11 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
     setLoading(true);
     setSearched(true);
     try {
-      const data = await searchRatingsInSupabase(query);
+      const raw = await searchRatingsInSupabase(query);
+
+      // Normalizar (por si el service ya devuelve camel o ha pasado a snake)
+      const data: Rating[] = Array.isArray(raw) ? raw.map(normalizeRating) : [];
+
       // orden: más recientes primero
       const sorted = [...data].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setResults(sorted);
@@ -103,8 +200,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
     if (!results.length) return null;
     const avg = results.reduce((acc, r) => acc + (r.value || 0), 0) / results.length;
     const last = results[0];
-    const score =
-      avg >= 4 ? "Bajo riesgo" : avg >= 3 ? "Riesgo medio" : "Riesgo alto";
+    const score = avg >= 4 ? "Bajo riesgo" : avg >= 3 ? "Riesgo medio" : "Riesgo alto";
     return { avg, count: results.length, lastDate: last.createdAt, score };
   }, [results]);
 
@@ -227,9 +323,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                 <div className="text-sm text-slate-500">Introduce un criterio arriba.</div>
               ) : resultKpi ? (
                 <div className="flex items-center gap-2 text-xs">
-                  <span className="rounded-full border px-3 py-1 text-slate-700 bg-white">
-                    {resultKpi.count} registros
-                  </span>
+                  <span className="rounded-full border px-3 py-1 text-slate-700 bg-white">{resultKpi.count} registros</span>
                   <span
                     className={`rounded-full px-3 py-1 font-semibold ${
                       resultKpi.avg >= 4
@@ -266,9 +360,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
                         <div className="flex-1">
                           <div className="flex flex-wrap items-center gap-2 mb-2">
-                            <h4 className="font-bold text-base text-slate-900 uppercase">
-                              {rating.clientData.fullName}
-                            </h4>
+                            <h4 className="font-bold text-base text-slate-900 uppercase">{rating.clientData.fullName}</h4>
 
                             {rating.clientData.document && (
                               <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">
@@ -300,10 +392,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
 
                               <div className="flex flex-wrap gap-2">
                                 {reasons.slice(0, 6).map((r) => (
-                                  <span
-                                    key={r}
-                                    className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-700"
-                                  >
+                                  <span key={r} className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-700">
                                     {r}
                                   </span>
                                 ))}
@@ -400,9 +489,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                   </div>
                 ))}
                 {remainingCountries > 0 && (
-                  <p className="text-[11px] text-slate-400 mt-1">
-                    +{remainingCountries} países con menos registros.
-                  </p>
+                  <p className="text-[11px] text-slate-400 mt-1">+{remainingCountries} países con menos registros.</p>
                 )}
               </div>
             )}

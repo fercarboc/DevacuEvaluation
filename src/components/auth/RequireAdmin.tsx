@@ -1,18 +1,20 @@
 import React from "react";
 import { Navigate } from "react-router-dom";
-import { useAuth } from "@/context/AuthContext";
-
-const ADMIN_EMAILS = (import.meta.env.VITE_DEBACU_EVAL_ADMIN_EMAILS ?? "")
-  .split(",")
-  .map((s: string) => s.trim().toLowerCase())
-  .filter(Boolean);
+import { useEvalAuth } from "@/context/EvalAuthContext";
 
 export function RequireAdmin({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
-  if (loading) return null;
+  const { user, loading } = useEvalAuth();
 
-  const email = (user?.email ?? "").toLowerCase();
-  if (!ADMIN_EMAILS.includes(email)) return <Navigate to="/app" replace />;
+  if (loading) return null;
+  if (!user) return <Navigate to="/login" replace />;
+
+  const isAdmin =
+    !!user.isAdmin ||
+    String(user.email ?? "").toLowerCase() === "admin@debacu.com" ||
+    String(user.id ?? "").toUpperCase() === "ADMIN_DEBACU" ||
+    String(user.username ?? "").toLowerCase() === "admin";
+
+  if (!isAdmin) return <Navigate to="/solicitar-acceso" replace />;
 
   return <>{children}</>;
 }

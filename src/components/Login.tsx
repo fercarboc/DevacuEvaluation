@@ -1,13 +1,17 @@
+// src/pages/Login.tsx  (o donde lo tengas)
 import React, { useState } from "react";
 import { evalLogin } from "@/services/evalApi";
 import type { User } from "@/types/types";
 import { Lock, User as UserIcon, Loader2 } from "lucide-react";
+import { supabase } from "@/services/supabaseClient";
+import { useEvalAuth } from "@/context/EvalAuthContext";
 
-interface LoginProps {
+export interface LoginProps {
   onLoginSuccess: (user: User) => void;
 }
 
 export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
+  const { signIn } = useEvalAuth();
   const [username, setUsername] = useState<string>("");
   const [password, setPassword] = useState<string>("");
   const [error, setError] = useState<string>("");
@@ -19,22 +23,47 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     setLoading(true);
 
     try {
-      // ✅ Login seguro vía Edge Function
-      const { token, user } = await evalLogin(username, password);
+      // 0) Login "negocio" (customers/subscriptions) + crea session_token (debacu_eval_sessions)
+      const { authEmail, session_token, user } = await evalLogin(username, password);
 
-      // Persistimos sesión (piloto)
-      localStorage.setItem("debacu_eval_token", token);
-      localStorage.setItem("debacu_eval_user", JSON.stringify(user));
+      // Guardar SIEMPRE el session_token de negocio (Edge Functions)
+      localStorage.setItem("debacu_eval_session_token", String(session_token || ""));
 
-      onLoginSuccess(user as User);
+      // 1) Login Supabase Auth (para tener session/access_token y RLS en el cliente)
+      const { data, error: authError } = await supabase.auth.signInWithPassword({
+        email: authEmail,
+        password,
+      });
+
+      if (authError || !data?.session) {
+        // Si falla Auth, borra session_token para evitar estado raro
+        localStorage.removeItem("debacu_eval_session_token");
+        throw new Error("Usuario o contraseña incorrectos");
+      }
+
+      // Guardar auth token (opcional, pero útil si lo usas en algún sitio)
+      const auth_token = data.session.access_token ?? "";
+      localStorage.setItem("debacu_eval_auth_token", auth_token);
+
+      // Admin flag (regla local, sin tocar Edge)
+      const email = String((user as any)?.email ?? authEmail ?? "").toLowerCase().trim();
+      const id = String((user as any)?.id ?? "").toUpperCase().trim();
+      const uname = String((user as any)?.username ?? username ?? "").toLowerCase().trim();
+
+      const isAdmin =
+        email === "admin@debacu.com" ||
+        id === "ADMIN_DEBACU" ||
+        uname === "admin";
+
+      const userWithAdmin: User = { ...(user as User), isAdmin };
+
+      // Si tu context signIn solo acepta 1 token, pásale el auth_token
+      signIn(auth_token, userWithAdmin);
+
+      onLoginSuccess(userWithAdmin);
     } catch (err: unknown) {
       console.error(err);
-
-      const msg =
-        err instanceof Error
-          ? err.message
-          : "Usuario o contraseña incorrectos";
-
+      const msg = err instanceof Error ? err.message : "Usuario o contraseña incorrectos";
       setError(msg);
     } finally {
       setLoading(false);
@@ -49,16 +78,11 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
             <Lock className="w-6 h-6" />
           </div>
 
-          <h1 className="text-2xl font-bold text-slate-800">
-            DebacuEvaluation360
-          </h1>
-          <p className="text-slate-500 mt-2">
-            Plataforma de gestión y evaluación integral
-          </p>
+          <h1 className="text-2xl font-bold text-slate-800">DebacuEvaluation360</h1>
+          <p className="text-slate-500 mt-2">Plataforma de gestión y evaluación integral</p>
 
           <p className="text-xs text-slate-400 mt-3">
-            Acceso restringido para uso profesional. No es una plataforma
-            pública.
+            Acceso restringido para uso profesional. No es una plataforma pública.
           </p>
         </div>
 
@@ -70,9 +94,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
           )}
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Usuario
-            </label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Usuario</label>
             <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                 <UserIcon className="h-5 w-5 text-slate-400" />
@@ -90,9 +112,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Contraseña
-            </label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña</label>
             <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                 <Lock className="h-5 w-5 text-slate-400" />
@@ -114,11 +134,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
             disabled={loading}
             className="w-full flex justify-center items-center py-2.5 px-4 rounded-lg text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
           >
-            {loading ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : (
-              "Acceder"
-            )}
+            {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Acceder"}
           </button>
         </form>
       </div>

@@ -1,37 +1,57 @@
 import React from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
+
+import PublicLanding from "@/pages/public/PublicLanding";
 import { SolicitarAccesoPage } from "@/pages/public/SolicitarAccesoPage";
-import { SolicitudEnviadaPage } from "./pages/public/SolicitudEnviadaPage";
-import { PrimerAccesoPage } from "./pages/auth/PrimerAccesoPage";
-import { AdminSolicitudesAccesoPage } from "./pages/admin/AdminSolicitudesAccesoPage";
-import { RequireAuth } from "./components/auth/RequiereAuth";
+import { SolicitudEnviadaPage } from "@/pages/public/SolicitudEnviadaPage";
 
-import { RequireAdmin } from "./components/auth/RequireAdmin";
+import LoginPage from "@/pages/auth/LoginPage";
+import AuthedApp from "@/pages/app/AuthedApp";
+import AdminLayout from "@/pages/admin/AdminLayout";
 
+import { RequireAuth } from "@/components/auth/RequiereAuth";
+import { RequireAdmin } from "@/components/auth/RequireAdmin";
 
+/**
+ * IMPORTANTE:
+ * - /app ahora SIEMPRE pasa por RequireAuth
+ * - /app/admin/... se protege adicionalmente con RequireAdmin
+ */
 export function AppRoutes() {
   return (
     <Routes>
+      {/* landing */}
+      <Route path="/" element={<PublicLanding />} />
+
       {/* públicas */}
+      <Route path="/login" element={<LoginPage />} />
       <Route path="/solicitar-acceso" element={<SolicitarAccesoPage />} />
       <Route path="/solicitud-enviada" element={<SolicitudEnviadaPage />} />
 
-      {/* auth */}
-      <Route path="/primer-acceso" element={<PrimerAccesoPage />} />
-
-      {/* admin */}
+      {/* app (protegida) */}
       <Route
-        path="/admin/solicitudes-acceso"
+        path="/app/*"
+        element={
+          <RequireAuth>
+            <AuthedApp />
+          </RequireAuth>
+        }
+      />
+
+      {/* admin (subruta protegida) */}
+      <Route
+        path="/app/admin/solicitudes-acceso"
         element={
           <RequireAuth>
             <RequireAdmin>
-              <AdminSolicitudesAccesoPage />
+              <AdminLayout />
             </RequireAdmin>
           </RequireAuth>
         }
       />
 
-      <Route path="*" element={<Navigate to="/solicitar-acceso" replace />} />
+      {/* fallback */}
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }

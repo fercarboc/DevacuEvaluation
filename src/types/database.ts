@@ -1,9 +1,11 @@
+// src/types/database.ts
+
 export type Json =
   | string
   | number
   | boolean
   | null
-  | { [key: string]: Json | undefined }
+  | { [key: string]: Json }
   | Json[];
 
 export type Database = {
@@ -16,32 +18,32 @@ export type Database = {
         Row: {
           id: string;
           document: string;
-          fullName: string;
+          full_name: string;
           nationality: string | null;
           phone: string | null;
           email: string | null;
           rating: number;
           comment: string | null;
-          creatorCustomerId: string | null;
-          creatorCustomerName: string | null;
+          creator_customer_id: string | null;
+          creator_customer_name: string | null;
           platform: string | null;
-          evaluationDate: string;
-          created_at: string;
-          updated_at: string;
+          evaluation_date: string; // date en BD
+          created_at: string; // timestamptz
+          updated_at: string; // timestamptz
         };
         Insert: {
           id?: string;
           document: string;
-          fullName: string;
+          full_name: string;
           nationality?: string | null;
           phone?: string | null;
           email?: string | null;
           rating: number;
           comment?: string | null;
-          creatorCustomerId?: string | null;
-          creatorCustomerName?: string | null;
+          creator_customer_id?: string | null;
+          creator_customer_name?: string | null;
           platform?: string | null;
-          evaluationDate?: string;
+          evaluation_date?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -72,6 +74,9 @@ export type Database = {
           accepted_terms: boolean;
           accepted_professional_use: boolean;
           notes: string | null;
+          reviewed_by: string | null;
+          reviewed_at: string | null;
+          decision_notes: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -94,91 +99,164 @@ export type Database = {
           accepted_terms: boolean;
           accepted_professional_use: boolean;
           notes?: string | null;
+          reviewed_by?: string | null;
+          reviewed_at?: string | null;
+          decision_notes?: string | null;
+          created_at?: string;
+          updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["debacu_eval_access_requests"]["Insert"]>;
         Relationships: [];
       };
 
       // ======================
-      // CUSTOMERS
+      // CUSTOMERS (según tu schema real)
       // ======================
       customers: {
         Row: {
           id: string;
           name: string | null;
+          nif: string | null;
+          address: string | null;
+          postal_code: string | null;
+          city: string | null;
+          province: string | null;
+          country: string | null;
+          phone: string | null;
           email: string | null;
-          serviceUsername: string | null;
-          servicePassword: string | null;
-          isActive: boolean;
-          startDate: string | null;
-          planId: string | null;
+          sector_id: string | null;
+          plan_id: string | null;
+          billing_frequency: string | null;
+          start_date: string | null; // date
+          service_username: string | null;
+          service_password: string | null;
+          api_token: string | null;
+          is_active: boolean;
+          iban: string | null;
+          swift: string | null;
+          bank_name: string | null;
+          bank_address: string | null;
+          stripe_customer_id: string | null;
+          stripe_default_payment_method_id: string | null;
+          app_id: string | null;
+          created_at: string;
+          updated_at: string;
         };
         Insert: {
           id?: string;
           name?: string | null;
+          nif?: string | null;
+          address?: string | null;
+          postal_code?: string | null;
+          city?: string | null;
+          province?: string | null;
+          country?: string | null;
+          phone?: string | null;
           email?: string | null;
-          serviceUsername?: string | null;
-          servicePassword?: string | null;
-          isActive?: boolean;
-          startDate?: string | null;
-          planId?: string | null;
+          sector_id?: string | null;
+          plan_id?: string | null;
+          billing_frequency?: string | null;
+          start_date?: string | null;
+          service_username?: string | null;
+          service_password?: string | null;
+          api_token?: string | null;
+          is_active?: boolean;
+          iban?: string | null;
+          swift?: string | null;
+          bank_name?: string | null;
+          bank_address?: string | null;
+          stripe_customer_id?: string | null;
+          stripe_default_payment_method_id?: string | null;
+          app_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["customers"]["Insert"]>;
         Relationships: [];
       };
 
       // ======================
-      // PLANS
+      // PLANS (según tu schema real)
       // ======================
       plans: {
         Row: {
           id: string;
-          appId: string | null;
+          app_id: string | null;
           name: string;
           code: string | null;
-          price_monthly: number | null;
-          price_yearly: number | null;
+          price_monthly: number | null; // numeric
+          price_yearly: number | null; // numeric
+          max_queries_per_month: number | null;
+          extra_config: Json | null; // jsonb
         };
         Insert: {
           id?: string;
-          appId?: string | null;
+          app_id?: string | null;
           name: string;
           code?: string | null;
           price_monthly?: number | null;
           price_yearly?: number | null;
+          max_queries_per_month?: number | null;
+          extra_config?: Json | null;
         };
         Update: Partial<Database["public"]["Tables"]["plans"]["Insert"]>;
         Relationships: [];
       };
 
       // ======================
-      // SUBSCRIPTIONS
+      // SUBSCRIPTIONS (según tu schema real)
       // ======================
       subscriptions: {
         Row: {
           id: string;
-          customerId: string;
-          appId: string;
-          planId: string;
+          customer_id: string;
+          app_id: string;
+          plan_id: string;
+          billing_frequency: string;
+          start_date: string; // date
+          end_date: string | null; // date
+          next_billing_date: string | null; // date
           status: string;
-          startDate: string | null;
-          endDate: string | null;
+          provider: string | null;
+          provider_checkout_id: string | null;
+          provider_subscription_id: string | null;
+          replaces_subscription_id: string | null;
+          stripe_subscription_id: string | null;
+          stripe_price_id: string | null;
+          stripe_checkout_session_id: string | null;
+          created_at: string;
+          updated_at: string;
         };
         Insert: {
           id?: string;
-          customerId: string;
-          appId: string;
-          planId: string;
+          customer_id: string;
+          app_id: string;
+          plan_id: string;
+          billing_frequency: string;
+          start_date?: string;
+          end_date?: string | null;
+          next_billing_date?: string | null;
           status: string;
-          startDate?: string | null;
-          endDate?: string | null;
+          provider?: string | null;
+          provider_checkout_id?: string | null;
+          provider_subscription_id?: string | null;
+          replaces_subscription_id?: string | null;
+          stripe_subscription_id?: string | null;
+          stripe_price_id?: string | null;
+          stripe_checkout_session_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["subscriptions"]["Insert"]>;
         Relationships: [];
       };
     };
 
-    Views: {};
+    Views: {
+      // si luego quieres tipar las vistas, las añadimos aquí
+      [key: string]: never;
+    };
+
     Functions: {};
     Enums: {};
     CompositeTypes: {};

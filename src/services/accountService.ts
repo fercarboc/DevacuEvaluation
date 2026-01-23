@@ -10,33 +10,39 @@ export interface DbCustomer {
   name: string;
   nif: string | null;
   address: string | null;
-  postalCode: string | null;
+  postal_code: string | null;
   city: string | null;
   province: string | null;
   country: string | null;
   phone: string | null;
   email: string | null;
-  sectorId: string | null;
-  serviceUsername: string | null;
-  servicePassword: string | null;
+  sector_id: string | null;
+  service_username: string | null;
+  service_password: string | null;
+  api_token: string | null;
+  is_active: boolean | null;
+  iban: string | null;
+  swift: string | null;
+  bank_name: string | null;
+  bank_address: string | null;
 }
 
 export interface DbSubscription {
   id: string;
-  customerId: string;
-  appId: string;
-  planId: string | null;
-  billingFrequency: string; // 'MONTHLY', 'ANNUAL', etc.
-  startDate: string;        // date
-  endDate: string | null;   // date
-  nextBillingDate: string | null; // date
+  customer_id: string;
+  app_id: string;
+  plan_id: string | null;
+  billing_frequency: string; // 'MONTHLY', 'ANNUAL', etc.
+  start_date: string;        // date
+  end_date: string | null;   // date
+  next_billing_date: string | null; // date
   status: string;           // 'ACTIVE', 'CANCELLED', etc.
   created_at: string;       // timestamp
 }
 
 export interface DbPlan {
   id: string;
-  appId: string;
+  app_id: string;
   name: string;
   code: string | null;
   price_monthly: number | null;
@@ -49,22 +55,22 @@ export interface DbReceipt {
   id: string;
   date: string;             // date
   amount: number;           // numeric
-  customerId: string;
-  customerName: string | null;
+  customer_id: string;
+  customer_name: string | null;
   concept: string | null;
-  paymentMethod: string | null;
+  payment_method: string | null;
   status: string;           // 'PAID', 'PENDING', etc.
-  billingPeriod: string | null;
-  invoiceNumber: string | null;
-  previousInvoiceHash: string | null;
-  currentHash: string | null;
+  billing_period: string | null;
+  invoice_number: string | null;
+  previous_invoice_hash: string | null;
+  current_hash: string | null;
   signature: string | null;
-  certificateUsed: string | null;
-  signatureMethod: string | null;
-  isReturned: boolean | null;
-  returnReason: string | null;
-  returnDate: string | null;
-  subscriptionId: string | null;
+  certificate_used: string | null;
+  signature_method: string | null;
+  is_returned: boolean | null;
+  return_reason: string | null;
+  return_date: string | null;
+  subscription_id: string | null;
   created_at: string;
 }
 
@@ -99,10 +105,10 @@ export async function getMyEvalAccount(
   const { data: subscription, error: subError } = await supabase
     .from('subscriptions')
     .select('*')
-    .eq('customerId', customerId)
-    .eq('appId', APP_CODE)
+    .eq('customer_id', customerId)
+    .eq('app_id', APP_CODE)
     .eq('status', 'ACTIVE')
-    .order('startDate', { ascending: false })
+    .order('start_date', { ascending: false })
     .limit(1)
     .maybeSingle();
 
@@ -113,11 +119,11 @@ export async function getMyEvalAccount(
   let plan: DbPlan | null = null;
 
   // 3) Plan (si la suscripción tiene planId)
-  if (subscription?.planId) {
+  if (subscription?.plan_id) {
     const { data: planRow, error: planError } = await supabase
       .from('plans')
       .select('*')
-      .eq('id', subscription.planId)
+      .eq('id', subscription.plan_id)
       .maybeSingle();
 
     if (planError) {
@@ -132,7 +138,7 @@ export async function getMyEvalAccount(
   const { data: receipts, error: receiptsError } = await supabase
     .from('receipts')
     .select('*')
-    .eq('customerId', customerId)
+    .eq('customer_id', customerId)
     .order('date', { ascending: false })
     .limit(10);
 

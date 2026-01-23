@@ -1,16 +1,20 @@
-import { supabase } from '@/services/supabaseClient';
-import { User, PlanType } from '@/types/types';
+import { supabase } from "@/services/supabaseClient";
+import { User, PlanType } from "@/types/types";
 
 function mapPlanCodeToPlanType(planCode: string | null): PlanType {
   if (!planCode) return PlanType.INACTIVE;
 
   const code = planCode.toUpperCase();
 
-  if (code === 'BASIC') return PlanType.BASIC;
-  if (code === 'MEDIUM') return PlanType.PROFESSIONAL;
-  if (code === 'PREMIUM') return PlanType.ENTERPRISE;
+  if (code === "BASIC") return PlanType.BASIC;
+  if (code === "MEDIUM") return PlanType.PROFESSIONAL;
+  if (code === "PREMIUM") return PlanType.ENTERPRISE;
 
   return PlanType.INACTIVE;
+}
+
+function norm(s: string) {
+  return (s ?? "").trim();
 }
 
 /**
@@ -18,75 +22,88 @@ function mapPlanCodeToPlanType(planCode: string | null): PlanType {
  *  - Busca cliente en `customers` por serviceUsername + servicePassword
  *  - Comprueba isActive
  *  - Comprueba suscripción activa en `subscriptions` para appId = appCode
- *  - Lee el plan en `plans` y devuelve un `User` para DebacuEvaluation360
+ *  - Lee el plan en `plans` y devuelve un `User`
  */
 export async function validateUserAccess(
   username: string,
   password: string,
   appCode: string
 ): Promise<User> {
-  // 1️⃣ Buscar cliente en customers
+  const u = norm(username);
+  const p = norm(password);
+  const app = norm(appCode);
+
+  if (!u || !p) throw new Error("Usuario o contraseña incorrectos");
+  if (!app) throw new Error("Aplicación inválida");
+
+  // 1) Customer
   const { data: customer, error: customerError } = await supabase
-    .from('customers')
-    .select('*')
-    .eq('serviceUsername', username)
-    .eq('servicePassword', password)
+    .from("customers")
+    .select("*")
+    .eq("service_username", u)
+    .eq("service_password", p)
     .maybeSingle();
 
   if (customerError || !customer) {
-    console.error('Error customers:', customerError);
-    throw new Error('Usuario o contraseña incorrectos');
+    // No logs de password. Si quieres log, loguea solo el message.
+    console.error("customers:", customerError?.message);
+    throw new Error("Usuario o contraseña incorrectos");
   }
 
-  if (customer.isActive === false) {
-    throw new Error('Cliente inactivo. Contacta con administración.');
+  if (customer.is_active === false) {
+    throw new Error("Cliente inactivo. Contacta con administración.");
   }
 
   const customerId: string = customer.id;
-  const customerName: string = customer.name || 'Cliente';
-  const customerEmail: string = customer.email || '';
-  const planStartDate: string = customer.startDate || '';
+  const customerName: string = customer.name || "Cliente";
+  const customerEmail: string = customer.email || "";
+  const planStartDate: string = customer.start_date || "";
 
-  // 2️⃣ Suscripción activa a esta app
-  const { data: subs, error: subsError } = await supabase
-    .from('subscriptions')
-    .select('*')
-    .eq('customerId', customerId)
-    .eq('appId', appCode)   // aquí DEBACU_EVAL
-    .eq('status', 'ACTIVE')
-    .limit(1);
+// 2) Subscription ACTIVE para la app
+const { data: subscription, error: subsError } = await supabase
+  .from("subscriptions")
+  .select("*")
+  .eq("customer_id", customerId)
+  .eq("app_id", app)
+  .eq("status", "ACTIVE")
+  // si tienes start_date, ordena para coger la más reciente
+  .order("start_date", { ascending: false })
+  .limit(1)
+  .maybeSingle();
+
 
   if (subsError) {
-    console.error('Error subscriptions:', subsError);
-    throw new Error('Error comprobando suscripción.');
+    console.error("subscriptions:", subsError.message);
+    throw new Error("Error comprobando suscripción.");
   }
 
-  if (!subs || subs.length === 0) {
-    throw new Error('Su plan no incluye acceso a esta aplicación.');
+  if (!subscription) {
+    throw new Error("Su plan no incluye acceso a esta aplicación.");
   }
 
-  const subscription = subs[0];
-
-  // 3️⃣ Datos del plan en `plans`
+  // 3) Plan
   let planType: PlanType = PlanType.INACTIVE;
   let monthlyFee = 0;
 
-  if (subscription.planId) {
+  if (subscription.plan_id) {
     const { data: plan, error: planError } = await supabase
-      .from('plans')
-      .select('*')
-      .eq('id', subscription.planId)
+      .from("plans")
+      .select("*")
+      .eq("id", subscription.plan_id)
       .maybeSingle();
 
-    if (!planError && plan) {
-      planType = mapPlanCodeToPlanType(plan.code);
+    if (planError) {
+      console.error("plans:", planError.message);
+      // No bloqueamos login por fallo de plan; dejamos INACTIVE.
+    } else if (plan) {
+      planType = mapPlanCodeToPlanType(plan.code ?? null);
       monthlyFee = plan.price_monthly || 0;
     }
   }
 
   const user: User = {
-    id: customerId,                              // customerId
-    username: customer.serviceUsername || username,
+    id: customerId,
+    username: customer.service_username || u,
     fullName: customerName,
     email: customerEmail,
     plan: planType,
