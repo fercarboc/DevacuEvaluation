@@ -9,6 +9,7 @@ import {
   type AcceptanceProof,
   type PropertyType,
 } from "@/services/debacu_eval_accessRequests.service";
+ 
 
 const cx = (...cls: Array<string | false | undefined | null>) =>
   cls.filter(Boolean).join(" ");
@@ -212,6 +213,7 @@ export default function SolicitarAccesoPage() {
 
 
   return (
+     
     <div className="h-[100vh] overflow-hidden bg-slate-50">
       {/* zona con scroll */}
       <div className="h-full overflow-y-auto">
@@ -525,5 +527,6 @@ export default function SolicitarAccesoPage() {
         </div>
       )}
     </div>
+    
   );
 }

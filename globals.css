@@ -1,23 +1,21 @@
- 
-@import "tailwindcss";
-
 /* =========================
-   Scroll visible SOLO en LegalModal
+   Scroll visible SOLO en LegalModal (panel derecho)
    ========================= */
 
 .legal-scroll {
   scrollbar-width: auto !important;     /* Firefox */
-  -ms-overflow-style: auto !important;  /* Edge antiguo */
+  -ms-overflow-style: auto !important;  /* IE/Edge legacy */
 }
 
-/* Chrome, Edge, Safari */
+/* WebKit (Chrome, Edge, Safari) */
 .legal-scroll::-webkit-scrollbar {
   width: 10px !important;
+  height: 10px !important;
   display: block !important;
 }
 
 .legal-scroll::-webkit-scrollbar-thumb {
-  background: rgba(15, 23, 42, 0.25) !important;
+  background: rgba(15, 23,  compiler , 0.25) !important; /* slate-ish */
   border-radius: 999px !important;
 }
 

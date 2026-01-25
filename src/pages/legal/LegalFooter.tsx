@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import LegalDialog from "./LegalDialog";
+import LegalModal from "./LegalModal";   // ✅ el nuevo
 import ContactDialog from "./ContactDialog";
 
 type TabKey =
@@ -13,8 +13,6 @@ type TabKey =
 
 export default function LegalFooter() {
   const [openLegal, setOpenLegal] = useState(false);
-  const [defaultTab, setDefaultTab] = useState<TabKey>("aviso");
-
   const [openContact, setOpenContact] = useState(false);
 
   const items = useMemo(
@@ -31,8 +29,8 @@ export default function LegalFooter() {
     []
   );
 
-  const openTab = (tab: TabKey) => {
-    setDefaultTab(tab);
+  // ✅ ahora solo abre el centro legal (sin tab)
+  const openTab = (_tab: TabKey) => {
     setOpenLegal(true);
   };
 
@@ -41,7 +39,6 @@ export default function LegalFooter() {
       <footer className="mt-10 border-t border-white/10 bg-[#0b2d4d]">
         <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
           <div className="grid gap-8 sm:grid-cols-3">
-            {/* Col 1: Marca */}
             <div>
               <div className="text-sm font-semibold text-white">
                 Debacu Evaluation360
@@ -55,7 +52,6 @@ export default function LegalFooter() {
               </div>
             </div>
 
-            {/* Col 2: Contacto */}
             <div>
               <div className="text-xs font-semibold uppercase tracking-wide text-white/80">
                 Contacto
@@ -77,7 +73,6 @@ export default function LegalFooter() {
               </div>
             </div>
 
-            {/* Col 3: Legal (compacto) */}
             <div>
               <div className="text-xs font-semibold uppercase tracking-wide text-white/80">
                 Legal
@@ -108,15 +103,10 @@ export default function LegalFooter() {
         </div>
       </footer>
 
-      {/* Modal de contacto */}
       <ContactDialog open={openContact} onClose={() => setOpenContact(false)} />
 
-      {/* Centro legal */}
-      <LegalDialog
-        open={openLegal}
-        onClose={() => setOpenLegal(false)}
-        defaultTab={defaultTab}
-      />
+      {/* ✅ Centro legal NUEVO */}
+      <LegalModal open={openLegal} onClose={() => setOpenLegal(false)} />
     </>
   );
 }
