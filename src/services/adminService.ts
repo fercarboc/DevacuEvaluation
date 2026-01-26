@@ -61,17 +61,80 @@ export async function list_invoices() {
   return data ?? [];
 }
 
-export async function list_audit_events() {
-  const { data, error } = await supabase
-    .from("subscription_events")
-    .select("*")
-    .eq("app_id", APP_CODE)
-    .order("created_at", { ascending: false })
-    .limit(50);
+
+
+export async function admin_list_customers(q: string) {
+  const sb = supabase as any;
+  const { data, error } = await sb.rpc("admin_list_customers", {
+    p_q: q || null,
+    p_limit: 20,
+  });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function admin_list_audit_events(params?: {
+  source?: "ALL" | "PRODUCT" | "SYSTEM";
+  customer?: string | null; // id o email
+  type?: string | null;
+  from?: string | null;
+  to?: string | null;
+  limit?: number;
+  offset?: number;
+}) {
+  const sb = supabase as any;
+  const { data, error } = await sb.rpc("admin_list_audit_events", {
+    p_source: params?.source ?? "ALL",
+    p_customer: params?.customer ?? null,
+    p_type: params?.type ?? null,
+    p_from: params?.from ?? null,
+    p_to: params?.to ?? null,
+    p_limit: params?.limit ?? 200,
+    p_offset: params?.offset ?? 0,
+  });
+  if (error) throw error;
+  return data ?? [];
+}
+
+
+
+
+ 
+export async function list_audit_types(source: "ALL"|"PRODUCT"|"SYSTEM") {
+  const sb = supabase as any;
+  const { data, error } = await sb.rpc("admin_list_audit_types", { p_source: source });
+  if (error) throw error;
+  return (data ?? []).map((x: any) => x.type as string);
+}
+
+ 
+
+export async function list_audit_events(params?: {
+  source?: "ALL" | "PRODUCT" | "SYSTEM";
+  customer?: string | null;
+  type?: string | null;
+  from?: string | null; // ISO
+  to?: string | null;   // ISO
+  limit?: number;
+  offset?: number;
+}) {
+  const sb = supabase as any; // ✅ evita el "never" de TS
+
+  const { data, error } = await sb.rpc("admin_list_audit_events", {
+    p_source: params?.source ?? "ALL",
+    p_customer: params?.customer ?? null,
+    p_type: params?.type ?? null,
+    p_from: params?.from ?? null,
+    p_to: params?.to ?? null,
+    p_limit: params?.limit ?? 200,
+    p_offset: params?.offset ?? 0,
+  });
 
   if (error) throw error;
   return data ?? [];
 }
+
+
 
 export async function list_abuse_alerts() {
   return [
@@ -95,4 +158,104 @@ export async function update_system_settings(payload: {
 }) {
   console.debug("TODO: persistir settings en backend", payload);
   return payload;
+}
+
+export type AuditExportFormat = "CSV" | "PDF" | "XML";
+
+export async function export_audit_events(payload: {
+  format: AuditExportFormat;
+  source: "ALL" | "PRODUCT" | "SYSTEM";
+  customer: string | null;
+  type: string | null;
+  from: string | null; // ISO
+  to: string | null;   // ISO
+
+  delivered_to_name: string;
+  delivered_to_org?: string | null;
+  delivered_to_reason: string;
+  delivered_to_reference?: string | null;
+}) {
+  const { data, error } = await supabase.functions.invoke(
+    "debacu_eval_audit_export",
+    { body: payload }
+  );
+  if (error) throw error;
+  return data;
+}
+
+
+
+export async function list_audit_exports(params?: {
+  q?: string | null;
+  customer?: string | null;
+  from?: string | null;   // yyyy-mm-dd
+  to?: string | null;     // yyyy-mm-dd
+  format?: "CSV" | "PDF" | "XML" | null;
+  limit?: number;
+  offset?: number;
+}) {
+  const sb = supabase as any;
+  const { data, error } = await sb.rpc("admin_list_audit_exports", {
+    p_q: params?.q ?? null,
+    p_customer: params?.customer ?? null,
+    p_from: params?.from ?? null,
+    p_to: params?.to ?? null,
+    p_format: params?.format ?? null,
+    p_limit: params?.limit ?? 200,
+    p_offset: params?.offset ?? 0,
+  });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function sign_audit_export_url(exportId: string, expiresSeconds = 600) {
+  const { data, error } = await supabase.functions.invoke("debacu_eval_audit_export_sign", {
+    body: { export_id: exportId, expires_seconds: expiresSeconds },
+  });
+  if (error) throw error;
+  return data as { signed_url: string; expires_seconds: number };
+}
+
+// ✅ V2: listado con contador de descargas
+export async function list_audit_exports_v2(params?: {
+  q?: string | null;
+  customer?: string | null;
+  from?: string | null;   // yyyy-mm-dd
+  to?: string | null;     // yyyy-mm-dd
+  format?: "CSV" | "PDF" | "XML" | null;
+  limit?: number;
+  offset?: number;
+}) {
+  const sb = supabase as any;
+
+  const { data, error } = await sb.rpc("admin_list_audit_exports_v2", {
+    p_q: params?.q ?? null,
+    p_customer: params?.customer ?? null,
+    p_from: params?.from ?? null,
+    p_to: params?.to ?? null,
+    p_format: params?.format ?? null,
+    p_limit: params?.limit ?? 200,
+    p_offset: params?.offset ?? 0,
+  });
+
+  if (error) throw error;
+  return data ?? [];
+}
+
+// ✅ Detalle: descargas de un export (para el drawer)
+export async function list_audit_export_downloads(
+  exportId: string,
+  limit = 200,
+  offset = 0
+) {
+  const sb = supabase as any;
+
+  const { data, error } = await sb.rpc("admin_list_audit_export_downloads", {
+    p_export_id: exportId,
+    p_limit: limit,
+    p_offset: offset,
+  });
+
+  if (error) throw error;
+  return data ?? [];
 }

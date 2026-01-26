@@ -504,23 +504,34 @@ export const RatingForm: React.FC<RatingFormProps> = ({ currentCustomerId, curre
 
         {/* Side info */}
         <div>
-          <div className="bg-slate-900 text-white border border-slate-800 rounded-2xl p-5 h-full">
-            <div className="text-sm font-semibold mb-2">Buenas prácticas</div>
-            <ul className="text-xs text-slate-200 space-y-2">
-              <li>• Registra hechos verificables, no opiniones.</li>
-              <li>• Evita datos sensibles en observaciones.</li>
-              <li>• Usa motivos + severidad para estandarizar.</li>
-              <li>• Si es grave, marca evidencia y conserva soporte interno.</li>
-            </ul>
+  <div className="bg-slate-900 text-white border border-slate-800 rounded-2xl p-5 h-full">
+    <div className="text-sm font-semibold mb-2">Buenas prácticas de registro</div>
 
-            <div className="mt-5 rounded-2xl bg-white/10 p-4 text-xs text-slate-200">
-              <div className="font-semibold text-white mb-1">Qué cambia aquí</div>
-              <div>
-                Se elimina el “comentario libre” como elemento principal. Esto baja riesgo legal y sube la calidad del dato.
-              </div>
-            </div>
-          </div>
-        </div>
+    <ul className="text-xs text-slate-200 space-y-2">
+      <li>• Registra únicamente hechos objetivos y verificables.</li>
+      <li>• Evita opiniones personales, juicios de valor o suposiciones.</li>
+      <li>• No incluyas datos sensibles ni información innecesaria.</li>
+      <li>• Utiliza motivos y severidad para mantener criterios homogéneos.</li>
+      <li>• Si la incidencia es grave, marca evidencia y conserva soporte interno.</li>
+    </ul>
+
+    <div className="mt-5 rounded-2xl bg-white/10 p-4 text-xs text-slate-200">
+      <div className="font-semibold text-white mb-1">Observaciones internas</div>
+       <br />
+      <div>
+        El campo de observaciones es de uso interno del establecimiento.
+        <br />
+         <br />
+        <strong className="text-white">Nunca será visible para otros hoteles ni terceros.</strong>
+      </div>
+      <div className="mt-3 text-[11px] text-slate-400">
+        El uso indebido del registro puede ser objeto de revisión o auditoría interna.
+      </div>
+
+    </div>
+  </div>
+</div>
+
       </div>
     </div>
   );

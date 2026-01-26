@@ -63,6 +63,38 @@ function statusBadge(status?: string | null) {
   return <span className={`${base} bg-slate-100 text-slate-700`}>{s}</span>;
 }
 
+
+function prettyEvent(eventType?: string | null, action?: string | null) {
+  const e = (eventType ?? "").toUpperCase();
+  const a = (action ?? "").toUpperCase();
+
+  // Tu caso principal
+  if (e === "CHECK_SIGNALS") return "Consulta";
+
+  // Por si en el futuro registras otras acciones
+  if (a === "INSERT" || a === "CREATE") return "Registro";
+  if (a === "UPDATE") return "Actualización";
+  if (a === "DELETE") return "Eliminación";
+
+  return "Actividad";
+}
+
+function prettyDetail(entity?: string | null) {
+  const en = (entity ?? "").toUpperCase();
+
+  // Tu caso principal
+  if (en === "EVALUATION_SEARCH") return "Consulta de registro";
+
+  // Otros ejemplos (por si los metes luego)
+  if (en === "EVALUATION_CREATE") return "Alta de registro";
+  if (en === "EVALUATION_UPDATE") return "Edición de registro";
+
+  return "—";
+}
+
+
+
+
 export default function DashboardHome() {
   const { user } = useEvalAuth();
   const customerId = user?.customerId ?? user?.id;
@@ -136,21 +168,24 @@ export default function DashboardHome() {
           setPlanCard(null);
         }
 
-        // -------------------------
-        // 2) Consultas del mes (QUERY)
-        // -------------------------
+      
         // Por si tu audit_log usa actor_user_id o actor_customer_id, cubrimos ambos con .or()
-        const { count: qCount, error: qErr } = await sb
-          .from("debacu_eval_audit_log")
-          .select("*", { count: "exact", head: true })
-          .or(`actor_user_id.eq.${customerId},actor_customer_id.eq.${customerId}`)
-          .eq("action", "QUERY")
-          .gte("created_at", monthStart);
+       // -------------------------
+     
+       // -------------------------
+          // 2) Consultas del mes (CHECK_SIGNALS)
+          // -------------------------
+          const { count: qCount, error: qErr } = await sb
+            .from("debacu_eval_audit_log")
+            .select("id", { count: "exact", head: true })
+            .eq("customer_id", customerId)
+            .eq("event_type", "CHECK_SIGNALS")
+            .gte("created_at", monthStart);
 
-        if (qErr) {
-          console.warn("dashboard query count:", qErr?.message);
-        }
-        setQueryCount(qCount ?? 0);
+          if (qErr) console.warn("dashboard query count:", qErr?.message);
+          setQueryCount(qCount ?? 0);
+
+
 
         // -------------------------
         // 3) Registros creados este mes (evaluations)
@@ -166,19 +201,22 @@ export default function DashboardHome() {
         }
         setCreatedThisMonth(createdCount ?? 0);
 
-        // -------------------------
+     
+        // Preferimos audit log si existe.
+       // -------------------------
         // 4) Actividad reciente
         // -------------------------
-        // Preferimos audit log si existe.
         const { data: audits, error: aErr } = await sb
           .from("debacu_eval_audit_log")
-          .select("id,created_at,action,entity,entity_id,meta")
-          .or(`actor_user_id.eq.${customerId},actor_customer_id.eq.${customerId}`)
+          .select("id,created_at,action,event_type,entity,entity_id,meta,search_value_masked,result_count")
+          .eq("customer_id", customerId)
           .order("created_at", { ascending: false })
           .limit(12);
 
+
+
         if (!aErr && audits && audits.length > 0) {
-          const rows: ActivityRow[] = audits.map((row: any) => {
+        const rows: ActivityRow[] = audits.map((row: any) => {
             let parsedMeta: any = undefined;
 
             if (row.meta) {
@@ -189,38 +227,27 @@ export default function DashboardHome() {
               }
             }
 
-            const contactEmail =
-              parsedMeta?.client_email ??
-              parsedMeta?.clientEmail ??
-              parsedMeta?.email ??
-              null;
+            // ✅ Contacto consultado (enmascarado) desde audit_log
+            const maskedContact =
+              row.search_value_masked ??
+              parsedMeta?.search_value_masked ??
+              undefined;
 
-            const contactPhone =
-              parsedMeta?.client_phone ??
-              parsedMeta?.clientPhone ??
-              parsedMeta?.phone ??
-              null;
+            // ✅ Media agregada de esa consulta (si existe)
+            const rating =
+              parsedMeta?.avg_stars != null ? Number(parsedMeta.avg_stars) : undefined;
 
-            const maskedContact = contactEmail
-              ? maskEmail(String(contactEmail))
-              : contactPhone
-                ? maskPhone(String(contactPhone))
-                : undefined;
-
-            const rating = parsedMeta?.rating ?? parsedMeta?.score;
-
-            // label más humano
+            const actionLabel = row.event_type ? String(row.event_type).toUpperCase() : "EVENTO";
             const entityLabel = row.entity ? String(row.entity).toUpperCase() : "EVENTO";
-            const actionLabel = row.action ? String(row.action).toUpperCase() : "EVENTO";
 
             return {
               id: row.id,
               date: new Date(row.created_at).toLocaleString(),
-              type: actionLabel,
-              label: entityLabel,
-              meta: row.entity_id ? String(row.entity_id) : undefined,
-              rating: rating != null ? Number(rating) : undefined,
-              contact: maskedContact,
+              type: prettyEvent(row.event_type, row.action),     // "Consulta"
+              label: prettyDetail(row.entity),                   // "Consulta de registro"
+              meta: undefined,               // si quieres, aquí puedes poner bucket/riesgo
+              rating: Number.isFinite(rating) ? rating : undefined,
+              contact: maskedContact || "-",
             };
           });
 
@@ -367,7 +394,7 @@ export default function DashboardHome() {
               <thead>
                 <tr>
                   <Th>Fecha</Th>
-                  <Th>Evento</Th>
+                  <Th>Actividad</Th>
                   <Th>Detalle</Th>
                   <Th>Contacto</Th>
                   <Th>Valoración</Th>

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { fetch_dashboard_metrics, list_audit_events } from "@/services/adminService";
-import { DataTable, Th, Tr, Td } from "@/components/ui/DataTable";
+import { fetch_dashboard_metrics } from "@/services/adminService";
+import { Link } from "react-router-dom";
 
 export default function AdminDashboardPage() {
   const [metrics, setMetrics] = useState({
@@ -9,14 +9,11 @@ export default function AdminDashboardPage() {
     consultas_hoy: 0,
     alertas_activas: 0,
   });
-  const [activities, setActivities] = useState<any[]>([]);
 
   useEffect(() => {
     void (async () => {
       const data = await fetch_dashboard_metrics();
       setMetrics(data);
-      const audit = await list_audit_events();
-      setActivities(audit.slice(0, 10));
     })();
   }, []);
 
@@ -33,44 +30,30 @@ export default function AdminDashboardPage() {
             key={card.label}
             className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm text-slate-900 hover:shadow-lg transition-shadow"
           >
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{card.label}</p>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+              {card.label}
+            </p>
             <p className="mt-1 text-3xl font-bold">{card.value}</p>
           </div>
         ))}
       </div>
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex items-center justify-between">
+      {/* CTA a Auditoría */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
           <div>
-            <h2 className="text-sm font-semibold text-slate-900">Actividad reciente</h2>
-            <p className="text-[11px] text-slate-500">
-              Eventos recientes de auditoría. Mensajes compactos para facilitar la lectura.
+            <h2 className="text-sm font-semibold text-slate-900">Auditoría</h2>
+            <p className="mt-1 text-[12px] text-slate-500">
+              Eventos técnicos y trazabilidad (Stripe, cambios de suscripción, acciones del sistema).
             </p>
           </div>
-        </div>
-        <div className="mt-4 overflow-auto max-h-[360px] text-[12px] leading-relaxed text-slate-600">
-          <DataTable>
-            <thead>
-              <tr className="text-left">
-                <Th className="text-[11px] uppercase tracking-wider text-slate-500">Fecha</Th>
-                <Th className="text-[11px] uppercase tracking-wider text-slate-500">Tipo</Th>
-                <Th className="text-[11px] uppercase tracking-wider text-slate-500">Cliente</Th>
-                <Th className="text-[11px] uppercase tracking-wider text-slate-500">Detalle</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {activities.map((event) => (
-                <Tr key={event.id}>
-                  <Td className="text-xs text-slate-500">{new Date(event.created_at).toLocaleString()}</Td>
-                  <Td className="text-sm text-slate-600">{event.type}</Td>
-                  <Td className="text-sm text-slate-700">{event.customer_id}</Td>
-                  <Td className="text-xs text-slate-500">
-                    {event.payload ? JSON.stringify(event.payload) : "-"}
-                  </Td>
-                </Tr>
-              ))}
-            </tbody>
-          </DataTable>
+
+          <Link
+            to="/app/admin/auditoria"
+            className="inline-flex items-center rounded-xl border border-slate-200 bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+          >
+            Ver auditoría
+          </Link>
         </div>
       </section>
     </div>

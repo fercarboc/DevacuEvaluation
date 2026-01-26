@@ -16,6 +16,8 @@ import AdminBillingPage from "@/pages/admin/AdminBillingPage";
 import AdminAbusePage from "@/pages/admin/AdminAbusePage";
 import AdminStatsPage from "@/pages/admin/AdminStatsPage";
 import AdminAuditPage from "@/pages/admin/AdminAuditPage";
+import AdminExportsPage from "@/pages/admin/AdminExportsPage";
+
 import AdminSettingsPage from "@/pages/admin/AdminSettingsPage";
 import { AdminSolicitudesAccesoPage } from "@/pages/admin/AdminSolicitudesAccesoPage";
 import { RequireAuth } from "@/components/auth/RequiereAuth";
@@ -66,6 +68,8 @@ export function AppRoutes() {
         <Route path="abusos" element={<AdminAbusePage />} />
         <Route path="estadisticas" element={<AdminStatsPage />} />
         <Route path="auditoria" element={<AdminAuditPage />} />
+        <Route path="exportaciones" element={<AdminExportsPage />} />
+
         <Route path="configuracion" element={<AdminSettingsPage />} />
         <Route path="*" element={<Navigate to="/app/admin/dashboard" replace />} />
       </Route>
