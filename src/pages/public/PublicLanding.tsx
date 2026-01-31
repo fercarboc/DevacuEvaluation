@@ -1,5 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
+import  { useState } from "react";
+
 import {
   ShieldCheck,
   ClipboardList,
@@ -310,7 +312,161 @@ const TargetCard = ({
 );
 
 const PublicLanding: React.FC = () => {
+
   const navigate = useNavigate();
+
+  type ModalKey = "FREE" | "BASIC" | "MEDIUM" | "PREMIUM" | "API" | "INTEGRACION";
+
+const [openModal, setOpenModal] = useState<ModalKey | null>(null);
+
+const modalContent: Record<
+  ModalKey,
+  { title: string; subtitle?: string; sections: Array<{ heading: string; bullets: string[] }> }
+> = {
+  FREE: {
+    title: "Plan FREE (30 días)",
+    subtitle: "Alta controlada para validar operativa. No es contratación automática.",
+    sections: [
+      {
+        heading: "Incluye",
+        bullets: [
+          "Acceso 30 días desde el alta",
+          "Consultas limitadas según política",
+          "Registro de incidencias estructurado",
+          "Auditoría básica (actividad y trazabilidad esencial)",
+        ],
+      },
+      {
+        heading: "No incluye",
+        bullets: [
+          "Exportaciones avanzadas (PDF/CSV) si no están en tu política",
+          "Soporte prioritario",
+          "API",
+          "Integración PMS",
+        ],
+      },
+    ],
+  },
+
+  BASIC: {
+    title: "Plan BÁSICO — 55 €/mes",
+    subtitle: "Para hoteles independientes o equipos pequeños.",
+    sections: [
+      {
+        heading: "Incluye",
+        bullets: [
+          "1 usuario incluido (ampliable cuando actives multi-usuario)",
+          "150 consultas/mes",
+          "Registro estructurado + auditoría",
+          "Soporte estándar",
+          "Facturación Stripe + facturas descargables",
+        ],
+      },
+      {
+        heading: "No incluye",
+        bullets: ["API", "Integración PMS", "SLA/soporte avanzado"],
+      },
+    ],
+  },
+
+  MEDIUM: {
+    title: "Plan MEDIO — 95 €/mes",
+    subtitle: "Para equipos operativos con más volumen.",
+    sections: [
+      {
+        heading: "Incluye (todo lo del Básico) +",
+        bullets: [
+          "2 usuarios incluidos (ampliable cuando actives multi-usuario)",
+          "500 consultas/mes",
+          "Exportación (PDF/CSV) de auditoría e informes (según módulo)",
+          "Soporte prioritario",
+        ],
+      },
+      {
+        heading: "No incluye",
+        bullets: ["API", "Integración PMS"],
+      },
+    ],
+  },
+
+  PREMIUM: {
+    title: "Plan PREMIUM — 145 €/mes",
+    subtitle: "SaaS completo para operación + auditoría avanzada (sin API ni integración).",
+    sections: [
+      {
+        heading: "Incluye (todo lo del Medio) +",
+        bullets: [
+          "4 usuarios incluidos (ampliable cuando actives multi-usuario)",
+          "2.000 consultas/mes",
+          "Auditoría y reporting extendido",
+          "Exportaciones completas (PDF/CSV) según módulos",
+          "Prioridad máxima de soporte (sin SLA contractual por defecto)",
+        ],
+      },
+      {
+        heading: "Muy importante",
+        bullets: [
+          "La API y la Integración PMS son servicios aparte (Enterprise).",
+          "Este precio es por hotel (si son 5 hoteles, son 5 licencias).",
+        ],
+      },
+    ],
+  },
+
+  API: {
+    title: "API Debacu (servicio adicional)",
+    subtitle: "Acceso técnico para consumir endpoints. No incluye desarrollo.",
+    sections: [
+      {
+        heading: "Precio orientativo",
+        bullets: ["Desde 95 €/mes por hotel (según uso y límites)."],
+      },
+      {
+        heading: "Incluye",
+        bullets: [
+          "Token/API key (según modelo)",
+          "Rate limit y límites definidos por contrato",
+          "Registro/auditoría de llamadas (si lo activas)",
+        ],
+      },
+      {
+        heading: "No incluye",
+        bullets: [
+          "Desarrollo a medida",
+          "Conectores PMS listos",
+          "Onboarding técnico completo (se cotiza aparte si hace falta)",
+        ],
+      },
+    ],
+  },
+
+  INTEGRACION: {
+    title: "Integración PMS (proyecto)",
+    subtitle: "Proyecto cerrado por hotel y por PMS.",
+    sections: [
+      {
+        heading: "Precio orientativo",
+        bullets: ["Desde 1.500 € a 4.500 € por hotel (según PMS y alcance)."],
+      },
+      {
+        heading: "Incluye",
+        bullets: [
+          "Análisis de PMS + mapping de datos",
+          "Desarrollo del conector",
+          "Pruebas + puesta en producción",
+          "Documentación mínima y handover",
+        ],
+      },
+      {
+        heading: "Condición clave",
+        bullets: [
+          "Cadena de 5 hoteles = 5 integraciones (salvo PMS centralizado con alcance claramente definido).",
+        ],
+      },
+    ],
+  },
+};
+
 
   const goLogin = () => navigate("/login");
   const goRequestAccess = () => navigate("/solicitar-acceso");
@@ -635,82 +791,191 @@ const PublicLanding: React.FC = () => {
             inverted
             eyebrow="Planes"
             title="Planes y acceso"
-            subtitle="Alta controlada. El plan FREE incluye 90 días para validar la operativa. Después, puedes continuar con un plan de pago."
+            subtitle="Alta controlada. El plan FREE incluye 30 días para validar la operativa. Después, puedes continuar con un plan de pago."
           />
 
           <div className="mt-8 grid gap-4 lg:grid-cols-4">
-            <PlanCard
-              tone="free"
-              title="FREE (90 días)"
-              price="0 €"
-              subtitle="Acceso inicial para validar operativa."
-              bullets={[
-                "90 días incluidos desde el alta",
-                "Consultas limitadas según política",
-                "Registro de incidencias estructurado",
-                "Auditoría básica",
-              ]}
-              highlight
-              badge="Inicio"
-              ctaLabel="Solicitar acceso"
-              onCta={goRequestAccess}
-            />
+          <PlanCard
+  tone="free"
+  title="FREE (30 días)"
+  price="0 €"
+  subtitle="Acceso inicial para validar operativa."
+  bullets={[
+    "30 días incluidos desde el alta",
+    "Consultas limitadas según política",
+    "Registro estructurado",
+    "Auditoría básica",
+  ]}
+  highlight
+  badge="Inicio"
+  ctaLabel="Solicitar acceso"
+  onCta={goRequestAccess}
+/>
 
-            <PlanCard
-              tone="basic"
-              title="Básico"
-              price="29,90 € / mes"
-              subtitle="Para equipos pequeños."
-              bullets={[
-                "Límite superior de consultas",
-                "Histórico y auditoría",
-                "Soporte estándar",
-                "Facturación Stripe",
-              ]}
-              ctaLabel="Ver condiciones"
-              onCta={() => scrollTo("legal")}
-            />
+<PlanCard
+  tone="basic"
+  title="Básico"
+  price="55 € / mes"
+  subtitle="Para equipos pequeños."
+  bullets={[
+    "150 consultas/mes",
+    "Auditoría y trazabilidad",
+    "Facturación Stripe",
+    "Soporte estándar",
+  ]}
+  ctaLabel="Ver condiciones"
+  onCta={() => setOpenModal("BASIC")}
+/>
 
-            <PlanCard
-              tone="medium"
-              title="Medio"
-              price="49,90 € / mes"
-              subtitle="Para equipos en crecimiento."
-              bullets={[
-                "Más consultas/mes",
-                "Soporte prioritario",
-                "Control de acceso avanzado",
-                "Facturas descargables",
-              ]}
-              ctaLabel="Ver condiciones"
-              onCta={() => scrollTo("legal")}
-            />
+<PlanCard
+  tone="medium"
+  title="Medio"
+  price="95 € / mes"
+  subtitle="Para más volumen operativo."
+  bullets={[
+    "500 consultas/mes",
+    "Auditoría y trazabilidad",
+    "Exportaciones (PDF/CSV) según módulo",
+    "Facturación Stripe",
+    "Soporte prioritario",
+    "Control de acceso avanzado",
+  ]}
+  ctaLabel="Ver condiciones"
+  onCta={() => setOpenModal("MEDIUM")}
+/>
 
-            <PlanCard
-              tone="premium"
-              title="Premium"
-              price="A medida"
-              subtitle="Grandes cadenas y grupos · Conexión API"
-              bullets={[
-                "Integración por API (PMS / CRM / BI)",
-                "Políticas avanzadas por organización",
-                "Auditoría y reporting extendido",
-                "Soporte y SLA según alcance",
-              ]}
-              ctaLabel="Contactar"
-              onCta={() => scrollTo("legal")}
-              badge="Enterprise"
-            />
+<PlanCard
+  tone="premium"
+  title="Premium"
+  price="145 € / mes"
+  subtitle="SaaS completo."
+  bullets={[
+    "2.000 consultas/mes",
+    "API Bajo demanda (servicio adicional)",
+    "Auditoría y reporting extendido",
+    "Exportaciones completas (PDF/CSV/XML)",
+    "4 usuarios incluidos",
+    "Facturación Stripe",
+  ]}
+  ctaLabel="Ver condiciones"
+  onCta={() => setOpenModal("PREMIUM")}
+  badge="Top"
+/>
+
           </div>
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+  <PlanCard
+    tone="medium"
+    title="API Debacu (add-on)"
+    price="Desde 95 € / mes"
+    subtitle="Acceso técnico para consumir endpoints (sin desarrollo)."
+    bullets={[
+      "Acceso API por hotel (token / key)",
+      "Límites técnicos y rate limit por contrato",
+      "Auditoría de llamadas (si se activa)",
+      "Soporte técnico básico",
+    ]}
+    ctaLabel="Ver condiciones"
+    onCta={() => setOpenModal("API")}
+    badge="Add-on"
+  />
 
-          <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-600 shadow-sm">
-            <span className="font-semibold text-slate-900">Nota:</span> acceso restringido y uso profesional.
-            Las condiciones definitivas y privacidad se detallan en el bloque legal.
+  <PlanCard
+    tone="premium"
+    title="Integración PMS (proyecto)"
+    price="Desde 1.500 €"
+    subtitle="Proyecto por hotel y por PMS. Alcance cerrado."
+    bullets={[
+      "Análisis + mapping de datos",
+      "Desarrollo del conector",
+      "Pruebas + puesta en producción",
+      "Documentación + handover",
+    ]}
+    ctaLabel="Ver condiciones"
+    onCta={() => setOpenModal("INTEGRACION")}
+    badge="Enterprise"
+  />
+</div>
+
+         <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-600 shadow-sm">
+          <span className="font-semibold text-slate-900">Nota:</span> acceso restringido y uso profesional.
+          <div className="mt-3 space-y-1 text-sm text-slate-700">
+            <div className="font-semibold">No se contrata en web pública.</div>
+            <div className="font-semibold">Solicitar acceso.</div>
+            <div className="text-slate-600">Validación manual / alta controlada.</div>
           </div>
+        </div>
+
         </section>
 
         <div id="legal" />
       </main>
+
+{openModal && (
+  <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+    <div
+      className="absolute inset-0 bg-black/60"
+      onClick={() => setOpenModal(null)}
+    />
+    <div className="relative w-full max-w-2xl rounded-2xl border border-white/10 bg-white shadow-xl">
+      <div className="flex items-start justify-between gap-4 border-b p-5">
+        <div>
+          <div className="text-lg font-semibold text-slate-900">
+            {modalContent[openModal].title}
+          </div>
+          {modalContent[openModal].subtitle && (
+            <div className="mt-1 text-sm text-slate-600">
+              {modalContent[openModal].subtitle}
+            </div>
+          )}
+        </div>
+        <button
+          onClick={() => setOpenModal(null)}
+          className="rounded-xl border px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+        >
+          Cerrar
+        </button>
+      </div>
+
+      <div className="p-5 space-y-5">
+        {modalContent[openModal].sections.map((sec) => (
+          <div key={sec.heading}>
+            <div className="text-sm font-semibold text-slate-900">{sec.heading}</div>
+            <ul className="mt-2 space-y-2 text-sm text-slate-700">
+              {sec.bullets.map((b) => (
+                <li key={b} className="flex gap-2">
+                  <span className="mt-0.5 text-slate-400">•</span>
+                  <span>{b}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+
+        <div className="rounded-xl border bg-slate-50 p-4 text-sm text-slate-700">
+          <span className="font-semibold text-slate-900">Alta controlada:</span>{" "}
+          para contratar o activar un plan necesitas solicitar acceso.
+        </div>
+
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <button
+            onClick={goRequestAccess}
+            className="w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-black"
+          >
+            Solicitar acceso
+          </button>
+          <button
+            onClick={() => setOpenModal(null)}
+            className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+          >
+            Volver
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
 
       <LegalFooter />
     </div>

@@ -1,12 +1,38 @@
 import React, { useMemo, useState } from "react";
-import { LayoutDashboard, Search, PlusCircle, CreditCard, LogOut, Menu } from "lucide-react";
+import {
+  LayoutDashboard,
+  Search,
+  PlusCircle,
+  CreditCard,
+  LogOut,
+  Menu,
+} from "lucide-react";
 
-export type AuthedView = "dashboard" | "search" | "add" | "subscription" | "admin";
+/**
+ * ✅ Views de la app.
+ * - Operativa: dashboard/search/add/subscription/admin
+ * - Auditoría: aud_summary/aud_risk/aud_stats/aud_history/aud_exports/aud_config
+ *
+ * Si luego quieres gating por plan, lo harás desde AuthedApp construyendo navItems.
+ */
+export type AuthedView =
+  | "dashboard"
+  | "search"
+  | "add"
+  | "subscription"
+  | "admin"
+  | "aud_summary"
+  | "aud_risk"
+  | "aud_stats"
+  | "aud_history"
+  | "aud_exports"
+  | "aud_config";
 
 export type NavItem = {
   view: AuthedView;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
+  disabled?: boolean;
 };
 
 type Props = {
@@ -50,23 +76,36 @@ export default function AppShell({
     view,
     label,
     icon: Icon,
+    disabled,
   }: {
     view: AuthedView;
     label: string;
     icon: any;
+    disabled?: boolean;
   }) => {
     const active = activeView === view;
+
     return (
       <button
+        disabled={disabled}
         onClick={() => {
+          if (disabled) return;
           onNavigate(view);
           setMobileMenuOpen(false);
         }}
         className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${
-          active ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-50"
+          disabled
+            ? "text-slate-400 border border-dashed border-slate-200 bg-slate-50 cursor-not-allowed"
+            : active
+            ? "bg-slate-900 text-white"
+            : "text-slate-700 hover:bg-slate-50"
         }`}
       >
-        <Icon className={`w-5 h-5 ${active ? "text-white" : "text-slate-400"}`} />
+        <Icon
+          className={`w-5 h-5 ${
+            disabled ? "text-slate-300" : active ? "text-white" : "text-slate-400"
+          }`}
+        />
         <span className="text-sm font-medium">{label}</span>
       </button>
     );
@@ -74,6 +113,7 @@ export default function AppShell({
 
   return (
     <div className="flex h-screen bg-slate-50">
+      {/* SIDEBAR DESKTOP */}
       <aside className="hidden md:flex flex-col w-72 bg-white border-r border-slate-200">
         <div className="p-6 border-b border-slate-100">
           <div className="flex items-center gap-3">
@@ -81,8 +121,12 @@ export default function AppShell({
               D
             </div>
             <div className="leading-tight">
-              <div className="text-sm font-semibold text-slate-900">Debacu Evaluation360</div>
-              <div className="text-xs text-slate-500">Uso profesional ú Acceso restringido</div>
+              <div className="text-sm font-semibold text-slate-900">
+                Debacu Evaluation360
+              </div>
+              <div className="text-xs text-slate-500">
+                Uso profesional · Acceso restringido
+              </div>
             </div>
           </div>
         </div>
@@ -91,8 +135,15 @@ export default function AppShell({
           <div className="px-4 pt-2 pb-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
             Operativa
           </div>
+
           {nav.map((i) => (
-            <NavItemButton key={i.view} view={i.view} label={i.label} icon={i.icon} />
+            <NavItemButton
+              key={i.view}
+              view={i.view}
+              label={i.label}
+              icon={i.icon}
+              disabled={i.disabled}
+            />
           ))}
 
           {showAccountActions && (
@@ -142,7 +193,9 @@ export default function AppShell({
         </div>
       </aside>
 
+      {/* MAIN */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
+        {/* HEADER MOBILE */}
         <header className="md:hidden bg-white border-b border-slate-200 px-4 py-3 flex justify-between items-center">
           <button onClick={() => setMobileMenuOpen(true)} className="p-2 text-slate-700">
             <Menu className="w-6 h-6" />
@@ -158,6 +211,7 @@ export default function AppShell({
           )}
         </header>
 
+        {/* MOBILE DRAWER */}
         {mobileMenuOpen && (
           <div className="md:hidden fixed inset-0 z-50 bg-black/30">
             <div className="absolute left-0 top-0 h-full w-[85%] max-w-sm bg-white border-r border-slate-200 p-4">
@@ -167,10 +221,18 @@ export default function AppShell({
                   ×
                 </button>
               </div>
+
               <div className="space-y-2">
                 {nav.map((i) => (
-                  <NavItemButton key={i.view} view={i.view} label={i.label} icon={i.icon} />
+                  <NavItemButton
+                    key={i.view}
+                    view={i.view}
+                    label={i.label}
+                    icon={i.icon}
+                    disabled={i.disabled}
+                  />
                 ))}
+
                 {showAccountActions && (
                   <div className="pt-3 border-t border-slate-200">
                     <button
@@ -193,6 +255,7 @@ export default function AppShell({
                     </button>
                   </div>
                 )}
+
                 <button
                   onClick={onLogout}
                   className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold text-red-600"
@@ -205,6 +268,7 @@ export default function AppShell({
           </div>
         )}
 
+        {/* HEADER DESKTOP */}
         <div className="hidden md:block border-b border-slate-200 bg-white">
           <div className="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between">
             <div>

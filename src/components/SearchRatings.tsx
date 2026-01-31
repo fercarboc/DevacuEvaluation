@@ -1,11 +1,13 @@
 // src/components/SearchRatings.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  // ✅ NUEVO: separa “global agregado” de “mis registros”
   checkSignalsGlobal,
   searchMyRatingsInSupabase,
   getGlobalSummary,
+  getGlobalRiskSnapshot,     // ✅ función
+  type GlobalRiskSnapshot,   // ✅ type
 } from "../services/evaluationService";
+
 
 import type { Rating, User } from "../types/types";
 import { StarRating } from "./StarRating";
@@ -20,6 +22,7 @@ import {
   Shield,
   FileText,
   LockKeyhole,
+  SlidersHorizontal,
 } from "lucide-react";
 
 /** -------------------------------------------------------
@@ -156,31 +159,17 @@ function normalizeSummary(raw: any): { totalCount: number; platformCounts: Recor
  * Modelo GLOBAL agregado (NO PII / NO filas individuales)
  * ------------------------------------------------------*/
 type MatchStrength = "STRONG" | "MEDIUM" | "WEAK";
-
 type CountBucket = "0" | "1-2" | "3-5" | "6-10" | "10+";
-
 type RiskLevel = "BAJO" | "MEDIO" | "ALTO" | "NO_CONCLUYENTE";
 
 type GlobalSignals = {
   matchStrength: MatchStrength;
-
-  // “Coincidencias” se expresa sin confirmar identidad
   hasMatches: boolean;
-
-  // Anti-reidentificación: bucket
   countBucket: CountBucket;
-
-  // Solo si matchStrength === "STRONG"
   avgStars?: number; // 0..5
-  risk?: RiskLevel; // BAJO/MEDIO/ALTO
-
-  // Tipologías agregadas (solo si k>=K)
+  risk?: RiskLevel;
   topTypologies?: string[];
-
-  // Ventana temporal amplia
   timeWindow?: "12M" | "24M" | "36M";
-
-  // Mensaje para UI
   message?: string;
 };
 
@@ -195,17 +184,14 @@ function looksLikePhone(q: string) {
   return p.length >= 8 && p.length <= 15;
 }
 function looksLikeDoc(q: string) {
-  // DNI/NIE/PASAPORTE (heurístico, sin ser estricto)
   const t = q.trim().toUpperCase();
   const alnum = t.replace(/\s+/g, "");
-  // Ej: 12345678Z, X1234567T, etc.
   return /^[XYZ]?\d{5,10}[A-Z]?$/.test(alnum);
 }
 function looksLikeNameOnly(q: string) {
   const t = q.trim();
   if (t.length < 5) return false;
   if (looksLikeEmail(t) || looksLikePhone(t) || looksLikeDoc(t)) return false;
-  // si contiene letras y espacios (2+ palabras)
   const parts = t.split(/\s+/).filter(Boolean);
   const hasLetters = /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(t);
   return hasLetters && parts.length >= 2;
@@ -241,6 +227,16 @@ function safeStars(v?: number) {
   return clamped;
 }
 
+function pct(n: number, total: number) {
+  if (!total) return 0;
+  return (n / total) * 100;
+}
+function pctLabel(n: number, total: number) {
+  const v = pct(n, total);
+  // 1 decimal si < 10, si no 0 decimales
+  return v < 10 ? `${v.toFixed(1)}%` : `${v.toFixed(0)}%`;
+}
+
 export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => {
   const [mode, setMode] = useState<"GLOBAL" | "MINE">("GLOBAL");
   const [query, setQuery] = useState("");
@@ -258,6 +254,22 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
   const [globalTotal, setGlobalTotal] = useState(0);
   const [platformSummary, setPlatformSummary] = useState<Record<string, number>>({});
   const [countrySummary, setCountrySummary] = useState<Record<string, number>>({});
+
+ // ✅ Indicador riesgo (distribución por estrellas)
+const [riskLoading, setRiskLoading] = useState(false);
+const [riskError, setRiskError] = useState<string>("");
+const [riskSnap, setRiskSnap] = useState<GlobalRiskSnapshot | null>(null);
+
+const [riskWindow, setRiskWindow] = useState<12 | 24 | 36>(24);
+ 
+  const [riskDist, setRiskDist] = useState<{ total: number; c5: number; c4: number; c3: number; c2: number; c1: number }>({
+    total: 0,
+    c5: 0,
+    c4: 0,
+    c3: 0,
+    c2: 0,
+    c1: 0,
+  });
 
   useEffect(() => {
     const load = async () => {
@@ -277,6 +289,33 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
     load();
   }, []);
 
+  // ✅ Carga distribución riesgo desde BD (12/24/36 meses)
+useEffect(() => {
+  let alive = true;
+
+  const loadRisk = async () => {
+    setRiskLoading(true);
+    setRiskError("");
+    try {
+      const r = await getGlobalRiskSnapshot();
+      if (!alive) return;
+      setRiskSnap(r);
+    } catch (e: any) {
+      if (!alive) return;
+      setRiskError(e?.message ?? "Error cargando indicador de riesgo");
+      setRiskSnap(null);
+    } finally {
+      if (alive) setRiskLoading(false);
+    }
+  };
+
+  loadRisk();
+  return () => {
+    alive = false;
+  };
+}, []);
+
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     const q = query.trim();
@@ -291,7 +330,6 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
 
     try {
       if (mode === "MINE") {
-        // ✅ Solo registros creados por este hotel (DEBE filtrar en BD, no en cliente)
         const raw = await searchMyRatingsInSupabase(q, currentUser.id);
         const data: Rating[] = Array.isArray(raw) ? raw.map(normalizeRating) : [];
         const sorted = [...data].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -299,11 +337,8 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
         return;
       }
 
-      // ✅ GLOBAL: capa extra
       const strength = classifyQuery(q);
 
-      // Si es WEAK (nombre/apellidos), NO hacemos lookup “tipo buscador de personas”.
-      // Devolvemos estado NO CONCLUYENTE y pedimos un identificador fuerte.
       if (strength === "WEAK") {
         setGlobalSignals({
           matchStrength: "WEAK",
@@ -317,17 +352,18 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
         return;
       }
 
-      // ✅ STRONG/MEDIUM: pedimos señales agregadas al backend
-      // ⚠️ Este endpoint NO debe devolver PII ni filas individuales
       const s = await checkSignalsGlobal(q);
 
-      // Normalizamos por si el service trae variaciones
       const normalized: GlobalSignals = {
         matchStrength: (s?.matchStrength ?? strength) as MatchStrength,
         hasMatches: Boolean(s?.hasMatches),
         countBucket: (s?.countBucket ?? "0") as CountBucket,
         avgStars: typeof s?.avgStars === "number" ? s.avgStars : undefined,
-        risk: (s?.risk ?? (s?.hasMatches ? "MEDIO" : "NO_CONCLUYENTE")) as RiskLevel,
+
+        // ✅ si hay matches pero no hay avgStars, no fuerces NO_CONCLUYENTE
+        risk: (s?.risk ??
+          (s?.hasMatches ? (typeof s?.avgStars === "number" ? "MEDIO" : "MEDIO") : "NO_CONCLUYENTE")) as RiskLevel,
+
         topTypologies: Array.isArray(s?.topTypologies) ? s.topTypologies.slice(0, 6) : [],
         timeWindow: (s?.timeWindow ?? "24M") as "12M" | "24M" | "36M",
         message: s?.message ?? "",
@@ -372,8 +408,8 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
   const platformDisplay = useMemo(() => {
     const entries = Object.entries(platformSummary)
       .map(([platform, count]) => {
-        const pct = globalTotal > 0 ? Math.round((Number(count) / globalTotal) * 100) : 0;
-        return { platform, pct };
+        const pctv = globalTotal > 0 ? Math.round((Number(count) / globalTotal) * 100) : 0;
+        return { platform, pct: pctv };
       })
       .filter((p) => p.pct > 0)
       .sort((a, b) => b.pct - a.pct);
@@ -388,8 +424,8 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
   const { topCountries, remainingCountries } = useMemo(() => {
     const entries = Object.entries(countrySummary)
       .map(([country, count]) => {
-        const pct = globalTotal > 0 ? Math.round((Number(count) / globalTotal) * 100) : 0;
-        return { country, pct };
+        const pctv = globalTotal > 0 ? Math.round((Number(count) / globalTotal) * 100) : 0;
+        return { country, pct: pctv };
       })
       .filter((c) => c.pct > 0)
       .sort((a, b) => b.pct - a.pct);
@@ -397,6 +433,23 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
     const top = entries.slice(0, 6);
     return { topCountries: top, remainingCountries: Math.max(0, entries.length - top.length) };
   }, [countrySummary, globalTotal]);
+
+  // ✅ Riesgo agregado (interpretación por estrellas)
+  const riskAgg = useMemo(() => {
+    const total = riskDist.total || 0;
+    const bajo = (riskDist.c5 + riskDist.c4) || 0; // 4–5*
+    const medio = (riskDist.c3) || 0; // 3*
+    const alto = (riskDist.c2 + riskDist.c1) || 0; // 1–2*
+    return {
+      total,
+      bajo,
+      medio,
+      alto,
+      pctBajo: pct(bajo, total),
+      pctMedio: pct(medio, total),
+      pctAlto: pct(alto, total),
+    };
+  }, [riskDist]);
 
   // Header dinámico
   const headerTitle = mode === "GLOBAL" ? "Comprobación asociada a solicitud" : "Mis registros";
@@ -414,7 +467,6 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
 
       {/* CARD SEARCH */}
       <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 mb-6">
-        {/* Selector de modo */}
         <div className="flex flex-wrap items-center gap-2 mb-4">
           <button
             type="button"
@@ -480,13 +532,9 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
             <div className="font-semibold text-slate-800">{mode === "GLOBAL" ? "Privacidad reforzada (Global)" : "Privacidad por defecto"}</div>
             <div>
               {mode === "GLOBAL" ? (
-                <>
-                  Debacu no devuelve datos personales ni confirma identidades. Se muestran únicamente señales agregadas y no identificables.
-                </>
+                <>Debacu no devuelve datos personales ni confirma identidades. Se muestran únicamente señales agregadas y no identificables.</>
               ) : (
-                <>
-                  Email/teléfono/documento se muestran enmascarados. El detalle completo debe resolverse por política (RLS/auditoría).
-                </>
+                <>Email/teléfono/documento se muestran enmascarados. El detalle completo debe resolverse por política (RLS/auditoría).</>
               )}
             </div>
           </div>
@@ -554,12 +602,8 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                 )
               ) : globalSignals ? (
                 <div className="flex items-center gap-2 text-xs">
-                  <span className="rounded-full border px-3 py-1 text-slate-700 bg-white">
-                    {globalSignals.hasMatches ? "Coincidencias: Sí" : "Coincidencias: No"}
-                  </span>
-                  <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses(globalSignals.risk)}`}>
-                    {globalSignals.risk ?? "NO CONCLUYENTE"}
-                  </span>
+                  <span className="rounded-full border px-3 py-1 text-slate-700 bg-white">{globalSignals.hasMatches ? "Coincidencias: Sí" : "Coincidencias: No"}</span>
+                  <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses(globalSignals.risk)}`}>{globalSignals.risk ?? "NO CONCLUYENTE"}</span>
                 </div>
               ) : (
                 <div className="text-sm text-slate-500">Sin información.</div>
@@ -567,9 +611,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
             </div>
 
             <div className="flex-1 overflow-y-auto pr-1 space-y-4">
-              {/* ---------------------
-                  MODO GLOBAL (AGREGADO)
-                  --------------------- */}
+              {/* MODO GLOBAL */}
               {mode === "GLOBAL" && searched && (
                 <>
                   {globalSignals ? (
@@ -596,9 +638,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                               Nº registros: <span className="font-semibold">{bucketLabel(globalSignals.countBucket)}</span>
                             </span>
 
-                            <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses(globalSignals.risk)}`}>
-                              {globalSignals.risk ?? "NO CONCLUYENTE"}
-                            </span>
+                            <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses(globalSignals.risk)}`}>{globalSignals.risk ?? "NO CONCLUYENTE"}</span>
 
                             {globalSignals.timeWindow ? (
                               <span className="rounded-full border bg-white px-3 py-1 text-slate-700">
@@ -607,7 +647,6 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                             ) : null}
                           </div>
 
-                          {/* Solo si STRONG: estrellas y tipologías */}
                           {globalSignals.matchStrength === "STRONG" ? (
                             <div className="mt-4 rounded-2xl bg-white border border-slate-200 p-4">
                               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -662,9 +701,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                 </>
               )}
 
-              {/* ---------------------
-                  MODO MINE (DETALLE)
-                  --------------------- */}
+              {/* MODO MINE */}
               {mode === "MINE" &&
                 searched &&
                 myResults.map((rating) => {
@@ -676,36 +713,27 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                   const hasControlled = !!cc["reasons"] || !!cc["severity"] || !!cc["evidence"];
 
                   return (
-                    <div
-                      key={rating.id}
-                      className="rounded-2xl border border-slate-200 bg-slate-50 p-4 hover:border-slate-300 transition-colors"
-                    >
+                    <div key={rating.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 hover:border-slate-300 transition-colors">
                       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
                         <div className="flex-1">
                           <div className="flex flex-wrap items-center gap-2 mb-2">
                             <h4 className="font-bold text-base text-slate-900 uppercase">{rating.clientData.fullName}</h4>
 
                             {rating.clientData.document && (
-                              <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">
-                                {maskDoc(rating.clientData.document)}
-                              </span>
+                              <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">{maskDoc(rating.clientData.document)}</span>
                             )}
 
                             {rating.platform && (
-                              <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">
-                                {rating.platform}
-                              </span>
+                              <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">{rating.platform}</span>
                             )}
                           </div>
 
-                          {/* PII masked */}
                           <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mb-3">
                             {rating.clientData.email ? <span>{maskEmail(rating.clientData.email)}</span> : null}
                             {rating.clientData.phone ? <span>{maskPhone(rating.clientData.phone)}</span> : null}
                             {rating.clientData.nationality ? <span>{rating.clientData.nationality}</span> : null}
                           </div>
 
-                          {/* Controlled payload */}
                           {hasControlled ? (
                             <div className="rounded-2xl bg-white border border-slate-200 p-3">
                               <div className="flex items-center gap-2 mb-2">
@@ -720,9 +748,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                                   </span>
                                 ))}
                                 {reasons.length > 6 ? (
-                                  <span className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-500">
-                                    +{reasons.length - 6}
-                                  </span>
+                                  <span className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-500">+{reasons.length - 6}</span>
                                 ) : null}
                               </div>
 
@@ -746,9 +772,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                               ) : null}
                             </div>
                           ) : (
-                            <div className="rounded-2xl bg-white border border-amber-200 p-3 text-xs text-amber-900">
-                              Comentario antiguo sin estructura. Recomienda migrar a registro guiado.
-                            </div>
+                            <div className="rounded-2xl bg-white border border-amber-200 p-3 text-xs text-amber-900">Comentario antiguo sin estructura. Recomienda migrar a registro guiado.</div>
                           )}
 
                           <div className="mt-3 flex items-center gap-6 text-xs text-slate-500">
@@ -769,11 +793,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                           </div>
                           <span
                             className={`text-xs font-semibold px-3 py-1 rounded-full ${
-                              rating.value >= 4
-                                ? "bg-green-100 text-green-700"
-                                : rating.value >= 3
-                                ? "bg-amber-100 text-amber-800"
-                                : "bg-red-100 text-red-700"
+                              rating.value >= 4 ? "bg-green-100 text-green-700" : rating.value >= 3 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-700"
                             }`}
                           >
                             {rating.value >= 4 ? "Bajo riesgo" : rating.value >= 3 ? "Riesgo medio" : "Riesgo alto"}
@@ -812,6 +832,73 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                 {remainingCountries > 0 && <p className="text-[11px] text-slate-400 mt-1">+{remainingCountries} países con menos registros.</p>}
               </div>
             )}
+
+        
+ 
+{/* ✅ INDICADOR DE RIESGO (solo porcentajes) */}
+<div className="mt-6 border-t border-slate-100 pt-4">
+  <div className="text-xs font-semibold text-slate-700 uppercase">
+    Control del riesgo a día de hoy
+  </div>
+
+  {riskLoading ? (
+    <div className="mt-2 text-xs text-slate-500">Cargando…</div>
+  ) : riskError ? (
+    <div className="mt-2 text-xs text-red-600">{riskError}</div>
+  ) : !riskSnap ? (
+    <div className="mt-2 text-xs text-slate-500">Sin datos.</div>
+  ) : (
+    <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+      {/* Texto Bajo/Medio/Alto */}
+      <div className="grid grid-cols-3 gap-2 text-[11px] mb-3">
+        <div className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-slate-700">
+          <span className="font-semibold">Bajo</span>: {riskSnap.pct_bajo.toFixed(1)}%
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-slate-700">
+          <span className="font-semibold">Medio</span>: {riskSnap.pct_medio.toFixed(1)}%
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-slate-700">
+          <span className="font-semibold">Alto</span>: {riskSnap.pct_alto.toFixed(1)}%
+        </div>
+      </div>
+
+      {/* Barras por estrellas (solo %) */}
+      {[
+        { label: "5★", pct: riskSnap.pct5 },
+        { label: "4★", pct: riskSnap.pct4 },
+        { label: "3★", pct: riskSnap.pct3 },
+        { label: "2★", pct: riskSnap.pct2 },
+        { label: "1★", pct: riskSnap.pct1 },
+      ].map((row) => (
+        <div key={row.label} className="flex items-center gap-2 py-1">
+          <div className="w-8 text-xs text-slate-600">{row.label}</div>
+
+          <div className="flex-1 h-2 rounded-full bg-white border border-slate-200 overflow-hidden">
+            <div
+              className="h-full bg-slate-900/70 rounded-full"
+              style={{ width: `${Math.max(0, Math.min(100, row.pct))}%` }}
+            />
+          </div>
+
+          <div className="w-[52px] text-right text-[11px] text-slate-600">
+            {row.pct.toFixed(1)}%
+          </div>
+        </div>
+      ))}
+
+      <div className="mt-2 text-[11px] text-slate-500">
+        Base de referencia: <span className="font-semibold">100%</span> · Bajo = 4–5★ · Medio = 3★ · Alto = 1–2★
+      </div>
+    </div>
+  )}
+
+  <div className="mt-2 text-[11px] text-slate-400">
+    Indicadores agregados: no identifican ni confirman identidades.
+  </div>
+</div>
+
+
+
           </div>
         </section>
       </div>

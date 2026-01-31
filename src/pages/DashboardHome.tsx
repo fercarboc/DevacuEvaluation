@@ -63,7 +63,6 @@ function statusBadge(status?: string | null) {
   return <span className={`${base} bg-slate-100 text-slate-700`}>{s}</span>;
 }
 
-
 function prettyEvent(eventType?: string | null, action?: string | null) {
   const e = (eventType ?? "").toUpperCase();
   const a = (action ?? "").toUpperCase();
@@ -91,9 +90,6 @@ function prettyDetail(entity?: string | null) {
 
   return "—";
 }
-
-
-
 
 export default function DashboardHome() {
   const { user } = useEvalAuth();
@@ -131,9 +127,8 @@ export default function DashboardHome() {
         const monthStart = startOfCurrentMonthISO();
 
         // -------------------------
-        // 1) Suscripción + plan
+        // 1) Suscripción + plan (ACTIVE)
         // -------------------------
-        // Cogemos la más reciente “viva” (ACTIVE/TRIALING/PENDING_PAYMENT/SUSPENDED si quieres reflejarlo)
         const { data: subscription, error: subsErr } = await sb
           .from("subscriptions")
           .select(
@@ -144,6 +139,7 @@ export default function DashboardHome() {
           )
           .eq("customer_id", customerId)
           .eq("app_id", APP_CODE)
+          .eq("status", "ACTIVE") // ✅ clave: evitar REPLACED
           .order("start_date", { ascending: false })
           .limit(1)
           .maybeSingle();
@@ -160,7 +156,9 @@ export default function DashboardHome() {
           setPlanCard({
             name: subscription.plans?.name || "Plan activo",
             status: subscription.status || "UNKNOWN",
-            billingFrequency: formatBillingFrequency(subscription.billing_frequency),
+            billingFrequency: formatBillingFrequency(
+              subscription.billing_frequency,
+            ),
             nextBilling: formatDateOrPending(subscription.next_billing_date),
             limit: Number.isFinite(limit as number) ? (limit as number) : null,
           });
@@ -168,24 +166,18 @@ export default function DashboardHome() {
           setPlanCard(null);
         }
 
-      
-        // Por si tu audit_log usa actor_user_id o actor_customer_id, cubrimos ambos con .or()
-       // -------------------------
-     
-       // -------------------------
-          // 2) Consultas del mes (CHECK_SIGNALS)
-          // -------------------------
-          const { count: qCount, error: qErr } = await sb
-            .from("debacu_eval_audit_log")
-            .select("id", { count: "exact", head: true })
-            .eq("customer_id", customerId)
-            .eq("event_type", "CHECK_SIGNALS")
-            .gte("created_at", monthStart);
+        // -------------------------
+        // 2) Consultas del mes (CHECK_SIGNALS)
+        // -------------------------
+        const { count: qCount, error: qErr } = await sb
+          .from("debacu_eval_audit_log")
+          .select("id", { count: "exact", head: true })
+          .eq("customer_id", customerId)
+          .eq("event_type", "CHECK_SIGNALS")
+          .gte("created_at", monthStart);
 
-          if (qErr) console.warn("dashboard query count:", qErr?.message);
-          setQueryCount(qCount ?? 0);
-
-
+        if (qErr) console.warn("dashboard query count:", qErr?.message);
+        setQueryCount(qCount ?? 0);
 
         // -------------------------
         // 3) Registros creados este mes (evaluations)
@@ -201,27 +193,26 @@ export default function DashboardHome() {
         }
         setCreatedThisMonth(createdCount ?? 0);
 
-     
-        // Preferimos audit log si existe.
-       // -------------------------
-        // 4) Actividad reciente
+        // -------------------------
+        // 4) Actividad reciente (audit_log preferido)
         // -------------------------
         const { data: audits, error: aErr } = await sb
           .from("debacu_eval_audit_log")
-          .select("id,created_at,action,event_type,entity,entity_id,meta,search_value_masked,result_count")
+          .select(
+            "id,created_at,action,event_type,entity,entity_id,meta,search_value_masked,result_count",
+          )
           .eq("customer_id", customerId)
           .order("created_at", { ascending: false })
           .limit(12);
 
-
-
         if (!aErr && audits && audits.length > 0) {
-        const rows: ActivityRow[] = audits.map((row: any) => {
+          const rows: ActivityRow[] = audits.map((row: any) => {
             let parsedMeta: any = undefined;
 
             if (row.meta) {
               try {
-                parsedMeta = typeof row.meta === "string" ? JSON.parse(row.meta) : row.meta;
+                parsedMeta =
+                  typeof row.meta === "string" ? JSON.parse(row.meta) : row.meta;
               } catch {
                 parsedMeta = undefined;
               }
@@ -235,17 +226,16 @@ export default function DashboardHome() {
 
             // ✅ Media agregada de esa consulta (si existe)
             const rating =
-              parsedMeta?.avg_stars != null ? Number(parsedMeta.avg_stars) : undefined;
-
-            const actionLabel = row.event_type ? String(row.event_type).toUpperCase() : "EVENTO";
-            const entityLabel = row.entity ? String(row.entity).toUpperCase() : "EVENTO";
+              parsedMeta?.avg_stars != null
+                ? Number(parsedMeta.avg_stars)
+                : undefined;
 
             return {
               id: row.id,
               date: new Date(row.created_at).toLocaleString(),
-              type: prettyEvent(row.event_type, row.action),     // "Consulta"
-              label: prettyDetail(row.entity),                   // "Consulta de registro"
-              meta: undefined,               // si quieres, aquí puedes poner bucket/riesgo
+              type: prettyEvent(row.event_type, row.action),
+              label: prettyDetail(row.entity),
+              meta: undefined,
               rating: Number.isFinite(rating) ? rating : undefined,
               contact: maskedContact || "-",
             };
@@ -272,7 +262,11 @@ export default function DashboardHome() {
             type: "EVALUACIÓN",
             label: ev.platform || "Registro",
             rating: ev.rating != null ? Number(ev.rating) : undefined,
-            contact: ev.email ? maskEmail(ev.email) : ev.phone ? maskPhone(ev.phone) : undefined,
+            contact: ev.email
+              ? maskEmail(ev.email)
+              : ev.phone
+                ? maskPhone(ev.phone)
+                : undefined,
             meta: ev.id,
           }));
 
@@ -296,7 +290,9 @@ export default function DashboardHome() {
   if (!customerId) {
     return (
       <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <p className="text-sm text-slate-500">Cliente no disponible. Inicia sesión nuevamente.</p>
+        <p className="text-sm text-slate-500">
+          Cliente no disponible. Inicia sesión nuevamente.
+        </p>
       </div>
     );
   }
@@ -309,7 +305,9 @@ export default function DashboardHome() {
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Plan activo</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Plan activo
+              </p>
               <div className="mt-3 text-xl font-semibold text-slate-900">
                 {planCard?.name ?? "—"}
               </div>
@@ -321,27 +319,39 @@ export default function DashboardHome() {
             <>
               <div className="mt-3 flex items-center justify-between text-sm text-slate-600">
                 <span>Facturación</span>
-                <span className="font-semibold text-slate-900">{planCard.billingFrequency}</span>
+                <span className="font-semibold text-slate-900">
+                  {planCard.billingFrequency}
+                </span>
               </div>
               <div className="mt-2 flex items-center justify-between text-sm text-slate-600">
                 <span>Próx. cobro</span>
-                <span className="font-semibold text-slate-900">{planCard.nextBilling}</span>
+                <span className="font-semibold text-slate-900">
+                  {planCard.nextBilling}
+                </span>
               </div>
             </>
           ) : (
-            <div className="mt-3 text-sm text-slate-500">No hay plan activo registrado.</div>
+            <div className="mt-3 text-sm text-slate-500">
+              No hay plan activo registrado.
+            </div>
           )}
         </section>
 
         {/* Consultas */}
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Consultas este mes</p>
-          <div className="mt-3 text-3xl font-semibold text-slate-900">{queryCount}</div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Consultas este mes
+          </p>
+          <div className="mt-3 text-3xl font-semibold text-slate-900">
+            {queryCount}
+          </div>
 
           <div className="text-sm text-slate-600">
             Límite:{" "}
             {planCard?.limit != null && planCard.limit > 0 ? (
-              <span className="font-semibold text-slate-900">{planCard.limit}</span>
+              <span className="font-semibold text-slate-900">
+                {planCard.limit}
+              </span>
             ) : (
               "Sin límite"
             )}{" "}
@@ -354,7 +364,9 @@ export default function DashboardHome() {
               style={{ width: `${usagePercent}%` }}
             />
           </div>
-          <div className="mt-2 text-sm text-slate-500">{usagePercent}% del plan utilizado</div>
+          <div className="mt-2 text-sm text-slate-500">
+            {usagePercent}% del plan utilizado
+          </div>
         </section>
 
         {/* Registros creados */}
@@ -362,7 +374,9 @@ export default function DashboardHome() {
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Registros añadidos este mes
           </p>
-          <div className="mt-3 text-3xl font-semibold text-slate-900">{createdThisMonth}</div>
+          <div className="mt-3 text-3xl font-semibold text-slate-900">
+            {createdThisMonth}
+          </div>
           <div className="text-sm text-slate-600">
             Evaluaciones recientes ingresadas manualmente
           </div>
@@ -373,7 +387,9 @@ export default function DashboardHome() {
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold text-slate-900">Actividad reciente</div>
+            <div className="text-sm font-semibold text-slate-900">
+              Actividad reciente
+            </div>
             <div className="mt-1 text-sm text-slate-600">
               Últimos eventos ligados a este cliente (sin PII).
               {activitySource === "audit" ? " (audit_log)" : " (evaluations)"}
@@ -406,7 +422,10 @@ export default function DashboardHome() {
                     <Td className="text-xs text-slate-500">{row.date}</Td>
                     <Td>{row.type}</Td>
                     <Td>
-                      {row.label} {row.meta && <span className="text-slate-500">{`(ID ${row.meta})`}</span>}
+                      {row.label}{" "}
+                      {row.meta && (
+                        <span className="text-slate-500">{`(ID ${row.meta})`}</span>
+                      )}
                     </Td>
                     <Td>{row.contact || "-"}</Td>
                     <Td>

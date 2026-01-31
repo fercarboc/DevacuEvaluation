@@ -626,3 +626,35 @@ export async function addEvaluation(
  *
  *  -- Y una política de permisos: que solo roles autorizados puedan ejecutar.
  * ========================================================= */
+ export type GlobalRiskSnapshot = {
+  pct5: number;
+  pct4: number;
+  pct3: number;
+  pct2: number;
+  pct1: number;
+  pct_bajo: number;
+  pct_medio: number;
+  pct_alto: number;
+};
+
+export async function getGlobalRiskSnapshot(): Promise<GlobalRiskSnapshot> {
+  // Workaround si TS aún no “ve” la RPC en Database.Functions
+  const { data, error } = await supabase.rpc<any>("global_risk_snapshot_public");
+
+  if (error) throw error;
+
+  const row = Array.isArray(data) ? data[0] : data;
+
+  return {
+    pct5: Number(row?.pct5 ?? 0),
+    pct4: Number(row?.pct4 ?? 0),
+    pct3: Number(row?.pct3 ?? 0),
+    pct2: Number(row?.pct2 ?? 0),
+    pct1: Number(row?.pct1 ?? 0),
+    pct_bajo: Number(row?.pct_bajo ?? 0),
+    pct_medio: Number(row?.pct_medio ?? 0),
+    pct_alto: Number(row?.pct_alto ?? 0),
+  };
+}
+
+

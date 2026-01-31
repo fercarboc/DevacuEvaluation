@@ -47,14 +47,24 @@ export default function AdminExportsPage() {
     setError("");
     try {
       const data = await list_audit_exports_v2({
-        q: f.q.trim() || null,
-        customer: f.customer.trim() || null,
-        from: f.from || null,
-        to: f.to || null,
-        format: (f.format || null) as any,
-        limit: 200,
-        offset: 0,
-      });
+          app_id: "SYSTEM", // o "DEBACU_EVAL" según tu tabla/uso
+          q: f.q.trim() || null,
+
+          // antes era "customer" (email/id). Ahora es customer_id (uuid)
+          customer_id: f.customer.trim() || null,
+
+          from: f.from || null,
+          to: f.to || null,
+          format: (f.format || null) as any,
+
+          // si tu endpoint los soporta:
+          type: null,
+          provided_to_type: null,
+
+          limit: 200,
+          offset: 0,
+        });
+
       setRows(Array.isArray(data) ? data : []);
     } catch (e: any) {
       setError(e?.message || "Error cargando exportaciones");

@@ -23,18 +23,16 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     setLoading(true);
 
     try {
+      // 1) Login “interno” (tu API)
       const { authEmail, session_token, user } = await evalLogin(username, password);
 
-      localStorage.setItem(
-        "debacu_eval_session_token",
-        String(session_token || "")
-      );
+      localStorage.setItem("debacu_eval_session_token", String(session_token || ""));
 
-      const { data, error: authError } =
-        await supabase.auth.signInWithPassword({
-          email: authEmail,
-          password,
-        });
+      // 2) Login Supabase Auth
+      const { data, error: authError } = await supabase.auth.signInWithPassword({
+        email: authEmail,
+        password,
+      });
 
       if (authError || !data?.session) {
         localStorage.removeItem("debacu_eval_session_token");
@@ -44,13 +42,13 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       const auth_token = data.session.access_token ?? "";
       localStorage.setItem("debacu_eval_auth_token", auth_token);
 
-      const email = String((user as any)?.email ?? authEmail ?? "")
-        .toLowerCase()
-        .trim();
+      // ✅ MUY IMPORTANTE: limpiar caché de admin (si venías “false”)
+      sessionStorage.removeItem("debacu_eval_is_admin");
+
+      // 3) Heurística local (no es la fuente de verdad, pero ayuda UI)
+      const email = String((user as any)?.email ?? authEmail ?? "").toLowerCase().trim();
       const id = String((user as any)?.id ?? "").toUpperCase().trim();
-      const uname = String((user as any)?.username ?? username ?? "")
-        .toLowerCase()
-        .trim();
+      const uname = String((user as any)?.username ?? username ?? "").toLowerCase().trim();
 
       const isAdmin =
         email === "admin@debacu.com" ||
@@ -59,15 +57,12 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
       const userWithAdmin: User = { ...(user as User), isAdmin };
 
+      // 4) Guardar sesión en tu context
       signIn(auth_token, userWithAdmin);
       onLoginSuccess(userWithAdmin);
     } catch (err: unknown) {
       console.error(err);
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Usuario o contraseña incorrectos"
-      );
+      setError(err instanceof Error ? err.message : "Usuario o contraseña incorrectos");
     } finally {
       setLoading(false);
     }
@@ -75,23 +70,17 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
   return (
     <div className="relative min-h-screen flex items-center justify-center overflow-hidden">
-      {/* Fondo azul corporativo */}
       <div className="absolute inset-0 bg-gradient-to-br from-[#06213f] via-[#0b3a6f] to-[#0e4f8a]" />
-
-      {/* Decoración sutil */}
       <div className="absolute -top-40 -right-40 w-[520px] h-[520px] rounded-full bg-white/5 blur-3xl" />
       <div className="absolute -bottom-40 -left-40 w-[520px] h-[520px] rounded-full bg-black/10 blur-3xl" />
 
-      {/* Card Login */}
       <div className="relative z-10 w-full max-w-md p-8 bg-white rounded-2xl shadow-2xl border border-slate-200">
         <div className="text-center mb-8">
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-indigo-100 text-indigo-600">
             <Lock className="h-7 w-7" />
           </div>
 
-          <h1 className="text-2xl font-bold text-slate-900">
-            DebacuEvaluation360
-          </h1>
+          <h1 className="text-2xl font-bold text-slate-900">DebacuEvaluation360</h1>
 
           <p className="mt-2 text-sm text-slate-600">
             Plataforma profesional de evaluación y control operativo
@@ -110,9 +99,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
           )}
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">
-              Usuario
-            </label>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Usuario</label>
             <div className="relative">
               <UserIcon className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
               <input
@@ -128,9 +115,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">
-              Contraseña
-            </label>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Contraseña</label>
             <div className="relative">
               <Lock className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
               <input

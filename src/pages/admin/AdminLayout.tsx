@@ -24,6 +24,7 @@ const ADMIN_TABS = [
   { key: "auditoria", label: "Auditoría", path: "/app/admin/auditoria", icon: Shield },
    { key: "exportaciones", label: "Exportaciones", path: "/app/admin/exportaciones", icon: Download },
 
+  { key: "cambios", label: "Cambios", path: "/app/admin/cambios", icon: Sliders },
   { key: "configuracion", label: "Configuración", path: "/app/admin/configuracion", icon: Sliders },
 ];
 

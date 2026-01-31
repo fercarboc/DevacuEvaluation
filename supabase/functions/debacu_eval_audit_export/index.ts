@@ -23,31 +23,102 @@ type Body = {
   limit?: number;
 };
 
-// ✅ CORS
-const corsHeaders: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*", // en prod puedes poner tu dominio exacto
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Max-Age": "86400",
-};
+// =======================
+// CORS
+// =======================
+const ALLOWED_ORIGINS = new Set([
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "https://debacu.com",
+  "https://www.debacu.com",
+]);
 
-function json(res: any, status = 200) {
-  return new Response(JSON.stringify(res), {
+function corsHeaders(req: Request) {
+  const origin = req.headers.get("Origin") ?? "";
+  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "*";
+
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Max-Age": "86400",
+  };
+}
+
+function json(req: Request, status: number, body: unknown) {
+  return new Response(JSON.stringify(body), {
     status,
-    headers: {
-      ...corsHeaders,
-      "content-type": "application/json; charset=utf-8",
-    },
+    headers: { "Content-Type": "application/json; charset=utf-8", ...corsHeaders(req) },
   });
 }
 
+// =======================
+// Env + Clients
+// =======================
 function requireEnv(name: string) {
   const v = Deno.env.get(name);
   if (!v) throw new Error(`Missing env ${name}`);
   return v;
 }
 
+const SUPABASE_URL = requireEnv("SUPABASE_URL");
+const SUPABASE_ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
+const SUPABASE_SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+function getBearer(req: Request) {
+  const h = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? "";
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return m?.[1] ?? null;
+}
+
+function parseAllowedEmails(csv: string | null) {
+  const raw = (csv ?? "").trim();
+  if (!raw) return ["admin@debacu.com"];
+  return raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function supabaseUserClient(token: string) {
+  // ✅ validación JWT / lecturas "como usuario": ANON + Authorization
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { persistSession: false },
+  });
+}
+
+function supabaseServiceClient() {
+  // ✅ lecturas admin + writes + storage: SERVICE ROLE
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  });
+}
+
+async function requireAdmin(req: Request) {
+  const token = getBearer(req);
+  if (!token) return { ok: false as const, status: 401, error: "missing_bearer" as const };
+
+  const sbUser = supabaseUserClient(token);
+
+  // ✅ supabase-js v2: getUser() SIN pasar token
+  const { data: userData, error: userErr } = await sbUser.auth.getUser();
+  if (userErr || !userData?.user) {
+    return { ok: false as const, status: 401, error: "invalid_token" as const };
+  }
+
+  const email = (userData.user.email ?? "").toLowerCase().trim();
+  const allowed = parseAllowedEmails(Deno.env.get("ADMIN_EMAILS"));
+  const isAdmin = allowed.includes(email);
+
+  if (!isAdmin) return { ok: false as const, status: 403, error: "forbidden" as const };
+
+  return { ok: true as const, user: userData.user };
+}
+
+// =======================
+// Utils
+// =======================
 function safeFileNamePart(v: string) {
   return (
     v
@@ -74,28 +145,21 @@ function csvEscape(v: any) {
 }
 
 function buildCSV(rows: any[]) {
-  const headers = [
-    "created_at",
-    "source",
-    "type",
-    "customer_id",
-    "app_id",
-    "stripe_subscription_id",
-    "payload",
-  ];
+  const headers = ["created_at", "source", "type", "customer_id", "app_id", "stripe_subscription_id", "payload"];
   const lines = [headers.join(",")];
 
   for (const r of rows) {
-    const line = [
-      csvEscape(r.created_at),
-      csvEscape(r.source),
-      csvEscape(r.type),
-      csvEscape(r.customer_id),
-      csvEscape(r.app_id),
-      csvEscape(r.stripe_subscription_id),
-      csvEscape(r.payload),
-    ].join(",");
-    lines.push(line);
+    lines.push(
+      [
+        csvEscape(r.created_at),
+        csvEscape(r.source),
+        csvEscape(r.type),
+        csvEscape(r.customer_id),
+        csvEscape(r.app_id),
+        csvEscape(r.stripe_subscription_id),
+        csvEscape(r.payload),
+      ].join(","),
+    );
   }
 
   return new TextEncoder().encode(lines.join("\n"));
@@ -103,11 +167,7 @@ function buildCSV(rows: any[]) {
 
 function buildXML(rows: any[]) {
   const esc = (s: string) =>
-    s
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
   const parts: string[] = [];
   parts.push(`<?xml version="1.0" encoding="UTF-8"?>`);
@@ -121,18 +181,13 @@ function buildXML(rows: any[]) {
     parts.push(`<type>${esc(String(r.type ?? ""))}</type>`);
     parts.push(`<customer_id>${esc(String(r.customer_id ?? ""))}</customer_id>`);
     parts.push(`<app_id>${esc(String(r.app_id ?? ""))}</app_id>`);
-    parts.push(
-      `<stripe_subscription_id>${esc(
-        String(r.stripe_subscription_id ?? "")
-      )}</stripe_subscription_id>`
-    );
+    parts.push(`<stripe_subscription_id>${esc(String(r.stripe_subscription_id ?? ""))}</stripe_subscription_id>`);
     parts.push(`<payload>${esc(JSON.stringify(r.payload ?? {}))}</payload>`);
     parts.push(`</event>`);
   }
 
   parts.push(`</events>`);
   parts.push(`</audit_export>`);
-
   return new TextEncoder().encode(parts.join("\n"));
 }
 
@@ -141,7 +196,7 @@ async function buildPDF(rows: any[], title: string) {
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-  const page = pdf.addPage([842, 595]);
+  const page = pdf.addPage([842, 595]); // A4 landscape
   const { width, height } = page.getSize();
 
   let y = height - 40;
@@ -169,7 +224,13 @@ async function buildPDF(rows: any[], title: string) {
     x += c.w;
   }
   y -= 10;
-  page.drawLine({ start: { x: startX, y }, end: { x: width - 40, y }, thickness: 1, color: rgb(0.85, 0.85, 0.85) });
+
+  page.drawLine({
+    start: { x: startX, y },
+    end: { x: width - 40, y },
+    thickness: 1,
+    color: rgb(0.85, 0.85, 0.85),
+  });
   y -= 10;
 
   const maxRows = Math.min(rows.length, 35);
@@ -200,46 +261,32 @@ async function buildPDF(rows: any[], title: string) {
   return new Uint8Array(bytes);
 }
 
+// =======================
+// Main
+// =======================
 Deno.serve(async (req) => {
-  // ✅ Responder preflight
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return json(req, admin.status, { ok: false, error: admin.error });
 
   try {
-    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-
-    const SUPABASE_URL = requireEnv("SUPABASE_URL");
-    const SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-    const authHeader = req.headers.get("authorization") || "";
-    const jwt = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-    if (!jwt) return json({ error: "Missing Bearer token" }, 401);
-
-    // Validamos user con el JWT, pero consultamos/insertamos con service role
-    const sbUser = createClient(SUPABASE_URL, SERVICE_KEY, {
-      global: { headers: { Authorization: `Bearer ${jwt}` } },
-    });
-
-    const { data: userData, error: userErr } = await sbUser.auth.getUser();
-    if (userErr || !userData?.user) return json({ error: "Invalid auth" }, 401);
-
-    const user = userData.user;
-    const email = (user.email || "").toLowerCase();
-    if (email !== "admin@debacu.com") return json({ error: "Forbidden" }, 403);
-
     const body = (await req.json()) as Body;
 
     if (!body.format || !["CSV", "PDF", "XML"].includes(body.format)) {
-      return json({ error: "Invalid format" }, 400);
+      return json(req, 400, { ok: false, error: "invalid_format" });
     }
-    if (!body.delivered_to_name?.trim()) return json({ error: "delivered_to_name required" }, 400);
-    if (!body.delivered_to_reason?.trim()) return json({ error: "delivered_to_reason required" }, 400);
+    if (!body.delivered_to_name?.trim()) return json(req, 400, { ok: false, error: "delivered_to_name_required" });
+    if (!body.delivered_to_reason?.trim()) return json(req, 400, { ok: false, error: "delivered_to_reason_required" });
 
     const limit = Math.min(Math.max(body.limit ?? 5000, 1), 20000);
 
-    // ✅ Sacar eventos (RPC que ya tienes)
-    const { data: rows, error: rpcErr } = await sbUser.rpc("admin_list_audit_events", {
+    // ✅ SERVICE ROLE para TODO lo admin (RPC + storage + insert + signed url)
+    const sb = supabaseServiceClient();
+
+    // ✅ RPC con SERVICE ROLE (soluciona "permission denied for view admin_audit_all")
+    const { data: rows, error: rpcErr } = await sb.rpc("admin_list_audit_events", {
       p_source: body.source ?? "ALL",
       p_customer: body.customer ?? null,
       p_type: body.type ?? null,
@@ -249,7 +296,7 @@ Deno.serve(async (req) => {
       p_offset: 0,
     });
 
-    if (rpcErr) return json({ error: rpcErr.message }, 400);
+    if (rpcErr) return json(req, 400, { ok: false, error: "rpc_error", detail: rpcErr.message });
 
     const dataRows = Array.isArray(rows) ? rows : [];
     const now = new Date();
@@ -282,19 +329,18 @@ Deno.serve(async (req) => {
 
     const sha = await sha256Hex(fileBytes);
 
-    const sb = createClient(SUPABASE_URL, SERVICE_KEY);
+    const { error: upErr } = await sb.storage.from(bucket).upload(storagePath, fileBytes, {
+      contentType,
+      upsert: true,
+    });
+    if (upErr) return json(req, 400, { ok: false, error: "upload_error", detail: upErr.message });
 
-    const { error: upErr } = await sb.storage
-      .from(bucket)
-      .upload(storagePath, fileBytes, { contentType, upsert: true });
-
-    if (upErr) return json({ error: upErr.message }, 400);
-
+    // Insert metadata (ajusta nombres si tu tabla difiere)
     const { data: ins, error: insErr } = await sb
       .from("debacu_eval_audit_exports")
       .insert({
-        generated_by_user_id: user.id,
-        generated_by_email: email,
+        generated_by_user_id: admin.user.id,
+        generated_by_email: (admin.user.email ?? "").toLowerCase(),
 
         delivered_to_name: body.delivered_to_name.trim(),
         delivered_to_org: body.delivered_to_org?.trim() || null,
@@ -318,25 +364,25 @@ Deno.serve(async (req) => {
       .select("id")
       .maybeSingle();
 
-    if (insErr) return json({ error: insErr.message }, 400);
+    if (insErr) return json(req, 400, { ok: false, error: "insert_error", detail: insErr.message });
 
-    const { data: signed, error: signErr } = await sb.storage
-      .from(bucket)
-      .createSignedUrl(storagePath, 60 * 10);
+    const { data: signed, error: signErr } = await sb.storage.from(bucket).createSignedUrl(storagePath, 600);
+    if (signErr) return json(req, 400, { ok: false, error: "sign_error", detail: signErr.message });
 
-    if (signErr) return json({ error: signErr.message }, 400);
-
-    return json({
-      export_id: ins?.id,
-      bucket,
-      path: storagePath,
-      file_name: fileName,
-      sha256: sha,
-      bytes: fileBytes.byteLength,
-      row_count: dataRows.length,
-      signed_url: signed?.signedUrl,
+    return json(req, 200, {
+      ok: true,
+      data: {
+        export_id: ins?.id ?? null,
+        bucket,
+        path: storagePath,
+        file_name: fileName,
+        sha256: sha,
+        bytes: fileBytes.byteLength,
+        row_count: dataRows.length,
+        signed_url: signed?.signedUrl ?? null,
+      },
     });
   } catch (e: any) {
-    return json({ error: e?.message || "Unexpected error" }, 500);
+    return json(req, 500, { ok: false, error: "unexpected", detail: e?.message ?? String(e) });
   }
 });

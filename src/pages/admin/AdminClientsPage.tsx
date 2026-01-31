@@ -1,5 +1,7 @@
 // src/pages/admin/AdminClientsPage.tsx
-import React, { useEffect, useMemo, useState } from "react";
+ 
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
 import { list_clients } from "@/services/adminService";
 import { adminAccessRequests } from "@/services/debacu_eval_adminAccess.service";
 import { supabase } from "@/services/supabase";
@@ -108,8 +110,13 @@ export default function AdminClientsPage() {
   const [selectedReq, setSelectedReq] = useState<AccessRequestRow | null>(null);
 
   const [pdfBusy, setPdfBusy] = useState(false);
+  const didLoad = useRef(false);
+
 
   useEffect(() => {
+    if (didLoad.current) return;
+       didLoad.current = true;
+
     void (async () => {
       setLoading(true);
       try {
@@ -269,7 +276,8 @@ export default function AdminClientsPage() {
                   <Td className="text-slate-700">{client.email ?? "-"}</Td>
 
                   <Td>
-                    <div className="text-slate-800">{client.plan_id ?? "-"}</div>
+                    <div className="text-slate-800">{(client as any).plan_name ?? client.plan_id ?? "-"}</div>
+
                     <div className="text-xs text-slate-500">{client.billing_frequency ?? "—"}</div>
                   </Td>
 

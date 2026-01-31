@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/services/supabaseClient";
-import type { User, Invoice } from "@/types/types";
+import type { User, Invoice as InvoiceBase } from "@/types/types";
 import { CreditCard, FileText, Loader2, Eye, EyeOff } from "lucide-react";
-import { changePlan } from "@/services/subscriptionManage";
+import { changePlan, scheduleDowngrade, cancelDowngrade } from "@/services/subscriptionManage";
+
 import { use_subscription_state } from "@/services/debacu_eval_subscription_state.service";
 import type { PlanCode, PaidPlanCode } from "@/types/types";
-import { PAID_PLAN_CODES, isPaidPlanCode, planTypeToPlanCode } from "@/types/types";
+import { PAID_PLAN_CODES } from "@/types/types";
+ 
 
 
 interface SubscriptionProps {
@@ -25,7 +27,8 @@ const TAB_LIST: { key: TabKey; label: string }[] = [
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(value);
 
-const formatDate = (value?: string | null) => (value ? new Date(value).toLocaleDateString("es-ES") : "-");
+const formatDate = (value?: string | null) =>
+  value ? new Date(value).toLocaleDateString("es-ES") : "-";
 
 type AvailablePlan = {
   id: string;
@@ -34,6 +37,12 @@ type AvailablePlan = {
   priceMonthly: number;
   description: string;
   maxQueries: number;
+};
+
+// ✅ EXTENSIÓN local para no tocar types.ts ahora mismo
+type Invoice = InvoiceBase & {
+  url?: string | null;
+  number?: string | null;
 };
 
 const PLAN_METADATA: Record<
@@ -68,7 +77,6 @@ const PLAN_METADATA: Record<
 
 const PLAN_SEQUENCE = PAID_PLAN_CODES;
 
-
 const PLAN_RANK: Record<PlanCode, number> = {
   FREE: 0,
   BASIC: 1,
@@ -90,6 +98,7 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user }) => {
   const [showNewPwd, setShowNewPwd] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
+
   const [planError, setPlanError] = useState<string | null>(null);
   const [isChangingPlan, setIsChangingPlan] = useState(false);
   const [selectedPlanCode, setSelectedPlanCode] = useState<PlanCode | null>(null);
@@ -118,18 +127,33 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user }) => {
   const customerId = (user as any)?.customerId ?? user.id;
 
   // Hook centralizado estado suscripción
-  const { state: subscriptionState, refresh: refreshSubscription } = use_subscription_state(customerId);
+  const { state: subscriptionState, refresh: refreshSubscription } =
+    use_subscription_state(customerId);
 
   const activeSub = subscriptionState?.subscription ?? null;
   const activePlanRow = subscriptionState?.plan ?? null;
 
+
   const hasPendingChange = (activeSub?.status ?? subscriptionState?.status) === "PENDING_PAYMENT";
+
+  // flags derivados de la suscripción / para cancelar cambio de plan
+const hasScheduledDowngrade = Boolean(
+  (activeSub as any)?.stripe_schedule_id || (activeSub as any)?.required_plan_code
+);
+
+
+  //si hay bajada de plan se le avisa
+  const downgradeTarget = String((activeSub as any)?.required_plan_code ?? "");
+  const downgradeDate =
+      (activeSub as any)?.next_billing_date ??
+      subscriptionState?.next_billing_date ??
+      null;
+
 
   // Plan actual (code / precio / límites)
   const currentPlanCode: PlanCode = useMemo(() => {
     const code = String(subscriptionState?.plan_code ?? "").toUpperCase();
     if (code === "BASIC" || code === "MEDIUM" || code === "PREMIUM") return code;
-    // si no hay plan_code, consideramos FREE (o lo que decidas)
     return "FREE";
   }, [subscriptionState?.plan_code]);
 
@@ -143,7 +167,10 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user }) => {
   }, [activePlanRow?.price_monthly, currentPlanCode]);
 
   const planDisplayName =
-    activePlanRow?.name ?? PLAN_METADATA[currentPlanCode]?.name ?? subscriptionState?.plan_display_name ?? "Plan";
+    activePlanRow?.name ??
+    PLAN_METADATA[currentPlanCode]?.name ??
+    subscriptionState?.plan_display_name ??
+    "Plan";
 
   const limitDescription =
     PLAN_METADATA[currentPlanCode]?.description ??
@@ -152,12 +179,17 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user }) => {
       : "Límites según plan");
 
   const maxQueries =
-    subscriptionState?.limits_max_queries_per_month ??
-    PLAN_METADATA[currentPlanCode]?.maxQueries ??
-    null;
+    subscriptionState?.limits_max_queries_per_month ?? PLAN_METADATA[currentPlanCode]?.maxQueries ?? null;
 
   const isFreePlan =
-    currentPlanCode === "FREE" || activeSub?.billing_frequency === "FREE_TRIAL" || monthlyFee === 0;
+    currentPlanCode === "FREE" || (activeSub as any)?.billing_frequency === "FREE_TRIAL" || monthlyFee === 0;
+
+    const billingLabel =
+  (activeSub as any)?.billing_frequency === "YEARLY" ? "Anual" :
+  (activeSub as any)?.billing_frequency === "MONTHLY" ? "Mensual" :
+  (activeSub as any)?.billing_frequency === "FREE_TRIAL" ? "Trial" :
+  (activeSub as any)?.billing_frequency ?? "Mensual";
+
 
   const planPriceLabel = isFreePlan ? "Gratis" : formatCurrency(monthlyFee);
 
@@ -177,7 +209,7 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user }) => {
       setPlanError(null);
 
       try {
-        const [customerResult, receiptsResult, plansResult] = await Promise.all([
+        const [customerResult, invoicesResult, plansResult] = await Promise.all([
           sb
             .from("customers")
             .select(
@@ -185,12 +217,27 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user }) => {
             )
             .eq("id", customerId)
             .maybeSingle(),
+
+          // ✅ Facturas Stripe (espejo en BD)
           sb
-            .from("receipts")
-            .select("id,date,amount,concept,status")
+            .from("debacu_eval_invoices")
+            .select(
+              `
+              id,
+              invoice_number,
+              stripe_invoice_id,
+              status,
+              currency,
+              amount_total,
+              invoice_created_at,
+              hosted_invoice_url,
+              invoice_pdf
+            `
+            )
             .eq("customer_id", customerId)
-            .order("date", { ascending: false })
-            .limit(5),
+            .order("invoice_created_at", { ascending: false })
+            .limit(10),
+
           sb
             .from("plans")
             .select("id,name,code,price_monthly,max_queries_per_month")
@@ -223,16 +270,30 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user }) => {
           });
         }
 
-        // Receipts -> invoices
-        const receipts = (receiptsResult?.data ?? []) as any[];
+        // ✅ Stripe invoices -> invoices
+        if (invoicesResult?.error) throw invoicesResult.error;
+
+        const invoiceRows = (invoicesResult?.data ?? []) as any[];
+
         setInvoices(
-          receipts.map((row) => ({
-            id: row.id,
-            date: row.date,
-            amount: Number(row.amount) || 0,
-            description: row.concept ?? "Factura",
-            status: row.status === "PAID" ? "Paid" : "Pending",
-          }))
+          invoiceRows.map((row) => {
+            const statusPaid = String(row.status ?? "").toLowerCase() === "paid";
+            const invUrl = row.hosted_invoice_url ?? row.invoice_pdf ?? null;
+            const invNumber = row.invoice_number ?? null;
+
+            // Texto tipo: "Plan Debacu Premium"
+            const desc = `Plan Debacu ${planDisplayName}`;
+
+            return {
+              id: String(row.stripe_invoice_id ?? row.id ?? ""),
+              date: row.invoice_created_at ?? null,
+              amount: Number(row.amount_total ?? 0) / 100, // cents -> €
+              description: desc,
+              status: statusPaid ? "Paid" : "Pending",
+              url: invUrl,
+              number: invNumber,
+            };
+          })
         );
 
         // Available plans
@@ -283,7 +344,7 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user }) => {
     return () => {
       cancelled = true;
     };
-  }, [customerId, sb, refreshSubscription]);
+  }, [customerId, sb, refreshSubscription, planDisplayName]);
 
   const handleSaveProfile = async () => {
     if (!customerId) return;
@@ -359,33 +420,74 @@ export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user }) => {
     }
   };
 
+  const handlePlanChange = async (target: PaidPlanCode) => {
+    setPlanError(null);
+    setSelectedPlanCode(target);
+    setIsChangingPlan(true);
 
+    try {
+      const targetRank = PLAN_RANK[target] ?? 0;
+      const isUpgrade = targetRank > currentPlanRank;
+      const isDowngrade = targetRank < currentPlanRank;
 
-const handlePlanUpgrade = async (planCode: PaidPlanCode) => {
+      if (!isUpgrade && !isDowngrade) return;
+
+      // 🔒 No permitir cambios si ya hay un pending_payment
+      if (hasPendingChange) {
+        setPlanError("Ya existe un cambio de plan pendiente. Espera confirmación de Stripe.");
+        return;
+      }
+
+      if (isUpgrade) {
+        const { checkout_url } = await changePlan({
+          target_plan_code: target,
+          billing_frequency: "MONTHLY",
+          customer_id: customerId || user.id,
+        });
+
+        window.location.href = checkout_url;
+        return;
+      }
+
+      // ✅ Downgrade (next_cycle) -> scheduleDowngrade
+      await scheduleDowngrade({
+        target_plan_code: target,
+        billing_frequency: "MONTHLY",
+        customer_id: customerId || user.id,
+      });
+
+      await refreshSubscription();
+      return;
+    } catch (error: any) {
+      console.error("Error cambiando plan:", error);
+      setPlanError(error?.message ?? "No se pudo iniciar el cambio de plan.");
+    } finally {
+      setIsChangingPlan(false);
+      setSelectedPlanCode(null);
+    }
+  };
+
+const handleCancelScheduledDowngrade = async () => {
   setPlanError(null);
-  setSelectedPlanCode(planCode);
   setIsChangingPlan(true);
 
   try {
-    const { checkout_url } = await changePlan({
-      target_plan_code: planCode, // ✅ ahora siempre es BASIC|MEDIUM|PREMIUM
-      billing_frequency: "MONTHLY",
+    // 👇 Esto lo tienes que implementar en subscriptionManage (te lo dejo abajo)
+    await cancelDowngrade({
       customer_id: customerId || user.id,
+      app_id: "DEBACU_EVAL", // opcional, si tu service lo manda
     });
 
-    window.location.href = checkout_url;
+    await refreshSubscription();
   } catch (error: any) {
-    console.error("Error cambiando plan:", error);
-    if (error?.code === "PENDING_CHANGE") {
-      setPlanError("Ya existe un cambio de plan pendiente. Espera a la confirmación de Stripe.");
-    } else {
-      setPlanError(error?.message ?? "No se pudo iniciar el cambio de plan.");
-    }
+    console.error("Error cancelando downgrade:", error);
+    setPlanError(error?.message ?? "No se pudo cancelar la bajada programada.");
   } finally {
     setIsChangingPlan(false);
-    setSelectedPlanCode(null);
   }
 };
+
+
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -428,6 +530,36 @@ const handlePlanUpgrade = async (planCode: PaidPlanCode) => {
                 </span>
               </div>
 
+             {hasScheduledDowngrade && (
+                <div className="mx-6 mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-xs font-semibold text-amber-800 uppercase">
+                        Bajada de plan programada
+                      </p>
+                      <p className="text-sm text-amber-900">
+                        Tu plan bajará a{" "}
+                        <b>{String((activeSub as any)?.required_plan_code ?? "BASIC")}</b> en la próxima renovación.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isChangingPlan || hasPendingChange}
+                      onClick={handleCancelScheduledDowngrade}
+                      className={`shrink-0 px-3 py-2 rounded-lg text-xs font-semibold uppercase transition ${
+                        isChangingPlan || hasPendingChange
+                          ? "bg-slate-200 text-slate-500 cursor-not-allowed"
+                          : "bg-amber-700 text-white hover:bg-amber-800"
+                      }`}
+                    >
+                      {isChangingPlan ? "Procesando..." : "Cancelar bajada"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+
               <div className="p-6 space-y-5">
                 <div className="flex items-end justify-between">
                   <div>
@@ -436,8 +568,32 @@ const handlePlanUpgrade = async (planCode: PaidPlanCode) => {
                   </div>
                   <div className="text-right text-sm text-slate-600">
                     <p>Inicio: {formatDate(activeSub?.start_date)}</p>
-                    <p>Próxima factura: {formatDate(activeSub?.next_billing_date ?? subscriptionState?.next_billing_date)}</p>
-                    <p>Facturación: {activeSub?.billing_frequency ?? "Mensual"}</p>
+                    <p>
+                      Próxima factura:{" "}
+                      {formatDate((activeSub as any)?.next_billing_date ?? subscriptionState?.next_billing_date)}
+                    </p>
+
+                    {/* ✅ Aviso downgrade programado (si existe en BD)  bajada de Plan activo */}
+                   {(activeSub as any)?.required_plan_code ? (
+                      <div className="mt-2">
+                        <p className="text-xs text-amber-700">
+                          Tu plan bajará a{" "}
+                          <b>{String((activeSub as any).required_plan_code)}</b>
+                          {(activeSub as any)?.next_billing_date
+                            ? ` el ${formatDate((activeSub as any).next_billing_date)}`
+                            : " en la próxima renovación"}
+                          . Hasta entonces mantienes el plan actual.
+                        </p>
+
+                        <p className="text-[11px] text-amber-600 mt-1">
+                          No se te cobrará nada ahora. El cambio se aplica en la próxima renovación.
+                        </p>
+                      </div>
+                    ) : null}
+
+
+                  <p>Facturación: {billingLabel}</p>
+
                   </div>
                 </div>
 
@@ -452,11 +608,11 @@ const handlePlanUpgrade = async (planCode: PaidPlanCode) => {
             <div className="bg-slate-50 rounded-2xl border border-slate-100 p-5 space-y-2">
               <span className="text-xs uppercase tracking-wide text-slate-500">Límites</span>
               <p className="text-sm text-slate-700">
-                {maxQueries
-                  ? `Hasta ${Number(maxQueries).toLocaleString("es-ES")} consultas/mes`
-                  : "Límites según plan"}
+                {maxQueries ? `Hasta ${Number(maxQueries).toLocaleString("es-ES")} consultas/mes` : "Límites según plan"}
               </p>
-              <p className="text-xs text-slate-500">Estos límites se aplican al mes en curso y se reinician automáticamente.</p>
+              <p className="text-xs text-slate-500">
+                Estos límites se aplican al mes en curso y se reinician automáticamente.
+              </p>
             </div>
 
             <div className="bg-white border border-slate-200 rounded-2xl shadow-sm">
@@ -477,10 +633,30 @@ const handlePlanUpgrade = async (planCode: PaidPlanCode) => {
                 ) : (
                   invoices.map((inv) => (
                     <div key={inv.id} className="flex items-center justify-between text-sm text-slate-600">
-                      <span>{formatDate(inv.date)}</span>
-                      <div>
-                        <span className="font-semibold text-slate-900">{formatCurrency(inv.amount)}</span>
-                        <span className="text-[11px] ml-2 rounded-full border px-2 py-0.5">{inv.status}</span>
+                      <div className="flex flex-col">
+                        <span>{formatDate(inv.date)}</span>
+                        <span className="text-xs text-slate-500">
+                          {inv.description}
+                          {inv.number ? ` · ${inv.number}` : ""}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="text-right">
+                          <span className="font-semibold text-slate-900">{formatCurrency(inv.amount)}</span>
+                          <span className="text-[11px] ml-2 rounded-full border px-2 py-0.5">{inv.status}</span>
+                        </div>
+
+                        {inv.url ? (
+                          <a
+                            href={inv.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-xs text-indigo-600 hover:underline"
+                          >
+                            Ver PDF
+                          </a>
+                        ) : null}
                       </div>
                     </div>
                   ))
@@ -502,28 +678,38 @@ const handlePlanUpgrade = async (planCode: PaidPlanCode) => {
                 {availablePlans.length === 0 ? (
                   <p className="text-sm text-slate-500">Cargando planes...</p>
                 ) : (
-                  availablePlans.map((option) => {
-                    const isActive = option.code === currentPlanCode;
-                    const optionRank = PLAN_RANK[option.code] ?? 0;
-                    const canUpgrade = optionRank > currentPlanRank;
+                 availablePlans.map((option) => {
+                      const isActive = option.code === currentPlanCode;
+                      const optionRank = PLAN_RANK[option.code] ?? 0;
+                      const canChange = optionRank !== currentPlanRank;
 
-                    const buttonDisabled = isChangingPlan || hasPendingChange || !canUpgrade || isActive;
-                    const actionAllowed = !buttonDisabled && !isActive && canUpgrade;
-                    const buttonLabel = isActive ? "Plan actual" : "Ampliar plan";
+                      const buttonDisabled =
+                        isChangingPlan ||
+                        hasPendingChange ||
+                        hasScheduledDowngrade || // ✅ bloquea más cambios si ya hay downgrade programado
+                        isActive ||
+                        !canChange;
 
-                    return (
-                      <PlanCard
-                        key={option.code}
-                        option={option}
-                        isActive={isActive}
-                        disabled={buttonDisabled}
-                        loading={isChangingPlan && selectedPlanCode === option.code}
-                        buttonLabel={buttonLabel}
-                        recommended={!isActive && currentPlanCode === "FREE" && option.code === "BASIC"}
-                        onAction={actionAllowed ? () => handlePlanUpgrade(option.code) : undefined}
-                      />
-                    );
-                  })
+                      const buttonLabel = isActive
+                        ? "Plan actual"
+                        : optionRank > currentPlanRank
+                        ? "Subir plan"
+                        : "Bajar plan";
+
+                      return (
+                        <PlanCard
+                          key={option.code}
+                          option={option}
+                          isActive={isActive}
+                          disabled={buttonDisabled}
+                          loading={isChangingPlan && selectedPlanCode === option.code}
+                          buttonLabel={buttonLabel}
+                          recommended={!isActive && currentPlanCode === "FREE" && option.code === "BASIC"}
+                          onAction={!buttonDisabled ? () => handlePlanChange(option.code) : undefined}
+                        />
+                      );
+                    })
+
                 )}
               </div>
 
@@ -764,10 +950,6 @@ const handlePlanUpgrade = async (planCode: PaidPlanCode) => {
     </div>
   );
 };
-
-
-
-
 
 type PlanCardProps = {
   option: AvailablePlan;

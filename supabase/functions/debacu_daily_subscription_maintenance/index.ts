@@ -20,7 +20,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-// Para tu cron interno NO hace falta CORS, pero lo dejo por si lo disparas manualmente desde navegador.
+// Para tu cron interno NO hace falta CORS, pero lo dejo por si lo disparas manualmente.
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
@@ -51,8 +51,6 @@ function addDaysFromNow(days: number) {
 
 /**
  * Inserta eventos en subscription_events (snake_case)
- * OJO: si tu tabla NO tiene algunas columnas (p.ej stripe_customer_id),
- * déjalas en null o elimina del insert.
  */
 async function insertEvent(params: {
   type: string;
@@ -62,8 +60,6 @@ async function insertEvent(params: {
   stripe_subscription_id?: string | null;
   payload?: Record<string, unknown>;
 }) {
-  // idempotencia best-effort: generamos un id único por evento
-  // (si en tu tabla stripe_event_id es UNIQUE, esto siempre insertará, porque es nuevo)
   const stripe_event_id = `cron_${params.type}_${crypto.randomUUID()}`;
 
   const { error } = await supabase.from("subscription_events").insert({
@@ -72,7 +68,6 @@ async function insertEvent(params: {
     payload: params.payload ?? {},
     created_at: isoNow(),
 
-    // ✅ snake_case (ajusta si tu tabla tiene nombres diferentes)
     customer_id: params.customer_id ?? null,
     app_id: params.app_id ?? null,
     stripe_customer_id: params.stripe_customer_id ?? null,
@@ -81,13 +76,12 @@ async function insertEvent(params: {
 
   if (error) {
     const msg = String((error as any)?.message ?? "").toLowerCase();
-    // si existiera unique y colisiona por alguna razón, ignoramos
     if (!(msg.includes("duplicate") || msg.includes("unique"))) throw error;
   }
 }
 
 /**
- * 1) TRIAL (Opción B) expirados:
+ * 1) TRIAL expirados:
  * - billing_frequency = FREE_TRIAL
  * - status = ACTIVE
  * - next_billing_date <= today
@@ -98,7 +92,7 @@ async function insertEvent(params: {
  */
 async function processTrialExpirations() {
   const now = isoNow();
-  const today = isoDate(); // yyyy-mm-dd (para comparar con columnas date)
+  const today = isoDate();
 
   const { data: rows, error } = await supabase
     .from("subscriptions")
@@ -118,7 +112,7 @@ async function processTrialExpirations() {
     .eq("status", "ACTIVE")
     .eq("billing_frequency", "FREE_TRIAL")
     .not("next_billing_date", "is", null)
-    .lte("next_billing_date", today) // trial vencido si hoy >= next_billing_date
+    .lte("next_billing_date", today)
     .limit(BATCH_LIMIT);
 
   if (error) throw error;
@@ -134,7 +128,6 @@ async function processTrialExpirations() {
         status: "PENDING_PAYMENT",
         grace_ends_at: grace,
 
-        // ✅ alineado con tu decisión
         required_plan_code: "BASIC",
         required_billing_frequency: "MONTHLY",
 
@@ -142,7 +135,7 @@ async function processTrialExpirations() {
       })
       .eq("id", r.id)
       .eq("status", "ACTIVE")
-      .eq("billing_frequency", "FREE_TRIAL"); // idempotencia
+      .eq("billing_frequency", "FREE_TRIAL");
 
     if (!upErr) {
       updated++;
@@ -206,7 +199,7 @@ async function processGraceExpiredSuspensions() {
         updated_at: now,
       })
       .eq("id", r.id)
-      .eq("status", "PENDING_PAYMENT"); // idempotencia
+      .eq("status", "PENDING_PAYMENT");
 
     if (!upErr) {
       updated++;
@@ -229,12 +222,141 @@ async function processGraceExpiredSuspensions() {
 }
 
 /**
- * 3) Limpieza: evitar múltiples ACTIVE por (customer_id, app_id)
- * - deja solo la más reciente (start_date/created_at)
- * - el resto => REPLACED + end_date=today
+ * ✅ 4) APLICAR DOWNGRADES PROGRAMADOS (required_plan_code)
  *
- * Nota: para bases grandes esto conviene pasarlo a SQL (CTE + window func).
- * Para ahora, lo hacemos “best-effort” y con límite.
+ * Criterio:
+ * - status = ACTIVE
+ * - required_plan_code IS NOT NULL
+ * - next_billing_date <= today   (ya toca el cambio en el nuevo ciclo)
+ *
+ * Acción:
+ * - Resolver plan_id destino (plans por app_id + code)
+ * - Update subscriptions: plan_id, billing_frequency (si required_billing_frequency), limpiar required_*
+ * - Log event CRON_DOWNGRADE_APPLIED
+ */
+async function applyScheduledDowngrades() {
+  const now = isoNow();
+  const today = isoDate();
+
+  const { data: rows, error } = await supabase
+    .from("subscriptions")
+    .select(
+      [
+        "id",
+        "customer_id",
+        "app_id",
+        "status",
+        "plan_id",
+        "billing_frequency",
+        "next_billing_date",
+        "required_plan_code",
+        "required_billing_frequency",
+        "stripe_customer_id",
+        "stripe_subscription_id",
+        "provider_subscription_id",
+      ].join(","),
+    )
+    .eq("status", "ACTIVE")
+    .not("required_plan_code", "is", null)
+    .not("next_billing_date", "is", null)
+    .lte("next_billing_date", today)
+    .limit(BATCH_LIMIT);
+
+  if (error) throw error;
+
+  let applied = 0;
+  let skipped_no_plan = 0;
+
+  for (const r of rows ?? []) {
+    const app_id = r.app_id as string;
+    const customer_id = r.customer_id as string;
+
+    const requiredPlanCode = String(r.required_plan_code ?? "").toUpperCase().trim();
+    const requiredFreq = (r.required_billing_frequency ?? null) as string | null;
+
+    // 1) resolver plan destino
+    const { data: planRow, error: planErr } = await supabase
+      .from("plans")
+      .select("id, code")
+      .eq("app_id", app_id)
+      .eq("code", requiredPlanCode)
+      .maybeSingle();
+
+    if (planErr) throw planErr;
+
+    if (!planRow?.id) {
+      skipped_no_plan++;
+      await insertEvent({
+        type: "CRON_DOWNGRADE_APPLY_SKIPPED_PLAN_NOT_FOUND",
+        customer_id,
+        app_id,
+        stripe_customer_id: (r as any).stripe_customer_id ?? null,
+        stripe_subscription_id:
+          (r as any).stripe_subscription_id ??
+          (r as any).provider_subscription_id ??
+          null,
+        payload: {
+          subscription_id: r.id,
+          required_plan_code: requiredPlanCode,
+          required_billing_frequency: requiredFreq,
+          next_billing_date: r.next_billing_date,
+        },
+      });
+      continue;
+    }
+
+    // 2) aplicar en BD (idempotente: solo si sigue teniendo required_plan_code)
+    const patch: Record<string, unknown> = {
+      plan_id: planRow.id,
+      updated_at: now,
+
+      // limpiar “cambio programado”
+      required_plan_code: null,
+      required_billing_frequency: null,
+    };
+
+    // si quieres que el billing_frequency “real” quede actualizado en BD:
+    if (requiredFreq) patch.billing_frequency = requiredFreq;
+
+    const { error: upErr } = await supabase
+      .from("subscriptions")
+      .update(patch)
+      .eq("id", r.id)
+      .eq("status", "ACTIVE")
+      .not("required_plan_code", "is", null);
+
+    if (!upErr) {
+      applied++;
+      await insertEvent({
+        type: "CRON_DOWNGRADE_APPLIED",
+        customer_id,
+        app_id,
+        stripe_customer_id: (r as any).stripe_customer_id ?? null,
+        stripe_subscription_id:
+          (r as any).stripe_subscription_id ??
+          (r as any).provider_subscription_id ??
+          null,
+        payload: {
+          subscription_id: r.id,
+          from_plan_id: r.plan_id ?? null,
+          to_plan_id: planRow.id,
+          to_plan_code: requiredPlanCode,
+          from_billing_frequency: r.billing_frequency ?? null,
+          to_billing_frequency: requiredFreq ?? null,
+          applied_at: now,
+          next_billing_date: r.next_billing_date,
+        },
+      });
+    }
+  }
+
+  return { applied, scanned: (rows ?? []).length, skipped_no_plan };
+}
+
+/**
+ * 3) Limpieza: evitar múltiples ACTIVE por (customer_id, app_id)
+ * - deja solo la más reciente
+ * - el resto => REPLACED + end_date=today
  */
 async function fixDuplicateActives() {
   const now = isoNow();
@@ -263,7 +385,6 @@ async function fixDuplicateActives() {
   for (const [key, arr] of groups.entries()) {
     if (arr.length <= 1) continue;
 
-    // Orden: más reciente primero
     arr.sort((a: any, b: any) => {
       const aStart = a.start_date ? String(a.start_date) : "";
       const bStart = b.start_date ? String(b.start_date) : "";
@@ -286,7 +407,7 @@ async function fixDuplicateActives() {
         updated_at: now,
       })
       .in("id", toReplace)
-      .eq("status", "ACTIVE"); // idempotencia
+      .eq("status", "ACTIVE");
 
     if (!upErr) {
       replaced += toReplace.length;
@@ -323,18 +444,29 @@ Deno.serve(async (req) => {
 
     const r1 = await processTrialExpirations();
     const r2 = await processGraceExpiredSuspensions();
+
+    // ✅ NUEVO: aplicar downgrades programados
+    const r4 = await applyScheduledDowngrades();
+
     const r3 = await fixDuplicateActives();
 
     await insertEvent({
       type: "CRON_DAILY_MAINTENANCE_OK",
-      payload: { r1, r2, r3, started_at, finished_at: isoNow() },
+      payload: { r1, r2, r3, r4, started_at, finished_at: isoNow() },
     });
 
-    return json(200, { ok: true, r1, r2, r3, started_at, finished_at: isoNow() });
+    return json(200, {
+      ok: true,
+      r1,
+      r2,
+      r4,
+      r3,
+      started_at,
+      finished_at: isoNow(),
+    });
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
 
-    // intentamos loguear el error, pero si falla no queremos romper la respuesta
     try {
       await insertEvent({
         type: "CRON_DAILY_MAINTENANCE_ERROR",
