@@ -1,74 +1,63 @@
 // src/components/admin/ExportsHistoryDialog.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  admin_audit_exports_list,
-  admin_audit_exports_stats,
-  admin_audit_exports_downloads,
+  admin_list_system_exports,
   admin_get_signed_export_url,
+  admin_list_export_downloads,
 } from "@/services/adminService";
 
-import { admin_list_audit_exports_v2 } from "@/services/adminService";
-
-
-type ExportRow = {
+ type ExportRow = {
   id: string;
   created_at: string;
 
-  app_id: string;
-  customer_id: string | null;
+  generated_by_user_id: string;
+  generated_by_email: string | null;
 
-  type: string;
-  source: string;
-  format: string;
+  delivered_to_name: string | null;
+  delivered_to_org: string | null;
+  delivered_to_reason: string | null;
+  delivered_to_reference: string | null;
 
-  file_name: string;
-  mime_type: string;
+  filter_source: string | null;
+  filter_customer: string | null;
+  filter_type: string | null;
+  filter_from: string | null;
+  filter_to: string | null;
+
+  format: "PDF" | "CSV" | "XML" | string;
+  row_count: number | null;
+
   storage_bucket: string;
   storage_path: string;
 
-  row_count?: number | null;
-  date_from?: string | null;
-  date_to?: string | null;
-
-  provided_to_type?: string | null;
-  provided_to_name?: string | null;
-  provided_to_contact?: string | null;
-  provided_to_ref?: string | null;
-
-  purpose?: string | null;
-  legal_basis?: string | null;
-  notes?: string | null;
-
-  generated_by_email?: string | null;
+  download_count: number | null;
+  last_download_at: string | null;
 };
+
 
 type Props = {
   open: boolean;
   onClose: () => void;
-  defaultType?: string; // "CONFIG_CHANGES"
+  defaultType?: string;
+  forceSystemExports?: boolean; // ✅ nuevo
 };
+
 
 type Filters = {
   q: string;
-  customer_id: string;
+  source: "" | "ALL" | "SYSTEM" | "PRODUCT";
+  customer: string;
+  type: string;
   from: string;
   to: string;
   format: "" | "PDF" | "CSV" | "XML";
-  type: string;
-  provided_to_type: string;
-};
-
-type DownloadStats = {
-  download_count: number;
-  last_downloaded_at: string | null;
-  last_downloaded_by_email: string | null;
 };
 
 type DownloadRow = {
   id: string;
   export_id: string;
-  downloaded_at: string;
-  downloaded_by_user_id: string | null;
+  created_at: string;
+  downloaded_by?: string | null;
   downloaded_by_email: string | null;
   ip: string | null;
   user_agent: string | null;
@@ -84,216 +73,169 @@ function fmtDateTime(v?: string | null) {
   return d.toLocaleString();
 }
 
+function fileNameFromPath(path?: string | null) {
+  if (!path) return "—";
+  const clean = path.split("?")[0];
+  const parts = clean.split("/");
+  return parts[parts.length - 1] || clean;
+}
+
 function shortPath(bucket?: string | null, path?: string | null) {
   if (!bucket || !path) return "—";
-  const p = path.length > 48 ? "…" + path.slice(-48) : path;
+  const p = path.length > 60 ? "…" + path.slice(-60) : path;
   return `${bucket}/${p}`;
 }
 
-async function mapWithLimit<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T, idx: number) => Promise<R>
-): Promise<R[]> {
-  const res: R[] = new Array(items.length);
-  let i = 0;
-
-  const workers = new Array(Math.max(1, limit)).fill(0).map(async () => {
-    while (i < items.length) {
-      const idx = i++;
-      res[idx] = await fn(items[idx], idx);
-    }
-  });
-
-  await Promise.all(workers);
-  return res;
+function parseEdgeArray<T = any>(raw: any): T[] {
+  if (Array.isArray(raw)) return raw;
+  if (Array.isArray(raw?.data)) return raw.data;
+  if (Array.isArray(raw?.rows)) return raw.rows;
+  if (Array.isArray(raw?.items)) return raw.items;
+  return [];
 }
 
-export default function ExportsHistoryDialog({ open, onClose, defaultType }: Props) {
+export default function ExportsHistoryDialog({
+  open,
+  onClose,
+  defaultType,
+  forceSystemExports,
+}: Props) {
+
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<ExportRow[]>([]);
-  const [error, setError] = useState<string>("");
+  const [error, setError] = useState("");
 
   const [page, setPage] = useState(0);
   const pageSize = 50;
 
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [selected, setSelected] = useState<ExportRow | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
-  // ✅ Stats por export_id
-  const [statsLoading, setStatsLoading] = useState(false);
-  const [statsById, setStatsById] = useState<Record<string, DownloadStats>>({});
-
-  // ✅ Drawer historial descargas
+  // modal historial descargas
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [downloadsLoading, setDownloadsLoading] = useState(false);
   const [downloadsRows, setDownloadsRows] = useState<DownloadRow[]>([]);
-  const [downloadsError, setDownloadsError] = useState<string>("");
+  const [downloadsError, setDownloadsError] = useState("");
 
   const [filters, setFilters] = useState<Filters>({
     q: "",
-    customer_id: "",
+    source: "",
+    customer: "",
+    type: defaultType ?? "",
     from: "",
     to: "",
     format: "",
-    type: defaultType ?? "",
-    provided_to_type: "",
   });
 
-  const providedToTypeOptions = useMemo(
-    () => ["", "AEPD", "AUDITOR_EXTERNO", "JUZGADO", "FUERZAS_SEGURIDAD", "CLIENTE", "OTRO"],
-    []
-  );
+  const sourceOptions = useMemo(() => ["", "ALL", "SYSTEM", "PRODUCT"] as const, []);
+  const formatOptions = useMemo(() => ["", "PDF", "CSV", "XML"] as const, []);
 
   useEffect(() => {
     if (!open) return;
+
     setSelected(null);
     setPage(0);
+    setError("");
+
     setDownloadsOpen(false);
     setDownloadsRows([]);
     setDownloadsError("");
-    setFilters((f) => ({ ...f, type: defaultType ?? f.type }));
+
+    // si defaultType viene, lo fijamos al abrir
+    setFilters((prev) => ({ ...prev, type: defaultType ?? prev.type }));
+
     void load(0, { ...filters, type: defaultType ?? filters.type });
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  async function load(targetPage = page, f = filters) {
-    setLoading(true);
-    setError("");
-    try {
-            const data = await admin_audit_exports_list({
-          app_id: "SYSTEM",
-          customer_id: f.customer_id || null,
-          from: f.from || null,
-          to: f.to || null,
-          format: f.format || null,
-          type: f.type || null,
-          provided_to_type: f.provided_to_type || null,
-          q: f.q || null,
-          limit: pageSize,
-          offset: targetPage * pageSize,
-        });
 
 
-      const nextRows = (data ?? []) as ExportRow[];
-      setRows(nextRows);
 
-      // ✅ precarga stats de descargas para los exports listados
-      void preloadDownloadStats(nextRows);
-    } catch (e: any) {
-      setRows([]);
-      setError(e?.message ?? "Error cargando exportaciones");
-    } finally {
-      setLoading(false);
-    }
+
+async function load(targetPage = page, f = filters) {
+  setLoading(true);
+  setError("");
+
+  try {
+    const raw = await admin_list_system_exports({
+      // ✅ esta pantalla es SYSTEM (config changes exportados a system-exports)
+      app_id: forceSystemExports ? "SYSTEM" : "DEBACU_EVAL",
+
+      q: f.q || null,
+
+      // ✅ IMPORTANTE:
+      // En tu tabla audit_exports el campo "source" NO es "SYSTEM".
+      // Así que para system exports NO filtres por source con valores SYSTEM/PRODUCT.
+      source: forceSystemExports ? null : (f.source || null),
+
+      customer_id: f.customer || null,
+      type: f.type || null,
+      from: f.from || null,
+      to: f.to || null,
+      format: f.format || null,
+
+      limit: pageSize,
+      offset: targetPage * pageSize,
+    });
+
+    const nextRows = parseEdgeArray<ExportRow>(raw);
+    setRows(nextRows);
+
+    if (!selected && nextRows.length > 0) setSelected(nextRows[0]);
+  } catch (e: any) {
+    console.error(e);
+    setRows([]);
+    setSelected(null);
+    setError(e?.message ?? "Error cargando exportaciones");
+  } finally {
+    setLoading(false);
   }
+}
 
-  async function preloadDownloadStats(nextRows: ExportRow[]) {
-    if (!nextRows?.length) {
-      setStatsById({});
-      return;
-    }
-
-    setStatsLoading(true);
-    try {
-      const ids = nextRows.map((r) => r.id).filter(Boolean);
-
-      // evitamos pedir stats si ya los tenemos en cache
-      const missing = ids.filter((id) => !statsById[id]);
-
-      if (missing.length === 0) return;
-
-      const results = await mapWithLimit(missing, 6, async (exportId) => {
-        try {
-          const s = await admin_audit_exports_stats(exportId);
-
-          return {
-            exportId,
-            stats: {
-              download_count: Number(s?.download_count ?? 0),
-              last_downloaded_at: s?.last_downloaded_at ?? null,
-              last_downloaded_by_email: s?.last_downloaded_by_email ?? null,
-            } satisfies DownloadStats,
-          };
-        } catch {
-          return {
-            exportId,
-            stats: { download_count: 0, last_downloaded_at: null, last_downloaded_by_email: null } as DownloadStats,
-          };
-        }
-      });
-
-      setStatsById((prev) => {
-        const next = { ...prev };
-        for (const r of results) next[r.exportId] = r.stats;
-        return next;
-      });
-    } finally {
-      setStatsLoading(false);
-    }
-  }
 
   function applyFilters() {
     setPage(0);
+    setSelected(null);
     void load(0, filters);
   }
 
   function resetFilters() {
     const next: Filters = {
       q: "",
-      customer_id: "",
+      source: "",
+      customer: "",
+      type: defaultType ?? "",
       from: "",
       to: "",
       format: "",
-      type: defaultType ?? "",
-      provided_to_type: "",
     };
     setFilters(next);
-    setSelected(null);
     setPage(0);
-    setStatsById({});
+    setSelected(null);
     void load(0, next);
   }
 
-async function downloadExport(r: ExportRow) {
+ async function downloadExport(r: ExportRow) {
   if (!r?.id) return;
+
   setDownloadingId(r.id);
   setError("");
 
   try {
-    const res = await admin_get_signed_export_url(r.id);
+    
 
-    // ✅ res puede ser string (lo actual) o objeto (por compatibilidad)
-    const signedUrl =
-      typeof res === "string"
-        ? res
-        : (res as any)?.signed_url || (res as any)?.signedUrl || (res as any)?.url;
+   
 
-    if (!signedUrl) throw new Error("No se recibió signed_url");
-
-    window.open(signedUrl, "_blank", "noopener,noreferrer");
-
-    // ✅ refresca stats del export tras descargar
-    try {
-      const s = await admin_audit_exports_stats(r.id);
-
-      setStatsById((prev) => ({
-        ...prev,
-        [r.id]: {
-          download_count: Number(s?.download_count ?? 0),
-          last_downloaded_at: s?.last_downloaded_at ?? null,
-          last_downloaded_by_email: s?.last_downloaded_by_email ?? null,
-        },
-      }));
-    } catch {
-      // no pasa nada
-    }
+    // refresca contadores
+    await load(page, filters);
   } catch (e: any) {
     setError(e?.message ?? "Error generando URL firmada");
   } finally {
     setDownloadingId(null);
   }
 }
+
 
   async function openDownloadsHistory(exportId: string) {
     setDownloadsOpen(true);
@@ -302,9 +244,9 @@ async function downloadExport(r: ExportRow) {
     setDownloadsRows([]);
 
     try {
-      const data = await admin_audit_exports_downloads(exportId, 200, 0);
-
-      setDownloadsRows((data ?? []) as DownloadRow[]);
+      const raw = await admin_list_export_downloads(exportId, 200, 0);
+      const data = parseEdgeArray<DownloadRow>(raw);
+      setDownloadsRows(data);
     } catch (e: any) {
       setDownloadsError(e?.message ?? "Error cargando descargas");
     } finally {
@@ -314,24 +256,22 @@ async function downloadExport(r: ExportRow) {
 
   if (!open) return null;
 
-  const selStats = selected?.id ? statsById[selected.id] : undefined;
+  const sel = selected;
 
   return (
     <div className="fixed inset-0 z-50">
-      {/* overlay */}
       <div className="absolute inset-0 bg-black/40" onClick={onClose} aria-hidden="true" />
 
-      {/* dialog */}
-      <div className="absolute left-1/2 top-1/2 w-[min(1400px,96vw)] -translate-x-1/2 -translate-y-1/2">
+      <div className="absolute left-1/2 top-1/2 w-[min(1450px,96vw)] -translate-x-1/2 -translate-y-1/2">
         <div className="flex h-[90vh] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
           {/* header */}
           <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-5 py-4">
             <div className="min-w-0">
               <div className="truncate text-base font-semibold text-slate-900">
-                Exportaciones realizadas
+                Exportaciones (audit-exports)
               </div>
               <div className="mt-0.5 text-sm text-slate-500">
-                Historial de ficheros exportados + detalle de entrega.
+                Lista + detalle de entrega + histórico de descargas.
               </div>
             </div>
 
@@ -343,21 +283,35 @@ async function downloadExport(r: ExportRow) {
             </button>
           </div>
 
-          {/* content */}
           <div className="grid flex-1 grid-cols-12 overflow-hidden">
             {/* LEFT */}
             <div className="col-span-12 flex min-w-0 flex-col lg:col-span-8">
               {/* filters */}
               <div className="border-b border-slate-200 px-5 py-4">
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-12">
-                  <div className="md:col-span-5">
+                  <div className="md:col-span-4">
                     <label className="text-xs font-medium text-slate-600">Buscar</label>
                     <input
                       value={filters.q}
                       onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))}
-                      placeholder="archivo, referencia, notas, email…"
+                      placeholder="storage_path, delivered_to, email…"
                       className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                     />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="text-xs font-medium text-slate-600">Source</label>
+                    <select
+                      value={filters.source}
+                      onChange={(e) => setFilters((f) => ({ ...f, source: e.target.value as any }))}
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    >
+                      {sourceOptions.map((s) => (
+                        <option key={s} value={s}>
+                          {s === "" ? "Todos" : s}
+                        </option>
+                      ))}
+                    </select>
                   </div>
 
                   <div className="md:col-span-2">
@@ -380,51 +334,37 @@ async function downloadExport(r: ExportRow) {
                     />
                   </div>
 
-                  <div className="md:col-span-3">
+                  <div className="md:col-span-2">
                     <label className="text-xs font-medium text-slate-600">Formato</label>
                     <select
                       value={filters.format}
                       onChange={(e) => setFilters((f) => ({ ...f, format: e.target.value as any }))}
                       className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                     >
-                      <option value="">Todos</option>
-                      <option value="PDF">PDF</option>
-                      <option value="CSV">CSV</option>
-                      <option value="XML">XML</option>
-                    </select>
-                  </div>
-
-                  <div className="md:col-span-4">
-                    <label className="text-xs font-medium text-slate-600">Tipo</label>
-                    <input
-                      value={filters.type}
-                      onChange={(e) => setFilters((f) => ({ ...f, type: e.target.value }))}
-                      placeholder="CONFIG_CHANGES…"
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                    />
-                  </div>
-
-                  <div className="md:col-span-4">
-                    <label className="text-xs font-medium text-slate-600">Tipo entrega</label>
-                    <select
-                      value={filters.provided_to_type}
-                      onChange={(e) => setFilters((f) => ({ ...f, provided_to_type: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                    >
-                      {providedToTypeOptions.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt === "" ? "Todos" : opt}
+                      {formatOptions.map((x) => (
+                        <option key={x} value={x}>
+                          {x === "" ? "Todos" : x}
                         </option>
                       ))}
                     </select>
                   </div>
 
                   <div className="md:col-span-4">
-                    <label className="text-xs font-medium text-slate-600">Cliente (customer_id)</label>
+                    <label className="text-xs font-medium text-slate-600">filter_type</label>
                     <input
-                      value={filters.customer_id}
-                      onChange={(e) => setFilters((f) => ({ ...f, customer_id: e.target.value }))}
-                      placeholder="uuid (opcional)"
+                      value={filters.type}
+                      onChange={(e) => setFilters((f) => ({ ...f, type: e.target.value }))}
+                      placeholder="CHECK_SIGNALS, CONFIG_CHANGES…"
+                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    />
+                  </div>
+
+                  <div className="md:col-span-4">
+                    <label className="text-xs font-medium text-slate-600">filter_customer</label>
+                    <input
+                      value={filters.customer}
+                      onChange={(e) => setFilters((f) => ({ ...f, customer: e.target.value }))}
+                      placeholder="email / customer ref (según tu vista)"
                       className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                     />
                   </div>
@@ -433,19 +373,20 @@ async function downloadExport(r: ExportRow) {
                     <button
                       onClick={applyFilters}
                       className="rounded-xl bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800"
+                      disabled={loading}
                     >
-                      Aplicar filtros
+                      Aplicar
                     </button>
                     <button
                       onClick={resetFilters}
                       className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                      disabled={loading}
                     >
                       Reset
                     </button>
 
                     <div className="ml-auto text-sm text-slate-600">
                       {loading ? "Cargando…" : `${rows.length} resultados`}
-                      {statsLoading ? " · stats…" : ""}
                     </div>
                   </div>
                 </div>
@@ -457,7 +398,7 @@ async function downloadExport(r: ExportRow) {
                 ) : null}
               </div>
 
-              {/* table area (scroll) */}
+              {/* table */}
               <div className="flex-1 min-w-0 overflow-hidden">
                 <div className="h-full w-full overflow-auto">
                   <table className="w-full table-fixed text-sm">
@@ -467,56 +408,61 @@ async function downloadExport(r: ExportRow) {
                         <th className="w-[160px] px-4 py-3 text-left">Tipo</th>
                         <th className="w-[90px] px-4 py-3 text-left">Formato</th>
                         <th className="min-w-[420px] px-4 py-3 text-left">Archivo</th>
-
-                        {/* ✅ NUEVO */}
-                        <th className="w-[140px] px-4 py-3 text-left">Descargas</th>
-
-                        <th className="w-[170px] px-4 py-3 text-left">Entregado a</th>
-                        <th className="w-[130px] px-4 py-3 text-right">Acciones</th>
+                        <th className="w-[150px] px-4 py-3 text-left">Descargas</th>
+                        <th className="w-[200px] px-4 py-3 text-left">Entregado</th>
+                        <th className="w-[140px] px-4 py-3 text-right">Acciones</th>
                       </tr>
                     </thead>
 
                     <tbody>
                       {rows.map((r) => {
                         const isSel = selected?.id === r.id;
-                        const st = statsById[r.id];
+                        const downloads = Number(r.download_count ?? 0);
 
                         return (
                           <tr
                             key={r.id}
-                            className={cx("border-b border-slate-100 hover:bg-slate-50", isSel && "bg-slate-50")}
+                            className={cx(
+                              "border-b border-slate-100 hover:bg-slate-50",
+                              isSel && "bg-slate-50"
+                            )}
                             onClick={() => setSelected(r)}
                             style={{ cursor: "pointer" }}
                           >
                             <td className="px-4 py-3 align-top">{fmtDateTime(r.created_at)}</td>
 
                             <td className="px-4 py-3 align-top">
-                              <div className="font-medium text-slate-900">{r.type}</div>
-                              <div className="text-xs text-slate-500">{r.source || "—"}</div>
+                              <div className="font-medium text-slate-900">{r.filter_type ?? "—"}</div>
+                              <div className="text-xs text-slate-500">
+                                {r.filter_from || r.filter_to
+                                  ? `${r.filter_from ?? "—"} → ${r.filter_to ?? "—"}`
+                                  : r.filter_source ?? "—"}
+                              </div>
                             </td>
 
                             <td className="px-4 py-3 align-top">{r.format}</td>
 
                             <td className="px-4 py-3 align-top">
-                              <div className="truncate font-medium text-slate-900">{r.file_name}</div>
+                              <div className="truncate font-medium text-slate-900">
+                                {fileNameFromPath(r.storage_path)}
+                              </div>
                               <div className="mt-1 text-xs text-slate-500">
                                 {shortPath(r.storage_bucket, r.storage_path)}
                               </div>
                             </td>
 
-                            {/* ✅ NUEVO */}
                             <td className="px-4 py-3 align-top">
-                              <div className="font-medium text-slate-900">
-                                {st ? st.download_count : "—"}
-                              </div>
+                              <div className="font-medium text-slate-900">{downloads}</div>
                               <div className="text-xs text-slate-500">
-                                {st?.last_downloaded_at ? fmtDateTime(st.last_downloaded_at) : "—"}
+                                {r.last_download_at ? fmtDateTime(r.last_download_at) : "—"}
                               </div>
                             </td>
 
                             <td className="px-4 py-3 align-top">
-                              <div className="text-slate-900">{r.provided_to_type ?? "—"}</div>
-                              <div className="text-xs text-slate-500">{r.provided_to_name ?? "—"}</div>
+                              <div className="text-slate-900">{r.delivered_to_org ?? r.delivered_to_name ?? "—"}</div>
+                              <div className="text-xs text-slate-500">
+                                {r.delivered_to_reason ?? "—"} · {r.delivered_to_reference ?? "—"}
+                              </div>
                             </td>
 
                             <td className="px-4 py-3 text-right align-top">
@@ -582,12 +528,12 @@ async function downloadExport(r: ExportRow) {
               <div className="border-b border-slate-200 px-5 py-4">
                 <div className="text-sm font-semibold text-slate-900">Detalle</div>
                 <div className="mt-1 text-sm text-slate-500">
-                  Selecciona una exportación para ver a quién, por qué y cuándo.
+                  Selecciona una exportación para ver entrega, filtros y descargas.
                 </div>
               </div>
 
               <div className="flex-1 overflow-auto px-5 py-4">
-                {!selected ? (
+                {!sel ? (
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-600">
                     Ninguna exportación seleccionada.
                   </div>
@@ -595,111 +541,106 @@ async function downloadExport(r: ExportRow) {
                   <div className="space-y-3">
                     <div className="rounded-2xl border border-slate-200 bg-white p-4">
                       <div className="text-xs text-slate-500">Archivo</div>
-                      <div className="mt-1 font-medium text-slate-900">{selected.file_name}</div>
+                      <div className="mt-1 font-medium text-slate-900">
+                        {fileNameFromPath(sel.storage_path)}
+                      </div>
                       <div className="mt-1 text-xs text-slate-500">
-                        {selected.format} · {selected.mime_type}
+                        {sel.format} · {sel.row_count ?? 0} filas
                       </div>
                       <div className="mt-2 text-xs text-slate-500">
-                        {selected.storage_bucket}/{selected.storage_path}
+                        {sel.storage_bucket}/{sel.storage_path}
                       </div>
                     </div>
 
-                    {/* ✅ NUEVO: Descargas */}
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <div className="text-xs text-slate-500">Filtros aplicados</div>
+                      <div className="mt-2 space-y-1 text-sm text-slate-900">
+                        <div>
+                          <span className="text-slate-500">source:</span> {sel.filter_source ?? "—"}
+                        </div>
+                        <div>
+                          <span className="text-slate-500">customer:</span> {sel.filter_customer ?? "—"}
+                        </div>
+                        <div>
+                          <span className="text-slate-500">type:</span> {sel.filter_type ?? "—"}
+                        </div>
+                        <div>
+                          <span className="text-slate-500">rango:</span>{" "}
+                          {sel.filter_from ?? "—"} → {sel.filter_to ?? "—"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <div className="text-xs text-slate-500">Entrega</div>
+                      <div className="mt-2 space-y-1 text-sm text-slate-900">
+                        <div>
+                          <span className="text-slate-500">Nombre:</span> {sel.delivered_to_name ?? "—"}
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Org:</span> {sel.delivered_to_org ?? "—"}
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Motivo:</span> {sel.delivered_to_reason ?? "—"}
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Ref:</span> {sel.delivered_to_reference ?? "—"}
+                        </div>
+                      </div>
+                    </div>
+
                     <div className="rounded-2xl border border-slate-200 bg-white p-4">
                       <div className="text-xs text-slate-500">Descargas</div>
                       <div className="mt-2 space-y-1 text-sm text-slate-900">
                         <div>
-                          <span className="text-slate-500">Total:</span>{" "}
-                          {selStats ? selStats.download_count : "—"}
+                          <span className="text-slate-500">Total:</span> {Number(sel.download_count ?? 0)}
                         </div>
                         <div>
                           <span className="text-slate-500">Última:</span>{" "}
-                          {selStats?.last_downloaded_at ? fmtDateTime(selStats.last_downloaded_at) : "—"}
-                        </div>
-                        <div>
-                          <span className="text-slate-500">Por:</span>{" "}
-                          {selStats?.last_downloaded_by_email ?? "—"}
+                          {sel.last_download_at ? fmtDateTime(sel.last_download_at) : "—"}
                         </div>
                       </div>
 
-                      <div className="mt-3">
+                      <div className="mt-3 flex flex-wrap gap-2">
                         <button
-                          onClick={() => void openDownloadsHistory(selected.id)}
+                          onClick={() => void openDownloadsHistory(sel.id)}
                           className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
                         >
                           Ver histórico
                         </button>
+
+                        <button
+                          onClick={() => void downloadExport(sel)}
+                          className="rounded-xl bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-60"
+                          disabled={downloadingId === sel.id}
+                        >
+                          {downloadingId === sel.id ? "Generando…" : "Descargar / Imprimir"}
+                        </button>
                       </div>
-                    </div>
 
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                      <div className="text-xs text-slate-500">Entrega / Destinatario</div>
-                      <div className="mt-2 space-y-1 text-sm text-slate-900">
-                        <div>
-                          <span className="text-slate-500">Tipo:</span> {selected.provided_to_type ?? "—"}
+                      {downloadsError ? (
+                        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                          {downloadsError}
                         </div>
-                        <div>
-                          <span className="text-slate-500">Nombre:</span> {selected.provided_to_name ?? "—"}
-                        </div>
-                        <div>
-                          <span className="text-slate-500">Contacto:</span> {selected.provided_to_contact ?? "—"}
-                        </div>
-                        <div>
-                          <span className="text-slate-500">Referencia:</span> {selected.provided_to_ref ?? "—"}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                      <div className="text-xs text-slate-500">Motivo</div>
-                      <div className="mt-2 space-y-1 text-sm text-slate-900">
-                        <div>
-                          <span className="text-slate-500">Purpose:</span> {selected.purpose ?? "—"}
-                        </div>
-                        <div>
-                          <span className="text-slate-500">Base legal:</span> {selected.legal_basis ?? "—"}
-                        </div>
-                        <div className="pt-2">
-                          <span className="text-slate-500">Notas:</span> {selected.notes ?? "—"}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        onClick={() => void downloadExport(selected)}
-                        className="rounded-xl bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-60"
-                        disabled={downloadingId === selected.id}
-                      >
-                        {downloadingId === selected.id ? "Generando…" : "Descargar / Imprimir"}
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          alert("Enviar: lo implementamos con una Edge Function (Brevo) en el siguiente paso.");
-                        }}
-                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                      >
-                        Enviar
-                      </button>
+                      ) : null}
                     </div>
 
                     <div className="text-xs text-slate-500">
-                      Generado por: {selected.generated_by_email ?? "—"} · {fmtDateTime(selected.created_at)}
+                      Generado por: {sel.generated_by_email ?? "—"} · {fmtDateTime(sel.created_at)}
                     </div>
                   </div>
                 )}
               </div>
 
               <div className="border-t border-slate-200 px-5 py-3 text-xs text-slate-500">
-                Tip: “Descargar / Imprimir” abre el PDF; imprime desde el navegador.
+                Nota: el log de descargas se crea al generar la URL firmada.
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* ✅ Mini dialog histórico descargas */}
+      {/* Modal descargas */}
       {downloadsOpen ? (
         <div className="fixed inset-0 z-[60]">
           <div
@@ -713,7 +654,7 @@ async function downloadExport(r: ExportRow) {
                 <div>
                   <div className="text-base font-semibold text-slate-900">Histórico de descargas</div>
                   <div className="text-sm text-slate-500">
-                    Export: {selected?.file_name ?? "—"}
+                    Export: {selected ? fileNameFromPath(selected.storage_path) : "—"}
                   </div>
                 </div>
                 <button
@@ -725,52 +666,38 @@ async function downloadExport(r: ExportRow) {
               </div>
 
               <div className="max-h-[70vh] overflow-auto p-4">
-                {downloadsError ? (
-                  <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                    {downloadsError}
-                  </div>
-                ) : null}
-
-                <table className="w-full table-fixed text-sm">
-                  <thead className="sticky top-0 bg-white">
-                    <tr className="border-b border-slate-200 text-slate-600">
-                      <th className="w-[210px] px-3 py-3 text-left">Fecha</th>
-                      <th className="w-[220px] px-3 py-3 text-left">Email</th>
-                      <th className="w-[140px] px-3 py-3 text-left">IP</th>
-                      <th className="px-3 py-3 text-left">User Agent</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {downloadsLoading ? (
-                      <tr>
-                        <td colSpan={4} className="px-3 py-8 text-center text-slate-500">
-                          Cargando…
-                        </td>
+                {downloadsLoading ? (
+                  <div className="px-3 py-8 text-center text-slate-500">Cargando…</div>
+                ) : downloadsRows.length === 0 ? (
+                  <div className="px-3 py-8 text-center text-slate-500">No hay descargas registradas.</div>
+                ) : (
+                  <table className="w-full table-fixed text-sm">
+                    <thead className="sticky top-0 bg-white">
+                      <tr className="border-b border-slate-200 text-slate-600">
+                        <th className="w-[210px] px-3 py-3 text-left">Fecha</th>
+                        <th className="w-[240px] px-3 py-3 text-left">Email</th>
+                        <th className="w-[150px] px-3 py-3 text-left">IP</th>
+                        <th className="px-3 py-3 text-left">User Agent</th>
                       </tr>
-                    ) : downloadsRows.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="px-3 py-8 text-center text-slate-500">
-                          No hay descargas registradas.
-                        </td>
-                      </tr>
-                    ) : (
-                      downloadsRows.map((d) => (
+                    </thead>
+                    <tbody>
+                      {downloadsRows.map((d) => (
                         <tr key={d.id} className="border-b border-slate-100">
-                          <td className="px-3 py-3 align-top">{fmtDateTime(d.downloaded_at)}</td>
+                          <td className="px-3 py-3 align-top">{fmtDateTime(d.created_at)}</td>
                           <td className="px-3 py-3 align-top">{d.downloaded_by_email ?? "—"}</td>
                           <td className="px-3 py-3 align-top">{d.ip ?? "—"}</td>
                           <td className="px-3 py-3 align-top">
                             <div className="truncate">{d.user_agent ?? "—"}</div>
                           </td>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
 
               <div className="border-t border-slate-200 px-5 py-3 text-xs text-slate-500">
-                Nota: este log se escribe cuando se genera la URL firmada (quién la descargó, cuándo y desde dónde).
+                Si aquí no aparece nada: es que nadie ha generado URL firmada para ese export.
               </div>
             </div>
           </div>

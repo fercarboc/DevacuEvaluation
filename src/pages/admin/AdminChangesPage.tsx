@@ -1,24 +1,19 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { supabase } from "@/services/supabaseClient"; // ajusta si tu cliente está en otra ruta
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+
 import { sha256HexFromBlob } from "@/utils/auditExport";
 import { export_system_file } from "@/services/adminService";
 
- 
+import {
+  admin_list_config_changes,
+  admin_rollback_abuse_settings,
+  type ConfigChangeRow,
+} from "@/services/adminService";
+
 import ExportsHistoryDialog from "./ExportsHistoryDialog";
 
-type ChangeRow = {
-  audit_id: string;
-  abuse_settings_id: string;
-  created_at: string;
-  actor_name: string | null;
-  changes_count: number;
-  changes_summary: string;
-};
-
 type ExportFormat = "PDF" | "CSV";
-
 
 // ─────────────────────────────
 // Tipos de entrega (DEBE coincidir con enum audit_provided_to_type)
@@ -44,18 +39,15 @@ type ExportMeta = {
   notes: string;
 };
 
-
+type ChangeRow = ConfigChangeRow;
 
 const cx = (...cls: Array<string | false | null | undefined>) =>
   cls.filter(Boolean).join(" ");
 
 function getSeverity(summary: string) {
   const s = (summary || "").toLowerCase();
-  const hasCritical = s.includes("critical");
-  const hasWarning = s.includes("warning");
-
-  if (hasCritical) return "critical";
-  if (hasWarning) return "warning";
+  if (s.includes("critical")) return "critical";
+  if (s.includes("warning")) return "warning";
   return "normal";
 }
 
@@ -81,18 +73,11 @@ async function sha256Text(text: string): Promise<string> {
 function normalizePdfText(input: any) {
   let s = String(input ?? "");
 
-  // Caso típico: "&R&a&n&g&o" => "Rango"
   const ampCount = (s.match(/&/g) || []).length;
-  if (ampCount >= Math.floor(s.length / 2)) {
-    s = s.replace(/&/g, "");
-  }
+  if (ampCount >= Math.floor(s.length / 2)) s = s.replace(/&/g, "");
 
-  // jsPDF a veces falla con ciertos caracteres unicode
   s = s.replaceAll("→", "->").replaceAll("–", "-").replaceAll("—", "-");
-
-  // Limpieza básica (evita caracteres invisibles raros)
   s = s.replace(/[\u0000-\u001F\u007F]/g, "");
-
   return s;
 }
 
@@ -113,26 +98,17 @@ function downloadBlob(blob: Blob, fileName: string) {
   URL.revokeObjectURL(url);
 }
 
-/** Construye el PDF y devuelve:
- *  - blob: para descargar/subir
- *  - reportHash: el hash que se imprime en el footer (hash lógico del contenido)
- */
 async function buildPdfBlob(
   rows: ChangeRow[],
   meta: { from?: string; to?: string }
 ): Promise<{ blob: Blob; reportHash: string }> {
-  const doc = new jsPDF({
-    orientation: "landscape",
-    unit: "pt",
-    format: "a4",
-  });
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
 
   const subtitle = "Debacu Evaluation 360";
   const title = "Informe de cambios de configuración";
   const generated = new Date().toLocaleString();
-  const rangeText = `Rango: ${meta.from || "inicio"} → ${meta.to || "hoy"}`;
+  const rangeText = `Rango: ${meta.from || "inicio"} -> ${meta.to || "hoy"}`;
 
-  // ───────────────── Header ─────────────────
   doc.setFont("helvetica", "bold");
   doc.setFontSize(18);
   doc.text(normalizePdfText(subtitle), 40, 45);
@@ -145,12 +121,11 @@ async function buildPdfBlob(
   doc.text(`Generado: ${normalizePdfText(generated)}`, 40, 90);
   doc.text(normalizePdfText(rangeText), 40, 105);
 
-  // ───────────────── Tabla ─────────────────
   const body = rows.map((r) => [
     normalizePdfText(new Date(r.created_at).toLocaleString()),
     normalizePdfText(r.actor_name ?? "system"),
-    normalizePdfText(getSeverity(r.changes_summary)),
-    normalizePdfText(r.changes_summary),
+    normalizePdfText(getSeverity(String(r.changes_count))),
+    normalizePdfText(r.changes),
     String(r.changes_count ?? ""),
     normalizePdfText(r.audit_id),
   ]);
@@ -167,7 +142,7 @@ async function buildPdfBlob(
       overflow: "linebreak",
       valign: "top",
       textColor: [30, 30, 30],
-      fillColor: false,
+      fillColor: false as any,
     },
     headStyles: {
       fillColor: [15, 23, 42],
@@ -175,42 +150,24 @@ async function buildPdfBlob(
       fontStyle: "bold",
       halign: "left",
     },
-    alternateRowStyles: undefined,
     columnStyles: {
-      0: { cellWidth: 95 }, // Fecha
-      1: { cellWidth: 115 }, // Actor
-      2: { cellWidth: 70 }, // Severidad
-      3: { cellWidth: 360 }, // Cambios
-      4: { cellWidth: 30, halign: "left" }, // Nº
-      5: {
-        cellWidth: 92,
-        fontSize: 7,
-        textColor: [120, 120, 120],
-        overflow: "linebreak",
-      },
+      0: { cellWidth: 95 },
+      1: { cellWidth: 115 },
+      2: { cellWidth: 70 },
+      3: { cellWidth: 360 },
+      4: { cellWidth: 30, halign: "left" },
+      5: { cellWidth: 92, fontSize: 7, textColor: [120, 120, 120] },
     },
     tableWidth: doc.internal.pageSize.getWidth() - 80,
-    didDrawPage: (data) => {
-      doc.setDrawColor(220);
-      doc.line(
-        data.settings.margin.left,
-        data.cursor.y + 10,
-        doc.internal.pageSize.getWidth() - data.settings.margin.right,
-        data.cursor.y + 10
-      );
-    },
   });
 
-  // Hash “lógico” del informe (mismo que imprimes)
   const hashSource = rows
     .map((r) => `${r.audit_id}|${r.created_at}|${r.changes_summary}`)
     .join("\n");
   const reportHash = await sha256Text(hashSource);
 
-  // ───────────────── Footer ─────────────────
   const pageCount = doc.getNumberOfPages();
   doc.setFontSize(9);
-
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
     doc.text(
@@ -229,14 +186,13 @@ async function buildPdfBlob(
   return { blob, reportHash };
 }
 
-/** CSV (sin hash) + luego lo añadimos como última línea */
 function buildCsvBase(rows: ChangeRow[]) {
   const headers = [
     "Fecha",
     "Actor",
     "Severidad",
+    "Nº",
     "Cambios",
-    "Resumen",
     "Audit ID",
     "Abuse Settings ID",
   ];
@@ -263,12 +219,13 @@ function buildCsvBase(rows: ChangeRow[]) {
   return [headers.join(","), ...lines].join("\n");
 }
 
-/** Genera CSV final con línea de hash *coherente con el propio fichero* */
 async function buildCsvWithHash(rows: ChangeRow[]) {
   const base = buildCsvBase(rows);
 
   const provisional = `${base}\n\n# Hash SHA256: __PENDING__\n`;
-  const provisionalBlob = new Blob([provisional], { type: "text/csv;charset=utf-8" });
+  const provisionalBlob = new Blob([provisional], {
+    type: "text/csv;charset=utf-8",
+  });
   const provisionalHash = await sha256HexFromBlob(provisionalBlob);
 
   const finalText = `${base}\n\n# Hash SHA256: ${provisionalHash}\n`;
@@ -276,12 +233,14 @@ async function buildCsvWithHash(rows: ChangeRow[]) {
   const finalSha = await sha256HexFromBlob(finalBlob);
 
   const finalText2 = `${base}\n\n# Hash SHA256: ${finalSha}\n`;
-  const finalBlob2 = new Blob([finalText2], { type: "text/csv;charset=utf-8" });
+  const finalBlob2 = new Blob([finalText2], {
+    type: "text/csv;charset=utf-8",
+  });
 
   return { blob: finalBlob2, sha: finalSha };
 }
 
-export default function AdminChanges() {
+export default function AdminChangesPage() {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<ChangeRow[]>([]);
   const [error, setError] = useState<string>("");
@@ -291,14 +250,11 @@ export default function AdminChanges() {
   const [from, setFrom] = useState<string>(""); // yyyy-mm-dd
   const [to, setTo] = useState<string>(""); // yyyy-mm-dd
 
-  // exporting states
+  // exporting
   const [exporting, setExporting] = useState(false);
-
-  // modal export
   const [exportOpen, setExportOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("PDF");
   const [exportMeta, setExportMeta] = useState<ExportMeta>({
-    // ⚠️ Pon aquí los mismos valores que uses en Auditoría para el enum audit_provided_to_type
     provided_to_type: providedToType[0].value,
     provided_to_name: "",
     provided_to_contact: "",
@@ -308,10 +264,10 @@ export default function AdminChanges() {
     notes: "",
   });
 
-//ver exportaciones previas Cambios systema
+  // ver exportaciones previas
   const [openExports, setOpenExports] = useState(false);
 
-  // confirm/rollback
+  // rollback
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [selectedAuditId, setSelectedAuditId] = useState<string | null>(null);
   const [selectedSummary, setSelectedSummary] = useState<string>("");
@@ -320,7 +276,6 @@ export default function AdminChanges() {
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase();
     if (!qq) return rows;
-
     return rows.filter((r) => {
       const hay = [
         r.actor_name ?? "",
@@ -335,46 +290,39 @@ export default function AdminChanges() {
     });
   }, [rows, q]);
 
-  async function load() {
-    setLoading(true);
-    setError("");
+  // ✅ load() DENTRO del componente
+ const load = async () => {
+  setLoading(true);
+  setError("");
+  try {
+    const data = await admin_list_config_changes({
+      from: from || undefined,
+      to: to || undefined,
+      limit: 500,
+    });
 
-    try {
-      let query = supabase
-        .from("abuse_settings_audit_grouped")
-        .select(
-          "audit_id, abuse_settings_id, created_at, actor_name, changes_count, changes_summary"
-        )
-        .order("created_at", { ascending: false })
-        .limit(500);
-
-      if (from) query = query.gte("created_at", `${from}T00:00:00`);
-      if (to) query = query.lte("created_at", `${to}T23:59:59`);
-
-      const { data, error } = await query;
-      if (error) throw error;
-
-      setRows((data ?? []) as ChangeRow[]);
-    } catch (e: any) {
-      setError(e?.message ?? "Error cargando cambios");
-    } finally {
-      setLoading(false);
-    }
+    setRows((data ?? []) as ChangeRow[]);
+  } catch (e: any) {
+    setError(e?.message ?? "Error cargando cambios");
+    setRows([]);
+  } finally {
+    setLoading(false);
   }
+};
+
 
   useEffect(() => {
-    load();
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function openRollback(row: ChangeRow) {
-    if (row.actor_name === "system") return;
+    if ((row.actor_name ?? "").toLowerCase() === "system") return;
 
     setSelectedAuditId(row.audit_id);
 
     const when = new Date(row.created_at).toLocaleString();
     const countLabel = `${row.changes_count} cambio${row.changes_count === 1 ? "" : "s"}`;
-
     setSelectedSummary(`${countLabel}: ${row.changes_summary} (${when})`);
     setConfirmOpen(true);
   }
@@ -386,17 +334,13 @@ export default function AdminChanges() {
     setSelectedSummary("");
   }
 
-  async function doRollback() {
+  // ✅ doRollback() DENTRO del componente
+  const doRollback = async () => {
     if (!selectedAuditId) return;
     setRollingBack(true);
     setError("");
-
     try {
-      const { error } = await (supabase as any).rpc("admin_rollback_abuse_settings", {
-        p_audit_id: selectedAuditId,
-      });
-      if (error) throw error;
-
+      await admin_rollback_abuse_settings(selectedAuditId);
       closeRollback();
       await load();
     } catch (e: any) {
@@ -404,9 +348,7 @@ export default function AdminChanges() {
     } finally {
       setRollingBack(false);
     }
-  }
-
-  // ───────────────────────────── Export flow (modal -> export) ─────────────────────────────
+  };
 
   function openExportModal(fmt: ExportFormat) {
     if (exporting || loading) return;
@@ -427,7 +369,7 @@ export default function AdminChanges() {
     return "";
   }
 
-  async function doExportWithMeta(fmt: ExportFormat, meta: ExportMeta) {
+  const doExportWithMeta = async (fmt: ExportFormat, meta: ExportMeta) => {
     const v = validateExportMeta(meta);
     if (v) {
       setError(v);
@@ -459,12 +401,11 @@ export default function AdminChanges() {
       const fileBase64 = await blobToBase64(blob);
       const sha256 = await sha256HexFromBlob(blob);
 
-      const out = await export_system_file({
+      await export_system_file({
         file_name: fileName,
         mime_type: fmt === "PDF" ? "application/pdf" : "text/csv",
         file_base64: fileBase64,
 
-        // Edge Function acepta sha256 o client_sha256; mandamos ambos por compat.
         sha256,
         client_sha256: sha256,
 
@@ -486,7 +427,6 @@ export default function AdminChanges() {
           report_hash: reportHash,
         },
 
-        // 👇 campos de trazabilidad (los que te faltaban en Cambios)
         provided_to_type: meta.provided_to_type,
         provided_to_name: meta.provided_to_name,
         provided_to_contact: meta.provided_to_contact || null,
@@ -498,17 +438,14 @@ export default function AdminChanges() {
       });
 
       downloadBlob(blob, fileName);
-      console.log("audit_export OK:", out);
-
       setExportOpen(false);
     } catch (e: any) {
       setError(e?.message ?? "Error exportando");
     } finally {
       setExporting(false);
     }
-  }
+  };
 
-  // Cerrar modales con ESC
   useEffect(() => {
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key === "Escape") {
@@ -536,7 +473,6 @@ export default function AdminChanges() {
             onClick={() => openExportModal("CSV")}
             className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
             disabled={exporting || loading}
-            title="Exportar CSV (requiere registrar a quién se entrega y motivo)"
           >
             {exporting && exportFormat === "CSV" ? "Exportando CSV..." : "Exportar CSV"}
           </button>
@@ -545,22 +481,24 @@ export default function AdminChanges() {
             onClick={() => openExportModal("PDF")}
             className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
             disabled={exporting || loading}
-            title="Exportar PDF (requiere registrar a quién se entrega y motivo)"
           >
             {exporting && exportFormat === "PDF" ? "Exportando PDF..." : "Exportar PDF"}
           </button>
-          <button
-              onClick={() => setOpenExports(true)}
-              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-            >
-              Ver exportaciones realizadas
-            </button>
 
-            <ExportsHistoryDialog
-              open={openExports}
-              onClose={() => setOpenExports(false)}
-              defaultType="CONFIG_CHANGES"
-            />
+          <button
+            onClick={() => setOpenExports(true)}
+            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+          >
+            Ver exportaciones realizadas
+          </button>
+
+        <ExportsHistoryDialog
+          open={openExports}
+          onClose={() => setOpenExports(false)}
+          defaultType="CONFIG_CHANGES"
+          forceSystemExports={true}
+        />
+
 
           <button
             onClick={load}
@@ -629,7 +567,7 @@ export default function AdminChanges() {
 
         <div className="p-4">
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-xs text-slate-500">{filtered.length} eventos (mostrando máx. 500)</p>
+            <p className="text-xs text-slate-500">{filtered.length} eventos (máx. 500)</p>
             <p className="text-xs text-slate-400">Fuente: abuse_settings_audit_grouped</p>
           </div>
 
@@ -698,12 +636,11 @@ export default function AdminChanges() {
                           onClick={() => openRollback(r)}
                           className={cx(
                             "rounded-lg border px-3 py-1.5 text-xs font-semibold",
-                            r.actor_name === "system"
+                            (r.actor_name ?? "").toLowerCase() === "system"
                               ? "border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed"
                               : "border-amber-200 bg-amber-50 text-amber-900 hover:bg-amber-100"
                           )}
-                          disabled={rollingBack || r.actor_name === "system"}
-                          title={r.actor_name === "system" ? "Cambio automático del sistema" : ""}
+                          disabled={rollingBack || (r.actor_name ?? "").toLowerCase() === "system"}
                         >
                           Revertir
                         </button>
@@ -716,12 +653,12 @@ export default function AdminChanges() {
           </div>
 
           <p className="mt-3 text-xs text-slate-500">
-            ⚠️ Revertir restaura el estado anterior del ajuste y crea un nuevo registro de auditoría (trazabilidad completa).
+            ⚠️ Revertir restaura el estado anterior del ajuste y crea un nuevo registro de auditoría.
           </p>
         </div>
       </div>
 
-      {/* Modal exportación (igual patrón que Auditoría) */}
+      {/* Modal exportación */}
       {exportOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
@@ -749,7 +686,6 @@ export default function AdminChanges() {
             </div>
 
             <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2">
-              {/* Formato */}
               <div className="space-y-2">
                 <label className="text-xs font-medium text-slate-500">FORMATO</label>
                 <select
@@ -769,8 +705,8 @@ export default function AdminChanges() {
                       <span className="text-slate-500">Búsqueda:</span> {q?.trim() ? q : "—"}
                     </div>
                     <div>
-                      <span className="text-slate-500">Fechas:</span>{" "}
-                      {from ? from : "—"} → {to ? to : "—"}
+                      <span className="text-slate-500">Fechas:</span> {from || "—"} -{" "}
+                      {to || "—"}
                     </div>
                     <div>
                       <span className="text-slate-500">Eventos:</span> {filtered.length}
@@ -785,7 +721,6 @@ export default function AdminChanges() {
                 </div>
               </div>
 
-              {/* Datos entrega */}
               <div className="space-y-3">
                 <div>
                   <label className="text-xs font-medium text-slate-500">TIPO DE ENTREGA *</label>
@@ -797,11 +732,9 @@ export default function AdminChanges() {
                         provided_to_type: e.target.value as ProvidedToType,
                       }))
                     }
-
                     className="mt-1 h-9 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-slate-300"
                     disabled={exporting}
                   >
-                    {/* ⚠️ Ajusta estos valores para que coincidan con el enum real (usa los mismos que en Auditoría) */}
                     <option value="AEPD">AEPD</option>
                     <option value="AUDITOR_EXTERNO">AUDITOR_EXTERNO</option>
                     <option value="JUZGADO">JUZGADO</option>
@@ -809,9 +742,6 @@ export default function AdminChanges() {
                     <option value="CLIENTE">CLIENTE</option>
                     <option value="OTRO">OTRO</option>
                   </select>
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    Debe coincidir con tu enum <code className="rounded bg-slate-100 px-1">audit_provided_to_type</code>.
-                  </p>
                 </div>
 
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -822,7 +752,6 @@ export default function AdminChanges() {
                       onChange={(e) =>
                         setExportMeta((s) => ({ ...s, provided_to_name: e.target.value }))
                       }
-                      placeholder="Ej: Inspector AEPD / Juzgado / Agencia..."
                       className="mt-1 h-9 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-slate-300"
                       disabled={exporting}
                     />
@@ -835,7 +764,6 @@ export default function AdminChanges() {
                       onChange={(e) =>
                         setExportMeta((s) => ({ ...s, provided_to_contact: e.target.value }))
                       }
-                      placeholder="Ej: AEPD / Policía / Guardia Civil..."
                       className="mt-1 h-9 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-slate-300"
                       disabled={exporting}
                     />
@@ -847,20 +775,18 @@ export default function AdminChanges() {
                   <input
                     value={exportMeta.purpose}
                     onChange={(e) => setExportMeta((s) => ({ ...s, purpose: e.target.value }))}
-                    placeholder="Ej: Inspección / Requerimiento / Procedimiento..."
                     className="mt-1 h-9 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-slate-300"
                     disabled={exporting}
                   />
                 </div>
 
                 <div>
-                  <label className="text-xs font-medium text-slate-500">REFERENCIA (EXPEDIENTE, TICKET, ETC.)</label>
+                  <label className="text-xs font-medium text-slate-500">REFERENCIA</label>
                   <input
                     value={exportMeta.provided_to_ref}
                     onChange={(e) =>
                       setExportMeta((s) => ({ ...s, provided_to_ref: e.target.value }))
                     }
-                    placeholder="Ej: EXP-2026-000123"
                     className="mt-1 h-9 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-slate-300"
                     disabled={exporting}
                   />
@@ -884,7 +810,6 @@ export default function AdminChanges() {
                     value={exportMeta.notes}
                     onChange={(e) => setExportMeta((s) => ({ ...s, notes: e.target.value }))}
                     className="mt-1 min-h-[70px] w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-slate-300"
-                    placeholder="Opcional: detalles adicionales…"
                     disabled={exporting}
                   />
                 </div>
@@ -958,7 +883,7 @@ export default function AdminChanges() {
               </div>
 
               <p className="mt-3 text-xs text-slate-500">
-                Nota: solo debe usarse si el cambio fue incorrecto. El rollback también queda auditado.
+                Nota: úsalo solo si el cambio fue incorrecto. El rollback también queda auditado.
               </p>
             </div>
           </div>

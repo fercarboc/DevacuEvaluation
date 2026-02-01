@@ -112,3 +112,9 @@ export function planCodeToPlanType(code: PlanCode | null | undefined): PlanType 
       return PlanType.INACTIVE;
   }
 }
+
+type SignedUrlResponse = {
+  ok: boolean;
+  signed_url: string;
+  expires_in: number;
+};
