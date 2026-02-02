@@ -4,13 +4,16 @@ import {
   checkSignalsGlobal,
   searchMyRatingsInSupabase,
   getGlobalSummary,
-  getGlobalRiskSnapshot,     // ✅ función
-  type GlobalRiskSnapshot,   // ✅ type
-} from "../services/evaluationService";
+  getGlobalRiskSnapshot,
+  type GlobalRiskSnapshot,
+  type GlobalSignals,
+  type RiskLevel,
+  type CountBucket,
+  type MatchStrength,
+} from "@/services/clientService";
 
-
-import type { Rating, User } from "../types/types";
-import { StarRating } from "./StarRating";
+import type { Rating, User } from "@/types/types";
+import { StarRating } from "@/components/StarRating";
 import {
   Search,
   Calendar,
@@ -22,7 +25,6 @@ import {
   Shield,
   FileText,
   LockKeyhole,
-  SlidersHorizontal,
 } from "lucide-react";
 
 /** -------------------------------------------------------
@@ -32,7 +34,7 @@ import {
  *   Solo muestra señales agregadas y no identificables.
  * - MODO MINE ("Mis registros"): permite ver detalle SOLO de registros creados por el hotel actual.
  *
- * ⚠️ IMPORTANTE: el backend/service DEBE cumplir esto también:
+ * ⚠️ IMPORTANTE:
  * - checkSignalsGlobal(query) NO debe devolver full_name/email/phone/document ni filas individuales.
  * - searchMyRatingsInSupabase(query, authorId) debe filtrar por authorId en BD (no filtrar en cliente).
  */
@@ -44,9 +46,9 @@ interface SearchRatingsProps {
 /** -------------------------------
  * Helpers: máscara (solo para “Mis registros”)
  * -------------------------------- */
-function maskEmail(email: string) {
+function maskEmail(email?: string | null) {
   const e = (email || "").trim();
-  if (!e.includes("@")) return "";
+  if (!e || !e.includes("@")) return "";
   const [u, d] = e.split("@");
   const uMask = u.length <= 1 ? "*" : `${u[0]}***`;
   const dParts = d.split(".");
@@ -54,18 +56,55 @@ function maskEmail(email: string) {
   return `${uMask}@${dMask}`;
 }
 
-function maskPhone(phone: string) {
+function maskPhone(phone?: string | null) {
   const p = (phone || "").replace(/\D/g, "");
   if (!p) return "";
   const last = p.slice(-3);
   return `•••${last}`;
 }
 
-function maskDoc(doc: string) {
+function maskDoc(doc?: string | null) {
   const d = (doc || "").trim();
   if (!d) return "";
   if (d.length <= 4) return "••••";
   return `${d.slice(0, 2)}••••${d.slice(-2)}`;
+}
+
+/** -------------------------------
+ * % list (sin mostrar totales)
+ * -------------------------------- */
+function calcPercentList(map: Record<string, number>) {
+  const entries = Object.entries(map)
+    .map(([k, v]) => ({ key: k, count: Number(v || 0) }))
+    .filter((x) => x.count > 0);
+
+  const total = entries.reduce((acc, x) => acc + x.count, 0);
+  if (!total) return [];
+
+  return entries
+    .map((x) => ({ key: x.key, pct: (x.count / total) * 100 }))
+    .sort((a, b) => b.pct - a.pct);
+}
+
+function groupTopAndRest(
+  list: Array<{ key: string; pct: number }>,
+  topN: number,
+  restLabel: string
+) {
+  const top = list.slice(0, topN);
+  const rest = list.slice(topN);
+  const restPct = rest.reduce((acc, x) => acc + x.pct, 0);
+
+  const out =
+    restPct >= 0.5 ? [...top, { key: restLabel, pct: restPct }] : top;
+
+  // Ajuste para que sume 100.0 (por decimales)
+  const sum = out.reduce((acc, x) => acc + x.pct, 0);
+  const diff = 100 - sum;
+  if (out.length && Math.abs(diff) >= 0.05) {
+    out[0] = { ...out[0], pct: out[0].pct + diff };
+  }
+  return out;
 }
 
 function parseControlledComment(comment?: string | null) {
@@ -73,6 +112,7 @@ function parseControlledComment(comment?: string | null) {
   const raw = (comment || "").trim();
   const out: Record<string, string> = {};
   if (!raw) return out;
+
   raw
     .split("|")
     .map((p) => p.trim())
@@ -83,11 +123,12 @@ function parseControlledComment(comment?: string | null) {
       const v = pair.slice(idx + 1).trim();
       out[k] = v;
     });
+
   return out;
 }
 
 /** -------------------------------
- * Normalizadores (snake_case ⇄ camelCase)
+ * Normalizadores (defensivos)
  * -------------------------------- */
 function toIsoDateString(v: unknown): string {
   if (!v) return new Date().toISOString();
@@ -101,7 +142,13 @@ function toIsoDateString(v: unknown): string {
 
 function normalizeRating(raw: any): Rating {
   const clientRaw = raw?.clientData ?? raw?.client_data ?? {};
-  const createdAt = raw?.createdAt ?? raw?.created_at ?? raw?.evaluationDate ?? raw?.evaluation_date ?? raw?.created ?? null;
+  const createdAt =
+    raw?.createdAt ??
+    raw?.created_at ??
+    raw?.evaluationDate ??
+    raw?.evaluation_date ??
+    raw?.created ??
+    null;
 
   const value =
     typeof raw?.value === "number"
@@ -110,15 +157,30 @@ function normalizeRating(raw: any): Rating {
       ? raw.rating
       : Number(raw?.value ?? raw?.rating ?? 0);
 
-  const fullName = clientRaw?.fullName ?? clientRaw?.full_name ?? raw?.fullName ?? raw?.full_name ?? "";
+  const fullName =
+    clientRaw?.fullName ??
+    clientRaw?.full_name ??
+    raw?.fullName ??
+    raw?.full_name ??
+    "";
 
   const document = clientRaw?.document ?? raw?.document ?? "";
   const email = clientRaw?.email ?? raw?.email ?? null;
   const phone = clientRaw?.phone ?? raw?.phone ?? null;
   const nationality = clientRaw?.nationality ?? raw?.nationality ?? null;
 
-  const authorId = raw?.authorId ?? raw?.author_id ?? raw?.creatorCustomerId ?? raw?.creator_customer_id ?? "";
-  const authorName = raw?.authorName ?? raw?.author_name ?? raw?.creatorCustomerName ?? raw?.creator_customer_name ?? "";
+  const authorId =
+    raw?.authorId ??
+    raw?.author_id ??
+    raw?.creatorCustomerId ??
+    raw?.creator_customer_id ??
+    "";
+  const authorName =
+    raw?.authorName ??
+    raw?.author_name ??
+    raw?.creatorCustomerName ??
+    raw?.creator_customer_name ??
+    "";
 
   const platform = raw?.platform ?? null;
   const comment = raw?.comment ?? raw?.comments ?? raw?.notes ?? null;
@@ -141,11 +203,24 @@ function normalizeRating(raw: any): Rating {
   } as Rating;
 }
 
-function normalizeSummary(raw: any): { totalCount: number; platformCounts: Record<string, number>; countryCounts: Record<string, number> } {
+function normalizeSummary(raw: any): {
+  totalCount: number;
+  platformCounts: Record<string, number>;
+  countryCounts: Record<string, number>;
+} {
   const totalCount = Number(raw?.totalCount ?? raw?.total_count ?? raw?.total ?? 0);
-
-  const platformCounts = raw?.platformCounts ?? raw?.platform_counts ?? raw?.platformSummary ?? raw?.platform_summary ?? {};
-  const countryCounts = raw?.countryCounts ?? raw?.country_counts ?? raw?.countrySummary ?? raw?.country_summary ?? {};
+  const platformCounts =
+    raw?.platformCounts ??
+    raw?.platform_counts ??
+    raw?.platformSummary ??
+    raw?.platform_summary ??
+    {};
+  const countryCounts =
+    raw?.countryCounts ??
+    raw?.country_counts ??
+    raw?.countrySummary ??
+    raw?.country_summary ??
+    {};
 
   const safeObj = (o: any) => (o && typeof o === "object" ? o : {});
   return {
@@ -153,53 +228,6 @@ function normalizeSummary(raw: any): { totalCount: number; platformCounts: Recor
     platformCounts: safeObj(platformCounts),
     countryCounts: safeObj(countryCounts),
   };
-}
-
-/** -------------------------------------------------------
- * Modelo GLOBAL agregado (NO PII / NO filas individuales)
- * ------------------------------------------------------*/
-type MatchStrength = "STRONG" | "MEDIUM" | "WEAK";
-type CountBucket = "0" | "1-2" | "3-5" | "6-10" | "10+";
-type RiskLevel = "BAJO" | "MEDIO" | "ALTO" | "NO_CONCLUYENTE";
-
-type GlobalSignals = {
-  matchStrength: MatchStrength;
-  hasMatches: boolean;
-  countBucket: CountBucket;
-  avgStars?: number; // 0..5
-  risk?: RiskLevel;
-  topTypologies?: string[];
-  timeWindow?: "12M" | "24M" | "36M";
-  message?: string;
-};
-
-/** -------------------------------------------------------
- * Clasificación local del query (capa extra de seguridad)
- * ------------------------------------------------------*/
-function looksLikeEmail(q: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(q.trim());
-}
-function looksLikePhone(q: string) {
-  const p = q.replace(/\D/g, "");
-  return p.length >= 8 && p.length <= 15;
-}
-function looksLikeDoc(q: string) {
-  const t = q.trim().toUpperCase();
-  const alnum = t.replace(/\s+/g, "");
-  return /^[XYZ]?\d{5,10}[A-Z]?$/.test(alnum);
-}
-function looksLikeNameOnly(q: string) {
-  const t = q.trim();
-  if (t.length < 5) return false;
-  if (looksLikeEmail(t) || looksLikePhone(t) || looksLikeDoc(t)) return false;
-  const parts = t.split(/\s+/).filter(Boolean);
-  const hasLetters = /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(t);
-  return hasLetters && parts.length >= 2;
-}
-function classifyQuery(q: string): MatchStrength {
-  if (looksLikeEmail(q) || looksLikePhone(q) || looksLikeDoc(q)) return "STRONG";
-  if (looksLikeNameOnly(q)) return "WEAK";
-  return "MEDIUM";
 }
 
 /** -------------------------------
@@ -221,20 +249,39 @@ function bucketLabel(b: CountBucket) {
   return "10+";
 }
 
-function safeStars(v?: number) {
+function safeStars(v?: number | null) {
   if (typeof v !== "number" || Number.isNaN(v)) return null;
-  const clamped = Math.max(0, Math.min(5, v));
-  return clamped;
+  return Math.max(0, Math.min(5, v));
 }
 
-function pct(n: number, total: number) {
-  if (!total) return 0;
-  return (n / total) * 100;
-}
-function pctLabel(n: number, total: number) {
-  const v = pct(n, total);
-  // 1 decimal si < 10, si no 0 decimales
-  return v < 10 ? `${v.toFixed(1)}%` : `${v.toFixed(0)}%`;
+/** Donut simple con conic-gradient (sin librerías) */
+function buildConicGradient(items: Array<{ label: string; pct: number }>) {
+  // Colores neutros (no fijamos una paleta muy viva)
+  const palette = [
+    "rgba(15, 23, 42, 0.80)",  // slate-900
+    "rgba(15, 23, 42, 0.60)",
+    "rgba(15, 23, 42, 0.45)",
+    "rgba(15, 23, 42, 0.30)",
+    "rgba(15, 23, 42, 0.20)",
+    "rgba(15, 23, 42, 0.12)",
+    "rgba(15, 23, 42, 0.08)",
+  ];
+
+  let acc = 0;
+  const stops = items.map((it, idx) => {
+    const start = acc;
+    acc += Math.max(0, it.pct);
+    const end = acc;
+    const color = palette[idx % palette.length];
+    return `${color} ${start}% ${end}%`;
+  });
+
+  // Si por decimales no llega a 100, rellena con gris muy suave
+  if (acc < 100) {
+    stops.push(`rgba(148, 163, 184, 0.15) ${acc}% 100%`); // slate-400 suave
+  }
+
+  return `conic-gradient(${stops.join(", ")})`;
 }
 
 export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => {
@@ -250,71 +297,61 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
 
-  // Resumen global (panel izq + der)
-  const [globalTotal, setGlobalTotal] = useState(0);
+  // Resumen global (no mostramos el total en UI)
   const [platformSummary, setPlatformSummary] = useState<Record<string, number>>({});
   const [countrySummary, setCountrySummary] = useState<Record<string, number>>({});
 
- // ✅ Indicador riesgo (distribución por estrellas)
-const [riskLoading, setRiskLoading] = useState(false);
-const [riskError, setRiskError] = useState<string>("");
-const [riskSnap, setRiskSnap] = useState<GlobalRiskSnapshot | null>(null);
+  // ✅ Indicador riesgo (distribución por estrellas, vía Edge)
+  const [riskLoading, setRiskLoading] = useState(false);
+  const [riskError, setRiskError] = useState<string>("");
+  const [riskSnap, setRiskSnap] = useState<GlobalRiskSnapshot | null>(null);
+  const [riskWindow, setRiskWindow] = useState<3 | 6 | 12>(6);
 
-const [riskWindow, setRiskWindow] = useState<12 | 24 | 36>(24);
- 
-  const [riskDist, setRiskDist] = useState<{ total: number; c5: number; c4: number; c3: number; c2: number; c1: number }>({
-    total: 0,
-    c5: 0,
-    c4: 0,
-    c3: 0,
-    c2: 0,
-    c1: 0,
-  });
+  // 🔑 En vuestro modelo nuevo: authorId debe ser el customer/org id (no el auth.user.id).
+  // Si tu User ya trae orgId/customerId, úsalo aquí.
+  const authorIdForMine = ((currentUser as any)?.org_id || (currentUser as any)?.customer_id || currentUser.id) as string;
 
   useEffect(() => {
     const load = async () => {
       try {
         const rawSummary = await getGlobalSummary();
         const summary = normalizeSummary(rawSummary);
-        setGlobalTotal(summary.totalCount);
         setPlatformSummary(summary.platformCounts);
         setCountrySummary(summary.countryCounts);
       } catch (e) {
         console.error("Error cargando resumen global:", e);
-        setGlobalTotal(0);
         setPlatformSummary({});
         setCountrySummary({});
       }
     };
-    load();
+    void load();
   }, []);
 
-  // ✅ Carga distribución riesgo desde BD (12/24/36 meses)
-useEffect(() => {
-  let alive = true;
+  // ✅ Carga distribución riesgo desde BD (3/6/12 meses)
+  useEffect(() => {
+    let alive = true;
 
-  const loadRisk = async () => {
-    setRiskLoading(true);
-    setRiskError("");
-    try {
-      const r = await getGlobalRiskSnapshot();
-      if (!alive) return;
-      setRiskSnap(r);
-    } catch (e: any) {
-      if (!alive) return;
-      setRiskError(e?.message ?? "Error cargando indicador de riesgo");
-      setRiskSnap(null);
-    } finally {
-      if (alive) setRiskLoading(false);
-    }
-  };
+    const loadRisk = async () => {
+      setRiskLoading(true);
+      setRiskError("");
+      try {
+        const r = await getGlobalRiskSnapshot({ months: riskWindow });
+        if (!alive) return;
+        setRiskSnap(r);
+      } catch (e: any) {
+        if (!alive) return;
+        setRiskError(e?.message ?? "Error cargando indicador de riesgo");
+        setRiskSnap(null);
+      } finally {
+        if (alive) setRiskLoading(false);
+      }
+    };
 
-  loadRisk();
-  return () => {
-    alive = false;
-  };
-}, []);
-
+    void loadRisk();
+    return () => {
+      alive = false;
+    };
+  }, [riskWindow]);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -330,42 +367,25 @@ useEffect(() => {
 
     try {
       if (mode === "MINE") {
-        const raw = await searchMyRatingsInSupabase(q, currentUser.id);
+        const raw = await searchMyRatingsInSupabase(q, authorIdForMine);
         const data: Rating[] = Array.isArray(raw) ? raw.map(normalizeRating) : [];
         const sorted = [...data].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
         setMyResults(sorted);
         return;
       }
 
-      const strength = classifyQuery(q);
-
-      if (strength === "WEAK") {
-        setGlobalSignals({
-          matchStrength: "WEAK",
-          hasMatches: false,
-          countBucket: "0",
-          risk: "NO_CONCLUYENTE",
-          timeWindow: "24M",
-          message:
-            "Resultado no concluyente: el dato aportado puede corresponder a varias personas. Para una comprobación técnica, añade un identificador de la solicitud (email/teléfono/documento).",
-        });
-        return;
-      }
-
-      const s = await checkSignalsGlobal(q);
+      // GLOBAL (RGPD-safe)
+      const s = await checkSignalsGlobal(q, 24);
 
       const normalized: GlobalSignals = {
-        matchStrength: (s?.matchStrength ?? strength) as MatchStrength,
+        matchStrength: (s?.matchStrength ?? "MEDIUM") as MatchStrength,
         hasMatches: Boolean(s?.hasMatches),
+        countExact: typeof (s as any)?.countExact === "number" ? (s as any).countExact : undefined,
         countBucket: (s?.countBucket ?? "0") as CountBucket,
-        avgStars: typeof s?.avgStars === "number" ? s.avgStars : undefined,
-
-        // ✅ si hay matches pero no hay avgStars, no fuerces NO_CONCLUYENTE
-        risk: (s?.risk ??
-          (s?.hasMatches ? (typeof s?.avgStars === "number" ? "MEDIO" : "MEDIO") : "NO_CONCLUYENTE")) as RiskLevel,
-
+        avgStars: typeof s?.avgStars === "number" ? s.avgStars : null,
+        risk: (s?.risk ?? "NO_CONCLUYENTE") as RiskLevel,
         topTypologies: Array.isArray(s?.topTypologies) ? s.topTypologies.slice(0, 6) : [],
-        timeWindow: (s?.timeWindow ?? "24M") as "12M" | "24M" | "36M",
+        timeWindow: s?.timeWindow ?? "24M",
         message: s?.message ?? "",
       };
 
@@ -376,10 +396,13 @@ useEffect(() => {
         setGlobalSignals({
           matchStrength: "MEDIUM",
           hasMatches: false,
+          countExact: 0,
           countBucket: "0",
+          avgStars: null,
           risk: "NO_CONCLUYENTE",
           timeWindow: "24M",
           message: "No se ha podido completar la comprobación. Inténtalo de nuevo.",
+          topTypologies: [],
         });
       } else {
         setMyResults([]);
@@ -390,7 +413,7 @@ useEffect(() => {
   };
 
   const getMaskedAuthor = (authorName: string, authorId: string) => {
-    if (authorId === currentUser.id) return `${authorName} (Tú)`;
+    if (authorId === authorIdForMine) return `${authorName} (Tú)`;
     const parts = (authorName || "").split(" ").filter(Boolean);
     return parts.map((p) => (p ? p[0] + "*".repeat(Math.max(p.length - 1, 0)) : "")).join(" ");
   };
@@ -404,52 +427,26 @@ useEffect(() => {
     return { avg, count: myResults.length, lastDate: last.createdAt, score };
   }, [myResults]);
 
-  // Resumen plataformas
-  const platformDisplay = useMemo(() => {
-    const entries = Object.entries(platformSummary)
-      .map(([platform, count]) => {
-        const pctv = globalTotal > 0 ? Math.round((Number(count) / globalTotal) * 100) : 0;
-        return { platform, pct: pctv };
-      })
-      .filter((p) => p.pct > 0)
-      .sort((a, b) => b.pct - a.pct);
+  /** -------------------------------
+   * Plataformas (donut + lista top + otros)
+   * -------------------------------- */
+  const platformPctList = useMemo(() => {
+    const list = calcPercentList(platformSummary);
+    return groupTopAndRest(list, 6, "Otros");
+  }, [platformSummary]);
 
-    if (!entries.length) return [];
-    const sumPct = entries.reduce((acc, p) => acc + p.pct, 0);
-    const diff = 100 - sumPct;
-    return diff >= 1 ? [...entries, { platform: "Otros", pct: diff }] : entries;
-  }, [platformSummary, globalTotal]);
+  const platformDonutGradient = useMemo(() => {
+    const items = platformPctList.map((x) => ({ label: x.key, pct: x.pct }));
+    return items.length ? buildConicGradient(items) : "";
+  }, [platformPctList]);
 
-  // Países top
-  const { topCountries, remainingCountries } = useMemo(() => {
-    const entries = Object.entries(countrySummary)
-      .map(([country, count]) => {
-        const pctv = globalTotal > 0 ? Math.round((Number(count) / globalTotal) * 100) : 0;
-        return { country, pct: pctv };
-      })
-      .filter((c) => c.pct > 0)
-      .sort((a, b) => b.pct - a.pct);
-
-    const top = entries.slice(0, 6);
-    return { topCountries: top, remainingCountries: Math.max(0, entries.length - top.length) };
-  }, [countrySummary, globalTotal]);
-
-  // ✅ Riesgo agregado (interpretación por estrellas)
-  const riskAgg = useMemo(() => {
-    const total = riskDist.total || 0;
-    const bajo = (riskDist.c5 + riskDist.c4) || 0; // 4–5*
-    const medio = (riskDist.c3) || 0; // 3*
-    const alto = (riskDist.c2 + riskDist.c1) || 0; // 1–2*
-    return {
-      total,
-      bajo,
-      medio,
-      alto,
-      pctBajo: pct(bajo, total),
-      pctMedio: pct(medio, total),
-      pctAlto: pct(alto, total),
-    };
-  }, [riskDist]);
+  /** -------------------------------
+   * Países (barras top 10 + resto)
+   * -------------------------------- */
+  const countryPctList = useMemo(() => {
+    const list = calcPercentList(countrySummary);
+    return groupTopAndRest(list, 10, "Resto");
+  }, [countrySummary]);
 
   // Header dinámico
   const headerTitle = mode === "GLOBAL" ? "Comprobación asociada a solicitud" : "Mis registros";
@@ -477,7 +474,9 @@ useEffect(() => {
               setMyResults([]);
             }}
             className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
-              mode === "GLOBAL" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200 hover:border-slate-300"
+              mode === "GLOBAL"
+                ? "bg-slate-900 text-white border-slate-900"
+                : "bg-white text-slate-700 border-slate-200 hover:border-slate-300"
             }`}
           >
             <Shield className="inline-block w-3.5 h-3.5 mr-1 -mt-0.5" />
@@ -493,7 +492,9 @@ useEffect(() => {
               setMyResults([]);
             }}
             className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
-              mode === "MINE" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200 hover:border-slate-300"
+              mode === "MINE"
+                ? "bg-slate-900 text-white border-slate-900"
+                : "bg-white text-slate-700 border-slate-200 hover:border-slate-300"
             }`}
           >
             <FileText className="inline-block w-3.5 h-3.5 mr-1 -mt-0.5" />
@@ -527,9 +528,15 @@ useEffect(() => {
         </form>
 
         <div className="mt-4 flex items-start gap-2 rounded-2xl bg-slate-50 border border-slate-200 p-4 text-xs text-slate-600">
-          {mode === "GLOBAL" ? <LockKeyhole className="w-4 h-4 text-slate-500 mt-0.5" /> : <Fingerprint className="w-4 h-4 text-slate-500 mt-0.5" />}
+          {mode === "GLOBAL" ? (
+            <LockKeyhole className="w-4 h-4 text-slate-500 mt-0.5" />
+          ) : (
+            <Fingerprint className="w-4 h-4 text-slate-500 mt-0.5" />
+          )}
           <div>
-            <div className="font-semibold text-slate-800">{mode === "GLOBAL" ? "Privacidad reforzada (Global)" : "Privacidad por defecto"}</div>
+            <div className="font-semibold text-slate-800">
+              {mode === "GLOBAL" ? "Privacidad reforzada (Global)" : "Privacidad por defecto"}
+            </div>
             <div>
               {mode === "GLOBAL" ? (
                 <>Debacu no devuelve datos personales ni confirma identidades. Se muestran únicamente señales agregadas y no identificables.</>
@@ -543,36 +550,52 @@ useEffect(() => {
 
       {/* GRID */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* IZQ */}
+        {/* IZQ (Plataformas visual) */}
         <section className="lg:col-span-1">
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 h-full">
-            <div className="flex items-center gap-2 mb-3">
-              <Info className="w-4 h-4 text-indigo-500" />
-              <div>
-                <h4 className="text-sm font-semibold text-slate-900">Base global</h4>
-                <p className="text-xs text-slate-500">
-                  <span className="font-semibold">{globalTotal.toLocaleString("es-ES")}</span> registros.
-                </p>
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div className="flex items-center gap-2">
+                <Info className="w-4 h-4 text-indigo-500" />
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-900">Plataformas</h4>
+                  <p
+                    className="text-[11px] text-slate-500"
+                    title="Porcentajes calculados sobre el total de registros agregados del periodo (sin mostrar totales). 'Otros' agrupa el resto de plataformas de baja frecuencia."
+                  >
+                    Distribución (%) · top + Otros
+                  </p>
+                </div>
               </div>
             </div>
 
-            <h5 className="text-xs font-semibold text-slate-500 uppercase mb-2">Plataformas</h5>
-            {platformDisplay.length === 0 ? (
+            {platformPctList.length === 0 ? (
               <p className="text-xs text-slate-400">Sin datos.</p>
             ) : (
-              <div className="space-y-2">
-                {platformDisplay.map(({ platform, pct }) => (
-                  <div key={platform} className="text-xs">
-                    <div className="flex justify-between mb-1">
-                      <span className="text-slate-600 truncate pr-2">{platform}</span>
-                      <span className="text-slate-500">{pct}%</span>
-                    </div>
-                    <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                      <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${pct}%` }} />
-                    </div>
+              <>
+                <div className="flex items-center justify-center my-3">
+                  <div
+                    className="relative w-28 h-28 rounded-full"
+                    style={{ background: platformDonutGradient || "rgba(148,163,184,0.15)" }}
+                    title="Gráfico de anillo: cada segmento representa el % por plataforma. 'Otros' agrupa el resto."
+                  >
+                    {/* agujero */}
+                    <div className="absolute inset-3 rounded-full bg-white border border-slate-200" />
                   </div>
-                ))}
-              </div>
+                </div>
+
+                <div className="space-y-2">
+                  {platformPctList.map((row) => (
+                    <div key={row.key} className="flex items-center justify-between text-xs">
+                      <span className="text-slate-700 truncate pr-2">{row.key}</span>
+                      <span className="text-slate-600 font-semibold">{row.pct.toFixed(1)}%</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-3 text-[11px] text-slate-400">
+                  * Cada registro cuenta como una fila (puede repetirse una persona en días/hoteles distintos).
+                </div>
+              </>
             )}
           </div>
         </section>
@@ -591,7 +614,11 @@ useEffect(() => {
                     <span className="rounded-full border px-3 py-1 text-slate-700 bg-white">{myKpi.count} registros</span>
                     <span
                       className={`rounded-full px-3 py-1 font-semibold ${
-                        myKpi.avg >= 4 ? "bg-green-100 text-green-700" : myKpi.avg >= 3 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-700"
+                        myKpi.avg >= 4
+                          ? "bg-green-100 text-green-700"
+                          : myKpi.avg >= 3
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-red-100 text-red-700"
                       }`}
                     >
                       {myKpi.score} · {myKpi.avg.toFixed(1)}
@@ -602,8 +629,12 @@ useEffect(() => {
                 )
               ) : globalSignals ? (
                 <div className="flex items-center gap-2 text-xs">
-                  <span className="rounded-full border px-3 py-1 text-slate-700 bg-white">{globalSignals.hasMatches ? "Coincidencias: Sí" : "Coincidencias: No"}</span>
-                  <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses(globalSignals.risk)}`}>{globalSignals.risk ?? "NO CONCLUYENTE"}</span>
+                  <span className="rounded-full border px-3 py-1 text-slate-700 bg-white">
+                    Coincidencias: {globalSignals.hasMatches ? "Sí" : "No"}
+                  </span>
+                  <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses(globalSignals.risk)}`}>
+                    {globalSignals.risk ?? "NO CONCLUYENTE"}
+                  </span>
                 </div>
               ) : (
                 <div className="text-sm text-slate-500">Sin información.</div>
@@ -638,52 +669,57 @@ useEffect(() => {
                               Nº registros: <span className="font-semibold">{bucketLabel(globalSignals.countBucket)}</span>
                             </span>
 
-                            <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses(globalSignals.risk)}`}>{globalSignals.risk ?? "NO CONCLUYENTE"}</span>
+                            <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses(globalSignals.risk)}`}>
+                              {globalSignals.risk ?? "NO CONCLUYENTE"}
+                            </span>
 
                             {globalSignals.timeWindow ? (
                               <span className="rounded-full border bg-white px-3 py-1 text-slate-700">
-                                Ventana: <span className="font-semibold">{globalSignals.timeWindow.replace("M", " meses")}</span>
+                                Ventana:{" "}
+                                <span className="font-semibold">{String(globalSignals.timeWindow).replace("M", " meses")}</span>
                               </span>
                             ) : null}
                           </div>
 
-                          {globalSignals.matchStrength === "STRONG" ? (
-                            <div className="mt-4 rounded-2xl bg-white border border-slate-200 p-4">
-                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                                <div>
-                                  <div className="text-xs font-semibold text-slate-700 mb-1">Valoración media agregada</div>
-                                  {safeStars(globalSignals.avgStars) !== null ? (
-                                    <StarRating rating={safeStars(globalSignals.avgStars) as number} size="lg" />
-                                  ) : (
-                                    <div className="text-xs text-slate-500">Información no disponible</div>
-                                  )}
-                                </div>
-
-                                <div className="text-xs text-slate-500">
-                                  Coincidencia técnica: <span className="font-semibold text-slate-700">Fuerte</span>
-                                </div>
+                          {/* Valoración agregada */}
+                          <div className="mt-4 rounded-2xl bg-white border border-slate-200 p-4">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                              <div>
+                                <div className="text-xs font-semibold text-slate-700 mb-1">Valoración media agregada</div>
+                                {safeStars(globalSignals.avgStars ?? null) !== null ? (
+                                  <StarRating rating={safeStars(globalSignals.avgStars ?? null) as number} size="lg" />
+                                ) : (
+                                  <div className="text-xs text-slate-500">Información no disponible</div>
+                                )}
                               </div>
 
-                              <div className="mt-3">
-                                <div className="text-xs font-semibold text-slate-700 mb-2">Tipologías agregadas</div>
-                                <div className="flex flex-wrap gap-2">
-                                  {(globalSignals.topTypologies ?? []).length ? (
-                                    (globalSignals.topTypologies ?? []).map((t) => (
-                                      <span key={t} className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-700">
-                                        {t}
-                                      </span>
-                                    ))
-                                  ) : (
-                                    <span className="text-xs text-slate-500">Sin tipologías destacadas.</span>
-                                  )}
-                                </div>
+                              <div className="text-xs text-slate-500">
+                                Coincidencia técnica:{" "}
+                                <span className="font-semibold text-slate-700">
+                                  {globalSignals.matchStrength === "STRONG"
+                                    ? "Fuerte"
+                                    : globalSignals.matchStrength === "MEDIUM"
+                                    ? "Media"
+                                    : "Débil"}
+                                </span>
                               </div>
                             </div>
-                          ) : (
-                            <div className="mt-4 rounded-2xl bg-white border border-amber-200 p-4 text-xs text-amber-900">
-                              Resultado no concluyente para este criterio. Para obtener señales agregadas fiables, utiliza email/teléfono/documento.
+
+                            <div className="mt-3">
+                              <div className="text-xs font-semibold text-slate-700 mb-2">Tipologías agregadas</div>
+                              <div className="flex flex-wrap gap-2">
+                                {(globalSignals.topTypologies ?? []).length ? (
+                                  (globalSignals.topTypologies ?? []).map((t) => (
+                                    <span key={t} className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-700">
+                                      {t}
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span className="text-xs text-slate-500">Sin tipologías destacadas.</span>
+                                )}
+                              </div>
                             </div>
-                          )}
+                          </div>
 
                           <div className="mt-4 text-[11px] text-slate-500">
                             Debacu no confirma identidades ni revela fuentes. Este resultado está diseñado para apoyo operativo cumpliendo RGPD/LOPDGDD.
@@ -706,26 +742,33 @@ useEffect(() => {
                 searched &&
                 myResults.map((rating) => {
                   const cc = parseControlledComment(rating.comment);
-                  const reasons = (cc["reasons"] || "").split(",").filter(Boolean);
+                  const reasons = (cc["reasons"] || "").split(",").map((x) => x.trim()).filter(Boolean);
                   const severity = cc["severity"] || "";
                   const evidence = cc["evidence"] || "";
                   const notes = cc["notes"] || "";
                   const hasControlled = !!cc["reasons"] || !!cc["severity"] || !!cc["evidence"];
 
                   return (
-                    <div key={rating.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 hover:border-slate-300 transition-colors">
+                    <div
+                      key={rating.id}
+                      className="rounded-2xl border border-slate-200 bg-slate-50 p-4 hover:border-slate-300 transition-colors"
+                    >
                       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
                         <div className="flex-1">
                           <div className="flex flex-wrap items-center gap-2 mb-2">
                             <h4 className="font-bold text-base text-slate-900 uppercase">{rating.clientData.fullName}</h4>
 
-                            {rating.clientData.document && (
-                              <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">{maskDoc(rating.clientData.document)}</span>
-                            )}
+                            {rating.clientData.document ? (
+                              <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">
+                                {maskDoc(rating.clientData.document)}
+                              </span>
+                            ) : null}
 
-                            {rating.platform && (
-                              <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">{rating.platform}</span>
-                            )}
+                            {rating.platform ? (
+                              <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">
+                                {rating.platform}
+                              </span>
+                            ) : null}
                           </div>
 
                           <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mb-3">
@@ -748,7 +791,9 @@ useEffect(() => {
                                   </span>
                                 ))}
                                 {reasons.length > 6 ? (
-                                  <span className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-500">+{reasons.length - 6}</span>
+                                  <span className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-500">
+                                    +{reasons.length - 6}
+                                  </span>
                                 ) : null}
                               </div>
 
@@ -772,7 +817,9 @@ useEffect(() => {
                               ) : null}
                             </div>
                           ) : (
-                            <div className="rounded-2xl bg-white border border-amber-200 p-3 text-xs text-amber-900">Comentario antiguo sin estructura. Recomienda migrar a registro guiado.</div>
+                            <div className="rounded-2xl bg-white border border-amber-200 p-3 text-xs text-amber-900">
+                              Comentario antiguo sin estructura. Recomienda migrar a registro guiado.
+                            </div>
                           )}
 
                           <div className="mt-3 flex items-center gap-6 text-xs text-slate-500">
@@ -793,7 +840,11 @@ useEffect(() => {
                           </div>
                           <span
                             className={`text-xs font-semibold px-3 py-1 rounded-full ${
-                              rating.value >= 4 ? "bg-green-100 text-green-700" : rating.value >= 3 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-700"
+                              rating.value >= 4
+                                ? "bg-green-100 text-green-700"
+                                : rating.value >= 3
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-red-100 text-red-700"
                             }`}
                           >
                             {rating.value >= 4 ? "Bajo riesgo" : rating.value >= 3 ? "Riesgo medio" : "Riesgo alto"}
@@ -818,87 +869,113 @@ useEffect(() => {
         {/* DER */}
         <section className="lg:col-span-1">
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 h-full">
-            <h5 className="text-xs font-semibold text-slate-500 uppercase mb-2">Países</h5>
-            {topCountries.length === 0 ? (
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <div>
+                <h5 className="text-xs font-semibold text-slate-500 uppercase">Países</h5>
+                <div
+                  className="text-[11px] text-slate-500"
+                  title="Barras horizontales: top 10 países por % de registros agregados del periodo. 'Resto' agrupa los países de baja frecuencia. No se muestran totales."
+                >
+                  Top 10 + Resto (en %)
+                </div>
+              </div>
+            </div>
+
+            {countryPctList.length === 0 ? (
               <p className="text-xs text-slate-400">Sin datos.</p>
             ) : (
-              <div className="space-y-1.5">
-                {topCountries.map(({ country, pct }) => (
-                  <div key={country} className="flex justify-between text-xs text-slate-600">
-                    <span>{country}</span>
-                    <span>{pct}%</span>
+              <div className="space-y-2">
+                {countryPctList.map((row) => (
+                  <div key={row.key} className="space-y-1">
+                    <div className="flex justify-between text-xs text-slate-600">
+                      <span className="truncate pr-2">{row.key}</span>
+                      <span className="font-semibold">{row.pct.toFixed(1)}%</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-slate-100 overflow-hidden border border-slate-200">
+                      <div
+                        className="h-full bg-slate-900/70 rounded-full"
+                        style={{ width: `${Math.max(0, Math.min(100, row.pct))}%` }}
+                      />
+                    </div>
                   </div>
                 ))}
-                {remainingCountries > 0 && <p className="text-[11px] text-slate-400 mt-1">+{remainingCountries} países con menos registros.</p>}
               </div>
             )}
 
-        
- 
-{/* ✅ INDICADOR DE RIESGO (solo porcentajes) */}
-<div className="mt-6 border-t border-slate-100 pt-4">
-  <div className="text-xs font-semibold text-slate-700 uppercase">
-    Control del riesgo a día de hoy
-  </div>
+            {/* ✅ INDICADOR DE RIESGO (solo porcentajes) */}
+            <div className="mt-6 border-t border-slate-100 pt-4">
+              <div className="flex items-center justify-between gap-2">
+                <div
+                  className="text-xs font-semibold text-slate-700 uppercase"
+                  title="Distribución agregada por estrellas del periodo seleccionado. Bajo = 4–5★, Medio = 3★, Alto = 1–2★."
+                >
+                  Control del riesgo a día de hoy
+                </div>
 
-  {riskLoading ? (
-    <div className="mt-2 text-xs text-slate-500">Cargando…</div>
-  ) : riskError ? (
-    <div className="mt-2 text-xs text-red-600">{riskError}</div>
-  ) : !riskSnap ? (
-    <div className="mt-2 text-xs text-slate-500">Sin datos.</div>
-  ) : (
-    <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-      {/* Texto Bajo/Medio/Alto */}
-      <div className="grid grid-cols-3 gap-2 text-[11px] mb-3">
-        <div className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-slate-700">
-          <span className="font-semibold">Bajo</span>: {riskSnap.pct_bajo.toFixed(1)}%
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-slate-700">
-          <span className="font-semibold">Medio</span>: {riskSnap.pct_medio.toFixed(1)}%
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-slate-700">
-          <span className="font-semibold">Alto</span>: {riskSnap.pct_alto.toFixed(1)}%
-        </div>
-      </div>
+                <select
+                  className="text-xs border border-slate-200 rounded-lg px-2 py-1 bg-white text-slate-700"
+                  value={riskWindow}
+                  onChange={(e) => setRiskWindow(Number(e.target.value) as 3 | 6 | 12)}
+                  aria-label="Ventana de meses"
+                  title="Ventana temporal para el cálculo del riesgo agregado"
+                >
+                  <option value={3}>3M</option>
+                  <option value={6}>6M</option>
+                  <option value={12}>12M</option>
+                </select>
+              </div>
 
-      {/* Barras por estrellas (solo %) */}
-      {[
-        { label: "5★", pct: riskSnap.pct5 },
-        { label: "4★", pct: riskSnap.pct4 },
-        { label: "3★", pct: riskSnap.pct3 },
-        { label: "2★", pct: riskSnap.pct2 },
-        { label: "1★", pct: riskSnap.pct1 },
-      ].map((row) => (
-        <div key={row.label} className="flex items-center gap-2 py-1">
-          <div className="w-8 text-xs text-slate-600">{row.label}</div>
+              {riskLoading ? (
+                <div className="mt-2 text-xs text-slate-500">Cargando…</div>
+              ) : riskError ? (
+                <div className="mt-2 text-xs text-red-600">{riskError}</div>
+              ) : !riskSnap ? (
+                <div className="mt-2 text-xs text-slate-500">Sin datos.</div>
+              ) : (
+                <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  {/* Texto Bajo/Medio/Alto */}
+                  <div className="grid grid-cols-3 gap-2 text-[11px] mb-3">
+                    <div className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-slate-700">
+                      <span className="font-semibold">Bajo</span>: {riskSnap.pct_bajo.toFixed(1)}%
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-slate-700">
+                      <span className="font-semibold">Medio</span>: {riskSnap.pct_medio.toFixed(1)}%
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-slate-700">
+                      <span className="font-semibold">Alto</span>: {riskSnap.pct_alto.toFixed(1)}%
+                    </div>
+                  </div>
 
-          <div className="flex-1 h-2 rounded-full bg-white border border-slate-200 overflow-hidden">
-            <div
-              className="h-full bg-slate-900/70 rounded-full"
-              style={{ width: `${Math.max(0, Math.min(100, row.pct))}%` }}
-            />
-          </div>
+                  {/* Barras por estrellas (solo %) */}
+                  {[
+                    { label: "5★", pct: riskSnap.pct5 },
+                    { label: "4★", pct: riskSnap.pct4 },
+                    { label: "3★", pct: riskSnap.pct3 },
+                    { label: "2★", pct: riskSnap.pct2 },
+                    { label: "1★", pct: riskSnap.pct1 },
+                  ].map((row) => (
+                    <div key={row.label} className="flex items-center gap-2 py-1">
+                      <div className="w-8 text-xs text-slate-600">{row.label}</div>
 
-          <div className="w-[52px] text-right text-[11px] text-slate-600">
-            {row.pct.toFixed(1)}%
-          </div>
-        </div>
-      ))}
+                      <div className="flex-1 h-2 rounded-full bg-white border border-slate-200 overflow-hidden">
+                        <div
+                          className="h-full bg-slate-900/70 rounded-full"
+                          style={{ width: `${Math.max(0, Math.min(100, row.pct))}%` }}
+                        />
+                      </div>
 
-      <div className="mt-2 text-[11px] text-slate-500">
-        Base de referencia: <span className="font-semibold">100%</span> · Bajo = 4–5★ · Medio = 3★ · Alto = 1–2★
-      </div>
-    </div>
-  )}
+                      <div className="w-[52px] text-right text-[11px] text-slate-600">{row.pct.toFixed(1)}%</div>
+                    </div>
+                  ))}
 
-  <div className="mt-2 text-[11px] text-slate-400">
-    Indicadores agregados: no identifican ni confirman identidades.
-  </div>
-</div>
+                  <div className="mt-2 text-[11px] text-slate-500">
+                    Base de referencia: <span className="font-semibold">100%</span> · Bajo = 4–5★ · Medio = 3★ · Alto = 1–2★
+                  </div>
+                </div>
+              )}
 
-
-
+              <div className="mt-2 text-[11px] text-slate-400">Indicadores agregados: no identifican ni confirman identidades.</div>
+            </div>
           </div>
         </section>
       </div>

@@ -2,12 +2,13 @@ import React from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 
 import PublicLanding from "@/pages/public/PublicLanding";
- 
+
 import { SolicitudEnviadaPage } from "@/pages/public/SolicitudEnviadaPage";
 import SolicitarAccesoPage from "@/pages/public/SolicitarAccesoPage";
 
 import LoginPage from "@/pages/auth/LoginPage";
 import AuthedApp from "@/pages/app/AuthedApp";
+
 import AdminLayout from "@/pages/admin/AdminLayout";
 import AdminDashboardPage from "@/pages/admin/AdminDashboardPage";
 import AdminClientsPage from "@/pages/admin/AdminClientsPage";
@@ -19,6 +20,8 @@ import AdminAuditPage from "@/pages/admin/AdminAuditPage";
 import AdminExportsPage from "@/pages/admin/AdminExportsPage";
 import AdminChangesPage from "@/pages/admin/AdminChangesPage";
 import AdminSettingsPage from "@/pages/admin/AdminSettingsPage";
+import AdminChangesSaasPage from "@/pages/admin/AdminChangesSaasPage"; // ✅ NUEVO
+
 import { AdminSolicitudesAccesoPage } from "@/pages/admin/AdminSolicitudesAccesoPage";
 import { RequireAuth } from "@/components/auth/RequiereAuth";
 import { RequireAdmin } from "@/components/auth/RequireAdmin";
@@ -69,7 +72,13 @@ export function AppRoutes() {
         <Route path="estadisticas" element={<AdminStatsPage />} />
         <Route path="auditoria" element={<AdminAuditPage />} />
         <Route path="exportaciones" element={<AdminExportsPage />} />
+
+        {/* existente: cambios (auditoría uso/abuso) */}
         <Route path="cambios" element={<AdminChangesPage />} />
+
+        {/* ✅ NUEVO: cambios SaaS (settings audit log) */}
+        <Route path="cambios-saas" element={<AdminChangesSaasPage />} />
+
         <Route path="configuracion" element={<AdminSettingsPage />} />
         <Route path="*" element={<Navigate to="/app/admin/dashboard" replace />} />
       </Route>

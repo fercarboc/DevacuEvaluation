@@ -115,16 +115,32 @@ export default function DashboardHome() {
   }, [planCard, queryCount]);
 
   useEffect(() => {
+   
     if (!customerId) return;
     let cancelled = false;
+     
+
 
     const load = async () => {
       setLoading(true);
       setError(null);
 
       try {
+      
         const sb = supabase as any;
         const monthStart = startOfCurrentMonthISO();
+
+        const { data: who, error: wErr } = await (supabase as any).functions.invoke(
+              "client_whoami",
+              { body: {} },
+            );
+
+            console.log("client_whoami:", { who, wErr });
+
+            // Si falla, lo ves claro y no sigues con el resto
+            if (wErr) {
+              throw wErr;
+            }
 
         // -------------------------
         // 1) Suscripción + plan (ACTIVE)

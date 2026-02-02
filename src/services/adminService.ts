@@ -576,18 +576,6 @@ export async function list_abuse_alerts() {
   ];
 }
 
-export async function get_system_settings() {
-  return { retention_days: 90, abuse_threshold_percent: 75, allow_new_access_requests: true };
-}
-
-export async function update_system_settings(payload: {
-  retention_days: number;
-  abuse_threshold_percent: number;
-  allow_new_access_requests: boolean;
-}) {
-  console.debug("TODO: persistir settings en backend", payload);
-  return payload;
-}
 
 // =======================================================
 // ✅ COMPAT: ExportsHistoryDialog.tsx (todo por Edge)
@@ -608,29 +596,6 @@ export async function admin_audit_export_download_stats(exportId: string) {
 // =======================
 const SB_URL = import.meta.env.VITE_SUPABASE_URL;
 
-async function callAdminFn<T>(fn: string, body?: any): Promise<T> {
-  const { data: sess } = await supabase.auth.getSession();
-  const token = sess?.session?.access_token;
-  if (!token) throw new Error("No session token");
-
-  const res = await fetch(`${SB_URL}/functions/v1/${fn}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body ?? {}),
-  });
-
-  const json = await res.json().catch(() => ({} as any));
-
-  // Si la función devuelve { ok:false, error }, lo tratamos como error
-  if (!res.ok || (json && typeof json === "object" && (json as any).ok === false)) {
-    throw new Error((json as any)?.error || `HTTP ${res.status}`);
-  }
-
-  return json as T;
-}
  
 
 // src/services/adminService.ts
@@ -752,4 +717,204 @@ export async function fetch_dashboard_recent_activity(
   // Si aún no existe, créala; mientras tanto, podemos montar una versión provisional
   // leyendo admin_audit_all (si existe como view) desde Edge.
   return edgeCall("admin_dashboard_recent_activity", { limit });
+}
+
+
+//**************************************  PARA CONFIGURACION ***************************** */
+
+// ============================
+// Admin Settings (real)
+// ============================
+
+export type SystemSettings = {
+  retention_days: number;
+  abuse_threshold_percent: number;
+  allow_new_access_requests: boolean;
+  updated_at: string;
+  updated_by: string | null;
+};
+
+type FnOk<T> = { ok: true; data: T };
+type FnErr = { ok: false; error: string; detail?: string };
+
+function isFnOk<T>(v: any): v is FnOk<T> {
+  return v && v.ok === true && "data" in v;
+}
+
+function isFnErr(v: any): v is FnErr {
+  return v && v.ok === false && typeof v.error === "string";
+}
+
+function asErrorMessage(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object" && "message" in e) return String((e as any).message);
+  return "Unexpected error";
+}
+
+// IMPORTANTE:
+// - Si ya tienes callAdminFn en tu adminService, usa el tuyo y borra este.
+// - Este asume que ya tienes una función que resuelve el access token.
+// - Ajusta getAccessToken() según tu auth (EvalAuthContext, supabase.auth.getSession, etc.)
+
+ 
+
+ async function callAdminFn<T = any>(fnName: string, payload: unknown): Promise<T> {
+  const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
+  const token = await getAccessToken();
+  if (!token) throw new Error("No access token");
+
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/${fnName}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload ?? {}),
+  });
+
+  const text = await res.text();
+  let data: any = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    // si no es JSON
+  }
+
+  if (!res.ok) {
+    const detail = data?.detail || data?.error || text || `HTTP ${res.status}`;
+    throw new Error(detail);
+  }
+
+  return data as T;
+}
+
+
+/**
+ * GET settings actuales (crea singleton si no existe)
+ */
+export async function get_system_settings(): Promise<SystemSettings> {
+  const raw = await callAdminFn<FnOk<SystemSettings> | FnErr>("admin_get_system_settings", {});
+  if (isFnOk<SystemSettings>(raw)) return raw.data;
+  if (isFnErr(raw)) throw new Error(raw.detail ?? raw.error);
+  throw new Error("Unexpected response shape from admin_get_system_settings");
+}
+
+export type UpdateSystemSettingsInput = {
+  retention_days: number;
+  abuse_threshold_percent: number;
+  allow_new_access_requests: boolean;
+};
+
+export type UpdateSystemSettingsResult = {
+  settings: SystemSettings;
+  audit_id: string | null;
+  unchanged: boolean;
+};
+
+/**
+ * UPDATE settings + audit log
+ */
+export async function update_system_settings(
+  input: UpdateSystemSettingsInput
+): Promise<UpdateSystemSettingsResult> {
+  const raw = await callAdminFn<FnOk<UpdateSystemSettingsResult> | FnErr>(
+    "admin_update_system_settings",
+    input
+  );
+
+  if (isFnOk<UpdateSystemSettingsResult>(raw)) return raw.data;
+  if (isFnErr(raw)) throw new Error(raw.detail ?? raw.error);
+  throw new Error("Unexpected response shape from admin_update_system_settings");
+}
+
+
+//-------------------   para configuracion de servidor -----------------------/
+
+export type ConfigChangeSaasRow = {
+  id: string;
+  created_at: string;
+  actor_user_id: string;
+  actor_email: string | null;
+  action: string;
+  diff: Record<string, { before: any; after: any }>;
+  ip: string | null;
+  user_agent: string | null;
+
+  // específicos SaaS (opcional, pero útiles)
+  settings_before?: any;
+  settings_after?: any;
+};
+
+
+export type ListConfigChangesInput = {
+  q?: string | null;
+  from?: string | null; // yyyy-mm-dd
+  to?: string | null;   // yyyy-mm-dd
+  limit?: number | null;
+  offset?: number | null;
+};
+
+ 
+
+export type ListConfigChangesSaasResult = {
+  rows: ConfigChangeSaasRow[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export async function admin_list_config_changes_saas(
+  input: ListConfigChangesInput
+): Promise<ListConfigChangesSaasResult> {
+  const res = await callAdminFn<FnOk<ListConfigChangesSaasResult> | FnErr>(
+    "admin_list_config_changes_saas",
+    {
+      q: input.q ?? "",
+      from: input.from ?? "",
+      to: input.to ?? "",
+      limit: input.limit ?? 25,
+      offset: input.offset ?? 0,
+    }
+  );
+
+  if (!res?.ok) {
+    throw new Error((res as any)?.detail ?? (res as any)?.error ?? "Error listando cambios SaaS");
+  }
+
+  return (res as FnOk<ListConfigChangesSaasResult>).data;
+}
+
+// =======================
+// Admin Stats (Edge)
+// =======================
+export type AdminStatsOverview = {
+  customers_activos: number;
+  activos_por_plan: Array<{ plan_name: string; plan_code: string | null; total: number }>;
+  nuevos_clientes_30d: number;
+  alertas_por_severidad_30d: Array<{ severity: string; total: number }>;
+  solicitudes_por_estado_30d: Array<{ status: string; total: number }>;
+  solicitudes_ultimas_24h: number;
+  tokens_activos: number;
+  tokens_30d: number;
+  consultas_diarias_30d: Array<{ day: string; total: number }>;
+  tendencia_consultas: { last_30: number | null; prev_30: number | null; pct_change: number | null };
+};
+
+export async function admin_stats_overview(): Promise<AdminStatsOverview> {
+  const raw = await callAdminFn<{ ok: true; data: AdminStatsOverview } | { ok: false; error: string }>(
+    "admin_stats_overview",
+    {}
+  );
+  if ((raw as any)?.ok !== true) throw new Error((raw as any)?.error ?? "Error cargando estadísticas");
+  return (raw as any).data as AdminStatsOverview;
+}
+
+
+export async function fetch_admin_stats_overview(range: "7d" | "30d" = "30d") {
+  // usa tu callAdminFn (ya authed + bearer) porque es admin-only
+  const raw = await callAdminFn<FnOk<AdminStatsOverview> | FnErr>("admin_stats_overview", { range });
+
+  if (isFnOk<AdminStatsOverview>(raw)) return raw.data;
+  if (isFnErr(raw)) throw new Error(raw.detail ?? raw.error);
+  throw new Error("Unexpected response shape from admin_stats_overview");
 }

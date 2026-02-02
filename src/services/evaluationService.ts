@@ -658,3 +658,28 @@ export async function getGlobalRiskSnapshot(): Promise<GlobalRiskSnapshot> {
 }
 
 
+//***********************************************************/
+//    conexion clientes - whoami
+//************************************************ */
+
+export type ClientWhoami = {
+  user_id: string;
+  email: string | null;
+  org_id: string;
+  role: "OWNER" | "STAFF";
+  plan: { id: string; name: string; code: string | null; included_seats: number } | null;
+  subscription: { id: string; status: string | null; billing_frequency: string | null } | null;
+  seats: { used: number; included: number; extra: number; allowed: number };
+  trial: { active: boolean; ends_at: string | null; expired: boolean };
+};
+
+export async function client_whoami(): Promise<ClientWhoami> {
+  const { data, error } = await supabase.functions.invoke("client_whoami", { body: {} });
+  if (error) throw error;
+  if (!data?.ok) throw new Error(data?.error ?? "client_whoami_failed");
+  return data.data as ClientWhoami;
+}
+
+
+// src/services/evaluationService.ts
+export * from "@/services/clientService";
