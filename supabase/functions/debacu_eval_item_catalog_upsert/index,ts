@@ -1,0 +1,120 @@
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+
+const ALLOWED_ORIGINS = new Set([
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "https://debacu.com",
+  "https://www.debacu.com",
+]);
+
+function corsHeaders(origin: string | null) {
+  const o = origin ?? "";
+  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Vary": "Origin",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type, x-session-token",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Max-Age": "86400",
+  };
+}
+function json(origin: string | null, status: number, body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
+  });
+}
+function mustEnv(name: string) {
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`Missing env var ${name}`);
+  return v;
+}
+const SUPABASE_URL = mustEnv("SUPABASE_URL");
+const SERVICE_ROLE = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+async function assertEvalSession(
+  supabase: ReturnType<typeof createClient>,
+  sessionToken: string,
+  customerIdFromBody?: string | null
+) {
+  const { data, error } = await supabase
+    .from("debacu_eval_sessions")
+    .select("customer_id, expires_at, revoked_at")
+    .eq("token", sessionToken)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("Invalid session token");
+  if (data.revoked_at) throw new Error("Session revoked");
+  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) throw new Error("Session expired");
+
+  const tokenCustomerId = String(data.customer_id);
+  if (customerIdFromBody && String(customerIdFromBody) !== tokenCustomerId) {
+    throw new Error("customerId mismatch vs session token");
+  }
+  return { customerId: tokenCustomerId };
+}
+
+function clamp(s: any, max: number) {
+  return String(s ?? "").trim().slice(0, max);
+}
+function asNum(v: any) {
+  const n = Number(String(v ?? "").replace(",", "."));
+  if (!Number.isFinite(n)) return null;
+  return n;
+}
+
+Deno.serve(async (req) => {
+  const origin = req.headers.get("origin");
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(origin) });
+  if (req.method !== "POST") return json(origin, 405, { error: "Method not allowed" });
+
+  try {
+    const sessionToken = req.headers.get("x-session-token") || "";
+    if (!sessionToken) return json(origin, 401, { error: "Missing x-session-token" });
+
+    const body = await req.json();
+    const customerId = body?.customerId ? String(body.customerId) : "";
+    if (!customerId) return json(origin, 400, { error: "Missing customerId" });
+
+    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
+    await assertEvalSession(supabase, sessionToken, customerId);
+
+    const item_code = clamp(body?.item_code, 40).toUpperCase();
+    const title = clamp(body?.title, 120);
+    const category = clamp(body?.category, 60);
+    const currency = clamp(body?.currency ?? "EUR", 3).toUpperCase();
+    const unit_price = asNum(body?.unit_price);
+    const description = body?.description != null ? clamp(body.description, 400) : null;
+    const is_active = typeof body?.is_active === "boolean" ? body.is_active : true;
+
+    if (!item_code) return json(origin, 400, { error: "Missing item_code" });
+    if (!title) return json(origin, 400, { error: "Missing title" });
+    if (!category) return json(origin, 400, { error: "Missing category" });
+    if (unit_price == null || unit_price < 0) return json(origin, 400, { error: "Invalid unit_price" });
+
+    const { error } = await supabase
+      .from("debacu_hotel_item_catalog")
+      .upsert(
+        [{
+          customer_id: customerId,
+          item_code,
+          title,
+          category,
+          unit_price,
+          currency,
+          description,
+          is_active,
+        }],
+        { onConflict: "customer_id,item_code" }
+      );
+
+    if (error) return json(origin, 500, { error: error.message });
+
+    return json(origin, 200, { ok: true, customerId, item_code });
+  } catch (e: any) {
+    return json(origin, 500, { error: String(e?.message ?? e) });
+  }
+});

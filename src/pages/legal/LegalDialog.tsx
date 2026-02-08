@@ -4,15 +4,15 @@ import React, { useEffect, useMemo, useState } from "react";
 const cx = (...cls: Array<string | false | undefined | null>) =>
   cls.filter(Boolean).join(" ");
 
-export type TabKey =
- 
-  | "terminos"
-  
+export type TabKey = "terminos";
 
 export interface LegalDialogProps {
   open: boolean;
   onClose: () => void;
   defaultTab?: TabKey;
+
+  // ✅ Email del cliente (nuevo solicitante) para insertarlo en Documento 5 / Anexo I
+  customerEmail?: string;
 
   // si lo pasas, mostramos el botón de aceptar
   onAccept?: () => void | Promise<void>;
@@ -24,6 +24,7 @@ export default function LegalDialog({
   open,
   onClose,
   defaultTab = "terminos",
+  customerEmail,
   onAccept,
   acceptLabel = "Aceptar términos",
   accepting = false,
@@ -139,7 +140,9 @@ export default function LegalDialog({
             {/* Right (SCROLL SOLO AQUÍ) */}
             <section className="bg-white p-6 overflow-hidden">
               <div className="h-full overflow-y-auto pr-2">
-                {tab === "terminos" && <Terminos />}
+                {tab === "terminos" && (
+                  <Terminos customerEmail={customerEmail} />
+                )}
               </div>
             </section>
           </div>
@@ -187,15 +190,27 @@ function UL({ children }: { children: React.ReactNode }) {
 }
 
 /* ===========================
-   CONTENIDOS (TABS)
+   CONTENIDO ÚNICO (SCROLL)
    =========================== */
 
-function Terminos() {
+function safeEmailOrFallback(email?: string) {
+  const e = (email ?? "").trim();
+  if (!e) return "el email indicado por el establecimiento";
+  // validación mínima
+  if (!e.includes("@") || e.length < 6) return "el email indicado por el establecimiento";
+  return e;
+}
+
+function Terminos({ customerEmail }: { customerEmail?: string }) {
+  const hotelEmailForRights = safeEmailOrFallback(customerEmail);
+
   return (
     <div className="space-y-6 text-sm text-slate-800">
       <H1>Términos y condiciones · Debacu Evaluation360</H1>
 
-      <p className="text-xs text-slate-500">Versión documentos: 2026-01-24 · V1.0</p>
+      <p className="text-xs text-slate-500">
+        Versión documentos: 2026-01-24 · V1.0
+      </p>
 
       {/* ================= AVISO LEGAL ================= */}
       <H2>Aviso Legal</H2>
@@ -468,6 +483,151 @@ function Terminos() {
         y bajo controles de seguridad.
       </P>
 
+      {/* ================= DOCUMENTO 5 ================= */}
+      <H2>Documento 5 · Análisis de Interés Legítimo (art. 6.1.f RGPD)</H2>
+
+      <H3>1. Identificación del responsable del tratamiento</H3>
+      <P>
+        El tratamiento de datos realizado en el marco de la Plataforma Debacu Evaluation360 se basa en el
+        interés legítimo conforme al artículo 6.1.f del Reglamento (UE) 2016/679 (RGPD).
+      </P>
+      <UL>
+        <li>
+          <strong>Responsable del tratamiento (Cliente):</strong> la organización adherida que introduce datos en la
+          Plataforma.
+        </li>
+        <li>
+          <strong>Encargado del tratamiento:</strong> DEBACU HOTELS SL, CIF B-55381214.
+        </li>
+      </UL>
+
+      <H3>2. Finalidad del tratamiento</H3>
+      <P>El tratamiento tiene como finalidad:</P>
+      <UL>
+        <li>La prevención de riesgos operativos.</li>
+        <li>La detección de conductas reiteradas que puedan generar daños materiales, impagos o incidencias graves.</li>
+        <li>La protección del patrimonio empresarial.</li>
+        <li>La protección de empleados y huéspedes.</li>
+        <li>La mejora de protocolos internos de seguridad y trazabilidad.</li>
+      </UL>
+
+      <H3>3. Interés legítimo perseguido</H3>
+      <P>El interés legítimo invocado consiste en:</P>
+      <UL>
+        <li>Proteger los intereses económicos del establecimiento.</li>
+        <li>Reducir el fraude y el uso abusivo de servicios.</li>
+        <li>Garantizar un entorno seguro.</li>
+        <li>Evitar la reiteración de conductas perjudiciales.</li>
+      </UL>
+      <P>
+        Se trata de un interés empresarial legítimo, reconocido en el ámbito de la prevención de fraude y
+        protección de activos.
+      </P>
+
+      <H3>4. Necesidad del tratamiento</H3>
+      <P>
+        Para que la finalidad descrita sea viable, resulta necesario tratar determinados datos identificativos
+        tales como:
+      </P>
+      <UL>
+        <li>Documento identificativo</li>
+        <li>Correo electrónico</li>
+        <li>Teléfono</li>
+        <li>Datos relacionados con incidencias operativas</li>
+      </UL>
+      <P>
+        Sin dicha identificación individual no sería posible detectar reincidencias ni aplicar medidas
+        preventivas proporcionadas.
+      </P>
+
+      <H3>5. Test de ponderación</H3>
+      <P>
+        Se ha evaluado el equilibrio entre el interés legítimo del Responsable y los derechos y libertades de
+        los interesados.
+      </P>
+      <P>Se concluye que el tratamiento es proporcionado porque:</P>
+      <UL>
+        <li>La Plataforma no es pública ni indexable.</li>
+        <li>No existe difusión pública de información.</li>
+        <li>
+          Las consultas inter-organización muestran datos enmascarados o sistemas de scoring sin
+          revelar identidad completa.
+        </li>
+        <li>Se aplican controles estrictos de acceso por roles.</li>
+        <li>Se registra la trazabilidad completa de acciones.</li>
+        <li>No se adoptan decisiones exclusivamente automatizadas sin revisión humana.</li>
+      </UL>
+
+      <H3>6. Medidas de minimización y seguridad</H3>
+      <P>La Plataforma incorpora:</P>
+      <UL>
+        <li>Principio de minimización.</li>
+        <li>Enmascaramiento de datos en consultas globales.</li>
+        <li>Registro de auditoría completo.</li>
+        <li>Control de abuso.</li>
+        <li>Separación lógica por organización.</li>
+        <li>Medidas técnicas descritas en el Anexo II.</li>
+      </UL>
+
+      <H3>7. Conservación de datos</H3>
+      <P>
+        Los datos se conservarán únicamente durante el tiempo necesario para cumplir la finalidad descrita
+        y defender posibles reclamaciones, con un plazo máximo orientativo de hasta 5 años desde la última
+        incidencia registrada, salvo obligación legal distinta.
+      </P>
+      <P>Transcurrido dicho plazo, podrán:</P>
+      <UL>
+        <li>Ser anonimizados.</li>
+        <li>Ser bloqueados.</li>
+        <li>O mantenerse exclusivamente en forma agregada sin identificación personal.</li>
+      </UL>
+
+      <H3>8. Conclusión</H3>
+      <P>
+        Tras el análisis efectuado, se considera que el tratamiento realizado en la Plataforma Debacu
+        Evaluation360 es:
+      </P>
+      <UL>
+        <li>Necesario</li>
+        <li>Proporcionado</li>
+        <li>Limitado a la finalidad descrita</li>
+        <li>Adecuadamente protegido mediante medidas técnicas y organizativas</li>
+      </UL>
+      <P>
+        Y que el interés legítimo empresarial prevalece sobre el posible impacto limitado en los derechos
+        del interesado.
+      </P>
+
+      {/* ================= ANEXO I (TU TEXTO) ================= */}
+      <H2>Anexo I · Uso de sistemas de prevención de riesgo y trazabilidad</H2>
+
+      <P>
+        Con la finalidad de prevenir fraudes, daños materiales, impagos y conductas reiteradas que puedan
+        afectar a la seguridad del establecimiento, este alojamiento utiliza sistemas internos de evaluación
+        y gestión de incidencias operativas.
+      </P>
+
+      <P>
+        Dichos sistemas pueden implicar el tratamiento de datos identificativos mínimos (como documento
+        identificativo, teléfono o correo electrónico) asociados a incidencias ocurridas durante la estancia.
+      </P>
+
+      <P>
+        La base jurídica del tratamiento es el interés legítimo del establecimiento en proteger su patrimonio,
+        empleados y clientes, conforme al artículo 6.1.f del Reglamento (UE) 2016/679.
+      </P>
+
+      <P>
+        La información no es pública ni accesible al público general y se utiliza exclusivamente con fines
+        internos y de prevención.
+      </P>
+
+      <P>
+        El interesado podrá ejercer sus derechos de acceso, rectificación, oposición o limitación dirigiéndose a:{" "}
+        <strong>{hotelEmailForRights}</strong>.
+      </P>
+
+      {/* ================= ANEXO II (TU LISTA) ================= */}
       <H2>Anexo II · Medidas Técnicas y Organizativas (art. 32 RGPD)</H2>
 
       <H3>A. Control de acceso y autenticación</H3>
@@ -525,6 +685,7 @@ function Terminos() {
       <UL>
         <li>Privacidad y seguridad: privacidad@debacu.com</li>
         <li>Cuestiones contractuales/servicio: informacion@debacu.com</li>
+        <li>Cuestiones legales: legal@debacu.com</li>
       </UL>
     </div>
   );

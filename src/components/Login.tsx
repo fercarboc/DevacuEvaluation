@@ -1,10 +1,12 @@
 // src/pages/Login.tsx
 import React, { useState } from "react";
-import { evalLogin } from "@/services/evalApi";
+import { evalLogin, EvalApiError } from "@/services/evalApi";
 import type { User } from "@/types/types";
 import { Lock, User as UserIcon, Loader2 } from "lucide-react";
 import { supabase } from "@/services/supabaseClient";
 import { useEvalAuth } from "@/context/EvalAuthContext";
+
+import PaywallPlansModal from "./PaywallPlansModal";
 
 export interface LoginProps {
   onLoginSuccess: (user: User) => void;
@@ -12,10 +14,26 @@ export interface LoginProps {
 
 export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   const { signIn } = useEvalAuth();
+
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Paywall
+  const [paywallOpen, setPaywallOpen] = useState(false);
+  const [paywallReason, setPaywallReason] = useState<"EXPIRED" | "NONE" | null>(
+    null
+  );
+  const [lastCreds, setLastCreds] = useState<{ username: string; password: string } | null>(
+    null
+  );
+
+  const closePaywall = () => {
+    setPaywallOpen(false);
+    // no limpiamos lastCreds a propósito
+  };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -42,7 +60,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       const auth_token = data.session.access_token ?? "";
       localStorage.setItem("debacu_eval_auth_token", auth_token);
 
-      // ✅ MUY IMPORTANTE: limpiar caché de admin (si venías “false”)
+      // ✅ limpiar caché de admin (si venías “false”)
       sessionStorage.removeItem("debacu_eval_is_admin");
 
       // 3) Heurística local (no es la fuente de verdad, pero ayuda UI)
@@ -51,9 +69,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       const uname = String((user as any)?.username ?? username ?? "").toLowerCase().trim();
 
       const isAdmin =
-        email === "admin@debacu.com" ||
-        id === "ADMIN_DEBACU" ||
-        uname === "admin";
+        email === "admin@debacu.com" || id === "ADMIN_DEBACU" || uname === "admin";
 
       const userWithAdmin: User = { ...(user as User), isAdmin };
 
@@ -62,6 +78,30 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       onLoginSuccess(userWithAdmin);
     } catch (err: unknown) {
       console.error(err);
+
+      // Paywall: si el login interno responde con error_obj (code + status)
+      if (err instanceof EvalApiError) {
+        const code = err.error_obj?.code;
+        const status = err.error_obj?.status;
+
+        // Guardamos credenciales para iniciar checkout sin que el usuario reescriba
+        setLastCreds({ username, password });
+
+        if (code === "SUBSCRIPTION_NOT_ACTIVE" && status === "EXPIRED") {
+          setPaywallReason("EXPIRED");
+          setPaywallOpen(true);
+          setError("Tu periodo de prueba ha finalizado. Para continuar, contrata un plan.");
+          return;
+        }
+
+        if (code === "NO_SUBSCRIPTION") {
+          setPaywallReason("NONE");
+          setPaywallOpen(true);
+          setError("No tienes una suscripción activa. Elige un plan para continuar.");
+          return;
+        }
+      }
+
       setError(err instanceof Error ? err.message : "Usuario o contraseña incorrectos");
     } finally {
       setLoading(false);
@@ -138,8 +178,33 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
             {loading && <Loader2 className="h-5 w-5 animate-spin" />}
             Acceder
           </button>
+
+          {/* Shortcut: si ya detectaste paywall, botón explícito */}
+          {lastCreds && (
+            <button
+              type="button"
+              onClick={() => {
+                setPaywallReason(paywallReason ?? "NONE");
+                setPaywallOpen(true);
+              }}
+              className="w-full rounded-lg border border-slate-200 bg-white py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              Ver planes
+            </button>
+          )}
         </form>
       </div>
+
+      {/* Paywall Modal */}
+      {paywallOpen && lastCreds && (
+        <PaywallPlansModal
+          open={paywallOpen}
+          onClose={closePaywall}
+          reason={paywallReason}
+          username={lastCreds.username}
+          password={lastCreds.password}
+        />
+      )}
     </div>
   );
 };

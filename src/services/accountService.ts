@@ -1,13 +1,17 @@
 // src/services/accountService.ts
-import { supabase } from '@/services/supabaseClient';
+import { callEvalFn } from "@/services/callEvalFn";
 
-const APP_CODE = 'DEBACU_EVAL'; // el que usas en el login
+/**
+ * Este service queda 100% Edge Functions (NADA de supabase.from(...) aquí).
+ * - Bundle: customer + invoices + plans (para pantalla "Mi cuenta & plan")
+ * - Updates: profile + bank
+ */
 
-// ----------------- TIPOS SEGÚN TU ESQUEMA -----------------
+// ----------------- TIPOS (bundle Edge) -----------------
 
-export interface DbCustomer {
+export interface AccountBundleCustomer {
   id: string;
-  name: string;
+  name: string | null;
   nif: string | null;
   address: string | null;
   postal_code: string | null;
@@ -16,140 +20,116 @@ export interface DbCustomer {
   country: string | null;
   phone: string | null;
   email: string | null;
-  sector_id: string | null;
-  service_username: string | null;
-  service_password: string | null;
-  api_token: string | null;
-  is_active: boolean | null;
+
+  // bancarios
   iban: string | null;
   swift: string | null;
   bank_name: string | null;
   bank_address: string | null;
+
+  // opcionales si existen en tu tabla (no molestan si vienen null)
+  sector_id?: string | null;
+  service_username?: string | null;
+  service_password?: string | null;
+  api_token?: string | null;
+  is_active?: boolean | null;
 }
 
-export interface DbSubscription {
+export interface AccountBundleInvoice {
   id: string;
-  customer_id: string;
-  app_id: string;
-  plan_id: string | null;
-  billing_frequency: string; // 'MONTHLY', 'ANNUAL', etc.
-  start_date: string;        // date
-  end_date: string | null;   // date
-  next_billing_date: string | null; // date
-  status: string;           // 'ACTIVE', 'CANCELLED', etc.
-  created_at: string;       // timestamp
+  invoice_number: string | null;
+  stripe_invoice_id: string | null;
+  status: string | null;
+  currency: string | null;
+  amount_total: number | null; // cents
+  invoice_created_at: string | null;
+  hosted_invoice_url: string | null;
+  invoice_pdf: string | null;
 }
 
-export interface DbPlan {
+export interface AccountBundlePlan {
   id: string;
-  app_id: string;
-  name: string;
+  name: string | null;
   code: string | null;
   price_monthly: number | null;
-  price_yearly: number | null;
   max_queries_per_month: number | null;
-  extra_config: any | null;
+
+  // opcionales si en tu tabla existen
+  app_id?: string | null;
+  price_yearly?: number | null;
+  extra_config?: any | null;
 }
 
-export interface DbReceipt {
-  id: string;
-  date: string;             // date
-  amount: number;           // numeric
-  customer_id: string;
-  customer_name: string | null;
-  concept: string | null;
-  payment_method: string | null;
-  status: string;           // 'PAID', 'PENDING', etc.
-  billing_period: string | null;
-  invoice_number: string | null;
-  previous_invoice_hash: string | null;
-  current_hash: string | null;
-  signature: string | null;
-  certificate_used: string | null;
-  signature_method: string | null;
-  is_returned: boolean | null;
-  return_reason: string | null;
-  return_date: string | null;
-  subscription_id: string | null;
-  created_at: string;
+export interface AccountBundleResponse {
+  customer: AccountBundleCustomer | null;
+  invoices: AccountBundleInvoice[];
+  plans: AccountBundlePlan[];
 }
 
-export interface MyEvalAccount {
-  customer: DbCustomer | null;
-  subscription: DbSubscription | null;
-  plan: DbPlan | null;
-  receipts: DbReceipt[];
-}
-
-// ----------------- FUNCIÓN PRINCIPAL -----------------
+// ----------------- EDGE CALLS -----------------
 
 /**
- * Carga todos los datos necesarios para la pantalla
- * "Mi Cuenta & Plan" para un cliente concreto.
+ * Bundle para "Mi cuenta & plan":
+ * - customer (empresa+banco)
+ * - invoices (debacu_eval_invoices)
+ * - plans (plans del app DEBACU_EVAL para BASIC/MEDIUM/PREMIUM)
  */
-export async function getMyEvalAccount(
-  customerId: string
-): Promise<MyEvalAccount> {
-  // 1) Cliente
-  const { data: customer, error: customerError } = await supabase
-    .from('customers')
-    .select('*')
-    .eq('id', customerId)
-    .maybeSingle();
+export async function getAccountBundle(customer_id: string) {
+  return callEvalFn<AccountBundleResponse>("debacu_eval_account_bundle", { customer_id });
+}
 
-  if (customerError) {
-    console.error('Error cargando customer:', customerError);
+/**
+ * Update datos empresa/contacto del customer (whitelist server-side).
+ */
+export async function updateAccountProfile(
+  customer_id: string,
+  patch: {
+    name?: string | null;
+    nif?: string | null;
+    address?: string | null;
+    postal_code?: string | null;
+    city?: string | null;
+    province?: string | null;
+    country?: string | null;
+    phone?: string | null;
+    email?: string | null;
   }
+) {
+  return callEvalFn<{ ok: boolean }>("debacu_eval_account_update_profile", { customer_id, patch });
+}
 
-  // 2) Suscripción ACTIVA a la app DEBACU_EVAL
-  const { data: subscription, error: subError } = await supabase
-    .from('subscriptions')
-    .select('*')
-    .eq('customer_id', customerId)
-    .eq('app_id', APP_CODE)
-    .eq('status', 'ACTIVE')
-    .order('start_date', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (subError) {
-    console.error('Error cargando subscription:', subError);
+/**
+ * Update datos bancarios del customer (whitelist server-side).
+ */
+export async function updateAccountBank(
+  customer_id: string,
+  patch: {
+    iban?: string | null;
+    swift?: string | null;
+    bank_name?: string | null;
+    bank_address?: string | null;
   }
+) {
+  return callEvalFn<{ ok: boolean }>("debacu_eval_account_update_bank", { customer_id, patch });
+}
 
-  let plan: DbPlan | null = null;
 
-  // 3) Plan (si la suscripción tiene planId)
-  if (subscription?.plan_id) {
-    const { data: planRow, error: planError } = await supabase
-      .from('plans')
-      .select('*')
-      .eq('id', subscription.plan_id)
-      .maybeSingle();
 
-    if (planError) {
-      console.error('Error cargando plan:', planError);
-    } else {
-      plan = planRow as DbPlan;
-    }
-  }
+export interface AccountBundleHotelProfile {
+  customer_id: string;
+  hotel_category: number;
+  adr_real: number | null;
+  adr_reference: number;
+  adr_effective: number;
+  monthly_stays_estimated: number | null;
+  season_mult_high: number;
+  season_mult_low: number;
+  updated_at: string;
+}
 
-  // 4) Últimos recibos del cliente
-  // En tu esquema NO aparece appId en receipts, así que filtramos solo por customerId.
-  const { data: receipts, error: receiptsError } = await supabase
-    .from('receipts')
-    .select('*')
-    .eq('customer_id', customerId)
-    .order('date', { ascending: false })
-    .limit(10);
-
-  if (receiptsError) {
-    console.error('Error cargando receipts:', receiptsError);
-  }
-
-  return {
-    customer: (customer as DbCustomer) || null,
-    subscription: (subscription as DbSubscription) || null,
-    plan,
-    receipts: (receipts as DbReceipt[]) || [],
-  };
+export interface AccountBundleResponse {
+  customer: AccountBundleCustomer | null;
+  invoices: AccountBundleInvoice[];
+  plans: AccountBundlePlan[];
+  hotel_profile?: AccountBundleHotelProfile | null; // 👈 nuevo
 }

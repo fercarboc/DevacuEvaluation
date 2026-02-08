@@ -2,6 +2,10 @@
 import { supabase } from "@/services/supabaseClient";
 import type { Rating } from "@/types/types";
 import type { Database } from "@/types/database";
+ 
+ 
+ 
+
 
 export type EvaluationRow = Database["public"]["Tables"]["debacu_evaluations"]["Row"];
 export type EvaluationInsert = Database["public"]["Tables"]["debacu_evaluations"]["Insert"];
@@ -52,7 +56,19 @@ export interface AddEvaluationInput {
   evaluation_date?: string | null; // yyyy-mm-dd
   creator_customer_id?: string | null;
   creator_customer_name?: string | null;
+
+  // ✅ NUEVO MODELO (incidencias + economía + contexto)
+  hotel_category?: number | null;         // smallint
+  incident_type?: string | null;          // text
+  impact_items?: any | null;              // jsonb [{code, qty, unit_price}, ...]
+  season_applied?: string | null;         // text (LOW/HIGH/MID o como definas)
+  adr_reference?: number | null;          // numeric
+  adr_real_snapshot?: number | null;      // numeric
+  economic_impact_gross?: number | null;  // numeric
+  economic_recovered?: number | null;     // numeric
+  economic_net_loss?: number | null;      // numeric
 }
+
 
 function categorizeRating(avg: number): ReputationCategory {
   if (avg <= 2) return "NO_RECOMMENDED";
@@ -502,6 +518,27 @@ async function readJsonSafe(res: Response) {
   }
 }
 
+
+
+
+type EvaluationInsertExtended =
+  EvaluationInsert & {
+    incident_type?: string | null;
+    impact_items?: any | null;
+    season_applied?: string | null;
+    economic_recovered?: number | null;
+    economic_impact_gross?: number | null;
+    economic_net_loss?: number | null;
+    hotel_category?: number | null;
+    adr_reference?: number | null;
+    adr_real_snapshot?: number | null;
+  };
+
+
+
+
+
+
 /** =========================================================
  *  Insert (via Edge Function)
  * ========================================================= */
@@ -516,19 +553,30 @@ export async function addEvaluation(
     return null;
   }
 
-  const payload: EvaluationInsert = {
-    document: (input.document || "").trim(),
-    full_name: (input.full_name || "").trim(),
-    nationality: input.nationality ? String(input.nationality).trim() : null,
-    phone: input.phone ? String(input.phone).trim() : null,
-    email: input.email ? String(input.email).trim().toLowerCase() : null,
-    rating: Number(input.rating || 0),
-    comment: input.comment ? String(input.comment).trim() : null,
-    platform: input.platform ? String(input.platform).trim() : "DEBACU_EVAL",
-    evaluation_date: input.evaluation_date || todayISO(),
-    creator_customer_id: input.creator_customer_id ?? currentCustomerId ?? null,
-    creator_customer_name: input.creator_customer_name ?? currentCustomerName ?? null,
-  };
+ const payload: EvaluationInsertExtended = {
+  document: (input.document || "").trim(),
+  full_name: (input.full_name || "").trim(),
+  nationality: input.nationality ? String(input.nationality).trim() : null,
+  phone: input.phone ? String(input.phone).trim() : null,
+  email: input.email ? String(input.email).trim().toLowerCase() : null,
+  rating: Number(input.rating || 0),
+  comment: input.comment ? String(input.comment).trim() : null,
+  platform: input.platform ? String(input.platform).trim() : "DEBACU_EVAL",
+  evaluation_date: input.evaluation_date || todayISO(),
+  creator_customer_id: input.creator_customer_id ?? currentCustomerId ?? null,
+  creator_customer_name: input.creator_customer_name ?? currentCustomerName ?? null,
+
+  // 🔽 NUEVO MODELO
+  incident_type: input.incident_type ?? null,
+  impact_items: input.impact_items ?? null,
+  season_applied: input.season_applied ?? null,
+  economic_recovered: input.economic_recovered ?? null,
+  economic_impact_gross: input.economic_impact_gross ?? null,
+  economic_net_loss: input.economic_net_loss ?? null,
+  hotel_category: input.hotel_category ?? null,
+  adr_reference: input.adr_reference ?? null,
+  adr_real_snapshot: input.adr_real_snapshot ?? null,
+};
 
   const body = {
     app_code: "DEBACU_EVAL",
@@ -626,37 +674,8 @@ export async function addEvaluation(
  *
  *  -- Y una política de permisos: que solo roles autorizados puedan ejecutar.
  * ========================================================= */
- export type GlobalRiskSnapshot = {
-  pct5: number;
-  pct4: number;
-  pct3: number;
-  pct2: number;
-  pct1: number;
-  pct_bajo: number;
-  pct_medio: number;
-  pct_alto: number;
-};
-
-export async function getGlobalRiskSnapshot(): Promise<GlobalRiskSnapshot> {
-  // Workaround si TS aún no “ve” la RPC en Database.Functions
-  const { data, error } = await supabase.rpc<any>("global_risk_snapshot_public");
-
-  if (error) throw error;
-
-  const row = Array.isArray(data) ? data[0] : data;
-
-  return {
-    pct5: Number(row?.pct5 ?? 0),
-    pct4: Number(row?.pct4 ?? 0),
-    pct3: Number(row?.pct3 ?? 0),
-    pct2: Number(row?.pct2 ?? 0),
-    pct1: Number(row?.pct1 ?? 0),
-    pct_bajo: Number(row?.pct_bajo ?? 0),
-    pct_medio: Number(row?.pct_medio ?? 0),
-    pct_alto: Number(row?.pct_alto ?? 0),
-  };
-}
-
+ 
+ 
 
 //***********************************************************/
 //    conexion clientes - whoami

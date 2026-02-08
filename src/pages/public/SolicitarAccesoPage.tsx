@@ -488,6 +488,7 @@ export default function SolicitarAccesoPage() {
           <LegalDialog
             open={legalOpen}
             onClose={() => setLegalOpen(false)}
+             customerEmail={form.email}   // ⬅️ AQUÍ
             defaultTab={legalTab}
             onAccept={acceptTermsInsideDialog}
             accepting={acceptLoading}

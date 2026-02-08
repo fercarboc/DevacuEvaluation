@@ -48,15 +48,20 @@ function getSessionTokenOrThrow() {
  * - { ok: true, data: ... }
  * - o devuelve directo el objeto
  */
-async function callEdge<T>(name: string, body: any): Promise<T> {
+export async function callEdge<T>(name: string, body: any): Promise<T> {
   const session_token = getSessionTokenOrThrow();
+
+  // ✅ token REAL del usuario (no anon)
+  const { data } = await supabase.auth.getSession();
+  const jwt = data.session?.access_token || "";
+  if (!jwt) throw new Error("missing_supabase_jwt");
 
   const res = await fetch(fnUrl(name), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       apikey: ANON_KEY,
-      Authorization: `Bearer ${ANON_KEY}`,
+      Authorization: `Bearer ${jwt}`,
       "x-session-token": session_token,
     },
     body: JSON.stringify(body ?? {}),
@@ -68,7 +73,6 @@ async function callEdge<T>(name: string, body: any): Promise<T> {
     throw new Error(`${name}_failed`);
   }
 
-  // convención flexible
   if (json && typeof json === "object" && "ok" in json) {
     if (json.ok === true) return (json.data ?? null) as T;
     throw new Error(String((json as any).error ?? `${name}_error`));
@@ -185,9 +189,75 @@ function classifyQuery(q: string): MatchStrength {
   return "MEDIUM";
 }
 
+
+
+
+ 
+// ✅ Normalizadores para GLOBAL (antes de llamar a Edge)
+function normalizeEmail(q: string) {
+  return q.trim().toLowerCase();
+}
+function onlyDigits(q: string) {
+  return q.replace(/\D/g, "");
+}
+function normalizeDoc(q: string) {
+  return q.trim().toUpperCase().replace(/\s+/g, "");
+}
+function normalizePhone(q: string) {
+  // devolvemos variantes útiles para matching (Edge decide qué usar)
+  const digits = onlyDigits(q);
+  const last9 = digits.length >= 9 ? digits.slice(-9) : digits;
+  // E164 simple: si ya trae prefijo país (>=11) lo dejamos; si no, suponemos ES (+34)
+  const e164 = digits.length === 9 ? `34${digits}` : digits; // sin "+" para facilitar SQL
+  return { digits, last9, e164 };
+}
+
+function buildGlobalQueryPayload(raw: string) {
+  const q = (raw || "").trim();
+
+  const isEmail = looksLikeEmail(q);
+  const isPhone = looksLikePhone(q);
+  const isDoc = looksLikeDoc(q);
+
+  const strength = classifyQuery(q);
+
+  let q_input = q; // lo que mandamos como principal a Edge
+  let email_norm: string | null = null;
+  let doc_norm: string | null = null;
+  let phone_digits: string | null = null;
+  let phone_last9: string | null = null;
+  let phone_e164: string | null = null;
+
+  if (isEmail) {
+    email_norm = normalizeEmail(q);
+    q_input = email_norm;
+  } else if (isDoc) {
+    doc_norm = normalizeDoc(q);
+    q_input = doc_norm;
+  } else if (isPhone) {
+    const p = normalizePhone(q);
+    phone_digits = p.digits;
+    phone_last9 = p.last9;
+    phone_e164 = p.e164;
+    q_input = phone_digits; // principal por simplicidad
+  }
+
+  return {
+    q_raw: q,
+    q_input, // ✅ principal
+    strength,
+    allow_weak: strength === "WEAK",
+    email_norm,
+    doc_norm,
+    phone_digits,
+    phone_last9,
+    phone_e164,
+  };
+}
+
 export async function checkSignalsGlobal(query: string, months = 24): Promise<GlobalSignals> {
-  const q = (query || "").trim();
-  if (!q) {
+  const raw = (query || "").trim();
+  if (!raw) {
     return {
       matchStrength: "MEDIUM",
       hasMatches: false,
@@ -199,48 +269,64 @@ export async function checkSignalsGlobal(query: string, months = 24): Promise<Gl
     };
   }
 
-  const strength = classifyQuery(q);
+  const payload = buildGlobalQueryPayload(raw);
 
-  // Nombre/apellidos suelto => no concluyente
-  if (strength === "WEAK") {
-    return {
-      matchStrength: "WEAK",
-      hasMatches: false,
-      countExact: 0,
-      countBucket: "0",
-      risk: "NO_CONCLUYENTE",
-      timeWindow: `${months}M`,
-      message:
-        "Resultado no concluyente: el dato aportado puede corresponder a varias personas. Para una comprobación técnica, añade email/teléfono/documento.",
-    };
-  }
-
-  // Edge: debacu-eval-check-signals
+  // ✅ YA NO cortamos en cliente por WEAK.
+  // Dejamos que Edge decida (y si no soporta weak, devolverá 0).
   try {
     const row = await callEdge<any>("debacu-eval-check-signals", {
-      q_input: q,
+      q_input: payload.q_input,
+      q_raw: payload.q_raw,
       months,
       k: 3,
-      // si tu edge soporta estos flags, ok; si no, los ignorará
+
+      // extras (Edge puede ignorar si no los usa)
+      allow_weak: payload.allow_weak,
+      match_strength_hint: payload.strength,
+      email_norm: payload.email_norm,
+      doc_norm: payload.doc_norm,
+      phone_digits: payload.phone_digits,
+      phone_last9: payload.phone_last9,
+      phone_e164: payload.phone_e164,
     });
 
-    const countExact = typeof row?.countExact === "number" ? row.countExact : Number(row?.countExact ?? 0);
+    const countExact =
+      typeof row?.countExact === "number" ? row.countExact : Number(row?.countExact ?? 0);
+
+    const hasMatches = Boolean(row?.hasMatches ?? countExact > 0);
+
+    // ✅ Política producto:
+    // - si es WEAK (nombre), aunque Edge diga que hay señales, siempre NO_CONCLUYENTE
+    //   y mensaje instructivo.
+    const finalStrength = (row?.matchStrength ?? payload.strength) as MatchStrength;
+
+    const finalRisk: RiskLevel =
+      payload.allow_weak
+        ? "NO_CONCLUYENTE"
+        : ((row?.risk ?? "NO_CONCLUYENTE") as RiskLevel);
+
+    const finalMessage =
+      payload.allow_weak
+        ? (hasMatches
+            ? "Hay señales asociadas, pero el criterio es no concluyente (nombre). Para comprobación técnica usa email/teléfono/documento."
+            : "Resultado no concluyente: el dato aportado puede corresponder a varias personas. Para una comprobación técnica, añade email/teléfono/documento.")
+        : (row?.message ?? "");
 
     return {
-      matchStrength: (row?.matchStrength ?? strength) as MatchStrength,
-      hasMatches: Boolean(row?.hasMatches ?? countExact > 0),
+      matchStrength: finalStrength,
+      hasMatches,
       countExact,
       countBucket: (row?.countBucket ?? "0") as CountBucket,
       avgStars: typeof row?.avgStars === "number" ? row.avgStars : row?.avgStars ?? null,
-      risk: (row?.risk ?? "NO_CONCLUYENTE") as RiskLevel,
+      risk: finalRisk,
       topTypologies: Array.isArray(row?.topTypologies) ? row.topTypologies : [],
       timeWindow: row?.timeWindow ?? `${months}M`,
-      message: row?.message ?? "",
+      message: finalMessage,
     };
   } catch (e) {
     console.error("checkSignalsGlobal failed:", e);
     return {
-      matchStrength: strength,
+      matchStrength: payload.strength,
       hasMatches: false,
       countExact: 0,
       countBucket: "0",
@@ -250,6 +336,11 @@ export async function checkSignalsGlobal(query: string, months = 24): Promise<Gl
     };
   }
 }
+
+
+
+
+
 
 /** =========================================================
  *  “MIS REGISTROS” -> Edge Function (evita 403 por RLS)
@@ -341,8 +432,10 @@ export async function addEvaluation(
   return row as EvaluationRow;
 }
 
+
 /** =========================================================
- *  GLOBAL RISK SNAPSHOT -> Edge Function (3/6/12 meses)
+ *  GLOBAL RISK SNAPSHOT -> Edge Function
+ *  (a día de hoy = histórico completo)
  * ========================================================= */
 export type GlobalRiskSnapshot = {
   pct5: number;
@@ -350,14 +443,15 @@ export type GlobalRiskSnapshot = {
   pct3: number;
   pct2: number;
   pct1: number;
-  pct_bajo: number;
-  pct_medio: number;
-  pct_alto: number;
+  pct_bajo: number;  // 4-5
+  pct_medio: number; // 3
+  pct_alto: number;  // 1-2
 };
 
-export async function getGlobalRiskSnapshot(args?: { months?: 3 | 6 | 12 }): Promise<GlobalRiskSnapshot> {
-  const months = args?.months ?? 6;
-  const data = await callEdge<any>("debacu-eval-global-risk-snapshot", { months });
+export async function getGlobalRiskSnapshot(): Promise<GlobalRiskSnapshot> {
+  // Tu callEdge (el de arriba) acepta:
+  // - { ok:true, data: ... } o objeto directo
+  const data = await callEdge<any>("debacu-eval-global-risk-snapshot", {});
 
   return {
     pct5: Number(data?.pct5 ?? 0),
@@ -370,6 +464,9 @@ export async function getGlobalRiskSnapshot(args?: { months?: 3 | 6 | 12 }): Pro
     pct_alto: Number(data?.pct_alto ?? 0),
   };
 }
+
+
+
 
 /** =========================================================
  *  whoami (Edge Function)
@@ -390,4 +487,30 @@ export async function client_whoami(): Promise<ClientWhoami> {
   if (error) throw error;
   if (!data?.ok) throw new Error(data?.error ?? "client_whoami_failed");
   return data.data as ClientWhoami;
+}
+
+export type ClientDashboardData = {
+  customerId: string;
+  monthStart: string;
+  planCard: {
+    name: string;
+    status: string;
+    billingFrequency: string | null;
+    nextBilling: string | null;
+    limit: number | null;
+  } | null;
+  queryCount: number;
+  createdThisMonth: number;
+  activity: Array<{
+    id: string;
+    date: string;
+    type: string;
+    label: string;
+    contact: string;
+    rating: number | null;
+  }>;
+};
+
+export async function getClientDashboard(): Promise<ClientDashboardData> {
+  return await callEdge<ClientDashboardData>("client_dashboard", {});
 }

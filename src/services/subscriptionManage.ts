@@ -1,13 +1,13 @@
 // src/services/subscriptionManage.ts
+//
+// ✅ Edge Function + patrón del proyecto:
+//    - JWT REAL de Supabase + debacu_eval_session_token (via callEvalFn)
+//    - Sin tokens inventados (debacu_eval_token)
+//    - Sin endpoint manual ".functions.supabase.co"
+//
+// Requiere: src/services/callEvalFn.ts (ya lo tienes funcionando)
 
-const TOKEN_KEY = "debacu_eval_token";
-const FUNCTION_NAME = "debacu_eval_subscription_manage";
-
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-if (!supabaseUrl) throw new Error("Missing VITE_SUPABASE_URL environment variable");
-
-const functionsBase = supabaseUrl.replace(".supabase.co", ".functions.supabase.co");
-const FUNCTIONS_ENDPOINT = `${functionsBase}/functions/v1/${FUNCTION_NAME}`;
+import { callEvalFn } from "@/services/callEvalFn";
 
 export type PaidPlanCode = "BASIC" | "MEDIUM" | "PREMIUM";
 export type PlanCode = "FREE" | PaidPlanCode;
@@ -15,6 +15,7 @@ export type PlanCode = "FREE" | PaidPlanCode;
 export type BillingFrequency = "MONTHLY" | "YEARLY" | "FREE_TRIAL";
 
 const DEFAULT_APP_ID = "DEBACU_EVAL";
+const FN_NAME = "debacu_eval_subscription_manage";
 
 /** Acciones soportadas por el backend */
 export type SubscriptionManageAction = "CHANGE" | "SCHEDULE_DOWNGRADE" | "CANCEL_DOWNGRADE";
@@ -64,39 +65,57 @@ export interface CancelDowngradeResponse {
 /** Union de responses */
 export type ManagePlanResponse = ChangePlanResponse | ScheduleDowngradeResponse | CancelDowngradeResponse;
 
-function getTokenOrThrow() {
-  const token = typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
-  if (!token) throw new Error("Sesión no detectada. Inicia sesión nuevamente.");
-  return token;
+/** Errores tipados (opcional) */
+export type PendingChangeError = Error & {
+  code?: string;
+  pending_subscription_id?: string;
+  status?: number;
+};
+
+/** Helpers */
+function pickPendingId(obj: any): string | undefined {
+  const v =
+    obj?.pending_subscription_id ??
+    obj?.pendingSubscriptionId ??
+    obj?.pending_subscription?.id ??
+    obj?.pending?.id ??
+    undefined;
+
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
 
-async function post(body: any) {
-  const token = getTokenOrThrow();
+function pickCode(obj: any): string | undefined {
+  const v = obj?.code ?? obj?.error_code ?? obj?.errorCode ?? undefined;
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
 
-  const response = await fetch(FUNCTIONS_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body),
-  });
+function pickStatus(err: any): number | undefined {
+  const s =
+    err?.status ??
+    err?.statusCode ??
+    err?.response?.status ??
+    err?.cause?.status ??
+    undefined;
 
-  const payload = await response.json().catch(() => ({}));
+  return typeof s === "number" ? s : undefined;
+}
 
-  // ✅ Caso especial: ya hay pendiente
-  if (response.status === 409) {
-    const err: any = new Error(payload?.error ?? "Ya existe un cambio de plan pendiente.");
-    err.code = payload?.code ?? "PENDING_CHANGE";
-    err.pending_subscription_id = payload?.pending_subscription_id ?? payload?.pendingSubscriptionId;
-    throw err;
-  }
+function pickPayload(err: any): any {
+  return err?.payload ?? err?.data ?? err?.response?.data ?? err?.cause?.payload ?? undefined;
+}
 
-  if (!response.ok) {
-    throw new Error(payload?.error ?? "No se pudo completar la operación.");
-  }
+function isLikelyPendingChange(err: any): boolean {
+  const status = pickStatus(err);
+  if (status === 409) return true;
 
-  return payload;
+  const payload = pickPayload(err);
+  const code = pickCode(payload) ?? pickCode(err);
+  if (code && String(code).toUpperCase().includes("PENDING")) return true;
+
+  const msg = String(err?.message ?? "").toUpperCase();
+  if (msg.includes("PENDING") || msg.includes("409")) return true;
+
+  return false;
 }
 
 /**
@@ -104,28 +123,50 @@ async function post(body: any) {
  * - action CHANGE -> devuelve checkout_url
  * - action SCHEDULE_DOWNGRADE -> devuelve ok/scheduled/effective_date...
  * - action CANCEL_DOWNGRADE -> devuelve ok
+ *
+ * IMPORTANTE:
+ * - El backend debe devolver 409 cuando ya hay un PENDING_PAYMENT,
+ *   con payload { error, code, pending_subscription_id } (o pendingSubscriptionId)
  */
 export async function managePlan(params: ManagePlanParams): Promise<ManagePlanResponse> {
-  // Construimos body de forma limpia según action
+  // Body limpio según action
   const body: any = {
     action: params.action,
     customer_id: params.customer_id,
     app_id: params.app_id ?? DEFAULT_APP_ID,
   };
 
-  // Solo si aplica
   if (params.action === "CHANGE" || params.action === "SCHEDULE_DOWNGRADE") {
     body.target_plan_code = params.target_plan_code;
     body.billing_frequency = params.billing_frequency ?? "MONTHLY";
   }
 
-  const payload = await post(body);
+  let payload: any;
+  try {
+    payload = await callEvalFn<any>(FN_NAME, body);
+  } catch (e: any) {
+    // Normaliza error -> si es pending-change, expone campos útiles a la UI
+    const err = new Error(String(e?.message ?? "No se pudo completar la operación.")) as PendingChangeError;
+
+    const status = pickStatus(e);
+    if (typeof status === "number") err.status = status;
+
+    const p = pickPayload(e);
+    const code = pickCode(p) ?? pickCode(e);
+    const pendingId = pickPendingId(p) ?? pickPendingId(e);
+
+    if (isLikelyPendingChange(e)) {
+      err.code = code ?? "PENDING_CHANGE";
+      err.pending_subscription_id = pendingId;
+    }
+
+    throw err;
+  }
 
   // ✅ CHANGE
   if (params.action === "CHANGE") {
     const checkout_url = payload?.checkout_url ?? payload?.checkoutUrl ?? null;
-    const pending_subscription_id =
-      payload?.pending_subscription_id ?? payload?.pendingSubscriptionId ?? undefined;
+    const pending_subscription_id = pickPendingId(payload);
 
     if (!checkout_url) throw new Error("La respuesta del servidor no contiene checkout_url.");
     return { checkout_url, pending_subscription_id };
@@ -151,7 +192,11 @@ export async function managePlan(params: ManagePlanParams): Promise<ManagePlanRe
     scheduled,
     effective_date: payload?.effective_date ?? payload?.effectiveDate ?? null,
     current_plan_code: payload?.current_plan_code ?? payload?.currentPlanCode ?? null,
-    target_plan_code: payload?.target_plan_code ?? payload?.targetPlanCode ?? params.target_plan_code,
+    target_plan_code:
+      payload?.target_plan_code ??
+      payload?.targetPlanCode ??
+      // fallback al target del request
+      ("target_plan_code" in params ? params.target_plan_code : null),
   };
 }
 
@@ -189,10 +234,7 @@ export async function scheduleDowngrade(params: ChangePlanParams): Promise<Sched
 }
 
 /** Cancel downgrade */
-export async function cancelDowngrade(params: {
-  customer_id: string;
-  app_id?: string;
-}): Promise<CancelDowngradeResponse> {
+export async function cancelDowngrade(params: { customer_id: string; app_id?: string }): Promise<CancelDowngradeResponse> {
   const res = await managePlan({
     action: "CANCEL_DOWNGRADE",
     customer_id: params.customer_id,

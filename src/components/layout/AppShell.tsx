@@ -1,3 +1,4 @@
+// src/components/AppShell.tsx
 import React, { useMemo, useState } from "react";
 import {
   LayoutDashboard,
@@ -10,7 +11,7 @@ import {
 
 /**
  * ✅ Views de la app.
- * - Operativa: dashboard/search/add/subscription/admin
+ * - Operativa: dashboard/search/add/account/admin
  * - Auditoría: aud_summary/aud_risk/aud_stats/aud_history/aud_exports/aud_config
  *
  * Si luego quieres gating por plan, lo harás desde AuthedApp construyendo navItems.
@@ -19,7 +20,7 @@ export type AuthedView =
   | "dashboard"
   | "search"
   | "add"
-  | "subscription"
+  | "account" // ✅ antes "subscription"
   | "admin"
   | "aud_summary"
   | "aud_risk"
@@ -152,19 +153,22 @@ export default function AppShell({
                 Cuenta
               </div>
               <button
-                onClick={() => onNavigate("subscription")}
+                onClick={() => {
+                  onNavigate("account");
+                  setMobileMenuOpen(false);
+                }}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${
-                  activeView === "subscription"
+                  activeView === "account"
                     ? "bg-slate-900 text-white"
                     : "text-slate-700 hover:bg-slate-50"
                 }`}
               >
                 <CreditCard
                   className={`w-5 h-5 ${
-                    activeView === "subscription" ? "text-white" : "text-slate-400"
+                    activeView === "account" ? "text-white" : "text-slate-400"
                   }`}
                 />
-                <span className="text-sm font-medium">Mi cuenta & plan</span>
+                <span className="text-sm font-medium">Mi cuenta</span>
               </button>
             </>
           )}
@@ -197,13 +201,18 @@ export default function AppShell({
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         {/* HEADER MOBILE */}
         <header className="md:hidden bg-white border-b border-slate-200 px-4 py-3 flex justify-between items-center">
-          <button onClick={() => setMobileMenuOpen(true)} className="p-2 text-slate-700">
+          <button
+            onClick={() => setMobileMenuOpen(true)}
+            className="p-2 text-slate-700"
+          >
             <Menu className="w-6 h-6" />
           </button>
-          <div className="text-sm font-semibold text-slate-900">Debacu Evaluation360</div>
+          <div className="text-sm font-semibold text-slate-900">
+            Debacu Evaluation360
+          </div>
           {showAccountActions && (
             <button
-              onClick={() => onNavigate("subscription")}
+              onClick={() => onNavigate("account")}
               className="px-3 py-2 rounded-xl border border-slate-200 text-sm font-semibold text-slate-700"
             >
               Cuenta
@@ -217,7 +226,10 @@ export default function AppShell({
             <div className="absolute left-0 top-0 h-full w-[85%] max-w-sm bg-white border-r border-slate-200 p-4">
               <div className="flex items-center justify-between mb-4">
                 <div className="text-sm font-semibold text-slate-900">Menú</div>
-                <button onClick={() => setMobileMenuOpen(false)} className="text-slate-600">
+                <button
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="text-slate-600"
+                >
                   ×
                 </button>
               </div>
@@ -237,21 +249,23 @@ export default function AppShell({
                   <div className="pt-3 border-t border-slate-200">
                     <button
                       onClick={() => {
-                        onNavigate("subscription");
+                        onNavigate("account");
                         setMobileMenuOpen(false);
                       }}
                       className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${
-                        activeView === "subscription"
+                        activeView === "account"
                           ? "bg-slate-900 text-white"
                           : "text-slate-700 hover:bg-slate-50"
                       }`}
                     >
                       <CreditCard
                         className={`w-5 h-5 ${
-                          activeView === "subscription" ? "text-white" : "text-slate-400"
+                          activeView === "account"
+                            ? "text-white"
+                            : "text-slate-400"
                         }`}
                       />
-                      <span className="text-sm font-medium">Mi cuenta & plan</span>
+                      <span className="text-sm font-medium">Mi cuenta</span>
                     </button>
                   </div>
                 )}
@@ -273,13 +287,17 @@ export default function AppShell({
           <div className="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between">
             <div>
               <h1 className="text-lg font-semibold text-slate-900">{title}</h1>
-              {subtitle ? <p className="text-sm text-slate-500">{subtitle}</p> : null}
+              {subtitle ? (
+                <p className="text-sm text-slate-500">{subtitle}</p>
+              ) : null}
             </div>
             <div className="flex items-center gap-3">
-              <div className="text-sm text-slate-600 hidden lg:block">{userEmail || ""}</div>
+              <div className="text-sm text-slate-600 hidden lg:block">
+                {userEmail || ""}
+              </div>
               {showAccountActions && (
                 <button
-                  onClick={() => onNavigate("subscription")}
+                  onClick={() => onNavigate("account")}
                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                 >
                   Mi cuenta
@@ -296,7 +314,9 @@ export default function AppShell({
         </div>
 
         <main className="flex-1 overflow-auto">
-          <div className="mx-auto max-w-7xl px-4 py-6 md:px-6">{children}</div>
+          <div className="mx-auto max-w-7xl px-4 py-6 md:px-6">
+            {children}
+          </div>
         </main>
       </div>
     </div>

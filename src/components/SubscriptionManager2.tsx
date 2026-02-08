@@ -1,34 +1,18 @@
+// src/components/SubscriptionManager2.tsx
 import React, { useEffect, useMemo, useState } from "react";
-import { supabase } from "@/services/supabaseClient";
 import type { User, Invoice as InvoiceBase } from "@/types/types";
-import { CreditCard, FileText, Loader2, Eye, EyeOff } from "lucide-react";
-import { changePlan, scheduleDowngrade, cancelDowngrade } from "@/services/subscriptionManage";
+import { CreditCard, FileText, Loader2 } from "lucide-react";
 
+import { changePlan, scheduleDowngrade, cancelDowngrade } from "@/services/subscriptionManage";
 import { use_subscription_state } from "@/services/debacu_eval_subscription_state.service";
 import type { PlanCode, PaidPlanCode } from "@/types/types";
 import { PAID_PLAN_CODES } from "@/types/types";
- 
 
+import { getAccountBundle } from "@/services/accountService";
 
 interface SubscriptionProps {
   user: User;
-  onUserUpdate: (updatedUser: User) => void;
 }
-
-type TabKey = "plan" | "empresa" | "banco" | "seguridad";
-
-const TAB_LIST: { key: TabKey; label: string }[] = [
-  { key: "plan", label: "Planes" },
-  { key: "empresa", label: "Datos empresa" },
-  { key: "banco", label: "Datos bancarios" },
-  { key: "seguridad", label: "Seguridad" },
-];
-
-const formatCurrency = (value: number) =>
-  new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(value);
-
-const formatDate = (value?: string | null) =>
-  value ? new Date(value).toLocaleDateString("es-ES") : "-";
 
 type AvailablePlan = {
   id: string;
@@ -44,6 +28,11 @@ type Invoice = InvoiceBase & {
   url?: string | null;
   number?: string | null;
 };
+
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(value);
+
+const formatDate = (value?: string | null) => (value ? new Date(value).toLocaleDateString("es-ES") : "-");
 
 const PLAN_METADATA: Record<
   PlanCode,
@@ -85,70 +74,36 @@ const PLAN_RANK: Record<PlanCode, number> = {
 };
 
 export const SubscriptionManager2: React.FC<SubscriptionProps> = ({ user }) => {
-  const [activeTab, setActiveTab] = useState<TabKey>("plan");
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
-  const [profileSaving, setProfileSaving] = useState(false);
-  const [bankSaving, setBankSaving] = useState(false);
-  const [profileMessage, setProfileMessage] = useState<string | null>(null);
-  const [bankMessage, setBankMessage] = useState<string | null>(null);
-  const [changingPassword, setChangingPassword] = useState(false);
-  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
-  const [showCurrentPwd, setShowCurrentPwd] = useState(false);
-  const [showNewPwd, setShowNewPwd] = useState(false);
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
 
   const [planError, setPlanError] = useState<string | null>(null);
   const [isChangingPlan, setIsChangingPlan] = useState(false);
   const [selectedPlanCode, setSelectedPlanCode] = useState<PlanCode | null>(null);
   const [availablePlans, setAvailablePlans] = useState<AvailablePlan[]>([]);
 
-  const [customerProfile, setCustomerProfile] = useState({
-    name: "",
-    nif: "",
-    address: "",
-    postalCode: "",
-    city: "",
-    province: "",
-    country: "",
-    phone: "",
-    email: user.email ?? "",
-  });
+  /**
+   * ✅ CLAVE:
+   * user.id suele ser auth.uid. Para “Mi cuenta & plan” necesitas customers.id.
+   * Lo resolvemos desde getAccountBundle() y lo guardamos aquí.
+   */
+  const initialCustomerId = (user as any)?.customerId ?? null;
+  const [resolvedCustomerId, setResolvedCustomerId] = useState<string | null>(initialCustomerId);
 
-  const [bankData, setBankData] = useState({
-    iban: "",
-    swift: "",
-    bankName: "",
-    bankAddress: "",
-  });
-
-  // customerId: si tu User tiene customerId en runtime, úsalo; si no, usa user.id
-  const customerId = (user as any)?.customerId ?? user.id;
-
-  // Hook centralizado estado suscripción
-  const { state: subscriptionState, refresh: refreshSubscription } =
-    use_subscription_state(customerId);
+  // Hook centralizado estado suscripción (Edge)
+  const { state: subscriptionState, refresh: refreshSubscription } = use_subscription_state(
+    resolvedCustomerId ?? undefined
+  );
 
   const activeSub = subscriptionState?.subscription ?? null;
   const activePlanRow = subscriptionState?.plan ?? null;
 
-
   const hasPendingChange = (activeSub?.status ?? subscriptionState?.status) === "PENDING_PAYMENT";
 
   // flags derivados de la suscripción / para cancelar cambio de plan
-const hasScheduledDowngrade = Boolean(
-  (activeSub as any)?.stripe_schedule_id || (activeSub as any)?.required_plan_code
-);
-
-
-  //si hay bajada de plan se le avisa
-  const downgradeTarget = String((activeSub as any)?.required_plan_code ?? "");
-  const downgradeDate =
-      (activeSub as any)?.next_billing_date ??
-      subscriptionState?.next_billing_date ??
-      null;
-
+  const hasScheduledDowngrade = Boolean(
+    (activeSub as any)?.stripe_schedule_id || (activeSub as any)?.required_plan_code
+  );
 
   // Plan actual (code / precio / límites)
   const currentPlanCode: PlanCode = useMemo(() => {
@@ -167,10 +122,7 @@ const hasScheduledDowngrade = Boolean(
   }, [activePlanRow?.price_monthly, currentPlanCode]);
 
   const planDisplayName =
-    activePlanRow?.name ??
-    PLAN_METADATA[currentPlanCode]?.name ??
-    subscriptionState?.plan_display_name ??
-    "Plan";
+    activePlanRow?.name ?? PLAN_METADATA[currentPlanCode]?.name ?? subscriptionState?.plan_display_name ?? "Plan";
 
   const limitDescription =
     PLAN_METADATA[currentPlanCode]?.description ??
@@ -184,96 +136,47 @@ const hasScheduledDowngrade = Boolean(
   const isFreePlan =
     currentPlanCode === "FREE" || (activeSub as any)?.billing_frequency === "FREE_TRIAL" || monthlyFee === 0;
 
-    const billingLabel =
-  (activeSub as any)?.billing_frequency === "YEARLY" ? "Anual" :
-  (activeSub as any)?.billing_frequency === "MONTHLY" ? "Mensual" :
-  (activeSub as any)?.billing_frequency === "FREE_TRIAL" ? "Trial" :
-  (activeSub as any)?.billing_frequency ?? "Mensual";
-
+  const billingLabel =
+    (activeSub as any)?.billing_frequency === "YEARLY"
+      ? "Anual"
+      : (activeSub as any)?.billing_frequency === "MONTHLY"
+      ? "Mensual"
+      : (activeSub as any)?.billing_frequency === "FREE_TRIAL"
+      ? "Trial"
+      : (activeSub as any)?.billing_frequency ?? "Mensual";
 
   const planPriceLabel = isFreePlan ? "Gratis" : formatCurrency(monthlyFee);
 
-  // supabase typed as any por si tu client está sin types completos aquí
-  const sb = supabase as any;
-
   useEffect(() => {
-    if (!customerId) {
-      setLoading(false);
-      return;
-    }
-
     let cancelled = false;
 
     const load = async () => {
+      // Sin customer id, al menos intenta resolverlo vía bundle usando auth.uid (user.id).
+      const idToTry = resolvedCustomerId ?? (user as any)?.customerId ?? user.id;
+      if (!idToTry) {
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
       setPlanError(null);
 
       try {
-        const [customerResult, invoicesResult, plansResult] = await Promise.all([
-          sb
-            .from("customers")
-            .select(
-              "name,nif,address,postal_code,city,province,country,phone,email,iban,swift,bank_name,bank_address"
-            )
-            .eq("id", customerId)
-            .maybeSingle(),
-
-          // ✅ Facturas Stripe (espejo en BD)
-          sb
-            .from("debacu_eval_invoices")
-            .select(
-              `
-              id,
-              invoice_number,
-              stripe_invoice_id,
-              status,
-              currency,
-              amount_total,
-              invoice_created_at,
-              hosted_invoice_url,
-              invoice_pdf
-            `
-            )
-            .eq("customer_id", customerId)
-            .order("invoice_created_at", { ascending: false })
-            .limit(10),
-
-          sb
-            .from("plans")
-            .select("id,name,code,price_monthly,max_queries_per_month")
-            .eq("app_id", "DEBACU_EVAL")
-            .in("code", PLAN_SEQUENCE),
-        ]);
-
+        const bundle = await getAccountBundle(idToTry);
         if (cancelled) return;
 
-        // Profile
-        const profile = customerResult?.data;
-        if (profile) {
-          setCustomerProfile((prev) => ({
-            ...prev,
-            name: profile.name ?? prev.name,
-            nif: profile.nif ?? prev.nif,
-            address: profile.address ?? prev.address,
-            postalCode: profile.postal_code ?? prev.postalCode,
-            city: profile.city ?? prev.city,
-            province: profile.province ?? prev.province,
-            country: profile.country ?? prev.country,
-            phone: profile.phone ?? prev.phone,
-            email: profile.email ?? prev.email,
-          }));
-          setBankData({
-            iban: profile.iban ?? "",
-            swift: profile.swift ?? "",
-            bankName: profile.bank_name ?? "",
-            bankAddress: profile.bank_address ?? "",
-          });
+        // ✅ Resuelve el customer_id real (customers.id)
+        const profile = bundle.customer ?? null;
+        const realCustomerId = profile?.id ?? null;
+
+        if (realCustomerId && realCustomerId !== resolvedCustomerId) {
+          setResolvedCustomerId(realCustomerId);
+          // refresca estado de suscripción con el id correcto
+          setTimeout(() => void refreshSubscription(), 0);
         }
 
-        // ✅ Stripe invoices -> invoices
-        if (invoicesResult?.error) throw invoicesResult.error;
-
-        const invoiceRows = (invoicesResult?.data ?? []) as any[];
+        // ✅ invoices
+        const invoiceRows = (bundle.invoices ?? []) as any[];
 
         setInvoices(
           invoiceRows.map((row) => {
@@ -281,13 +184,16 @@ const hasScheduledDowngrade = Boolean(
             const invUrl = row.hosted_invoice_url ?? row.invoice_pdf ?? null;
             const invNumber = row.invoice_number ?? null;
 
-            // Texto tipo: "Plan Debacu Premium"
-            const desc = `Plan Debacu ${planDisplayName}`;
+            const desc = row.plan_name
+              ? String(row.plan_name)
+              : row.plan_code
+              ? `Plan Debacu ${String(row.plan_code)}`
+              : `Plan Debacu ${planDisplayName}`;
 
             return {
               id: String(row.stripe_invoice_id ?? row.id ?? ""),
               date: row.invoice_created_at ?? null,
-              amount: Number(row.amount_total ?? 0) / 100, // cents -> €
+              amount: Number(row.amount_total ?? 0) / 100,
               description: desc,
               status: statusPaid ? "Paid" : "Pending",
               url: invUrl,
@@ -296,8 +202,8 @@ const hasScheduledDowngrade = Boolean(
           })
         );
 
-        // Available plans
-        const planRows = (plansResult?.data ?? []) as Array<{
+        // ✅ plans
+        const planRows = (bundle.plans ?? []) as Array<{
           id: string;
           code: string | null;
           name: string | null;
@@ -327,9 +233,7 @@ const hasScheduledDowngrade = Boolean(
         if (hasSessionId) {
           url.searchParams.delete("session_id");
           window.history.replaceState({}, "", url.toString());
-          setTimeout(() => {
-            void refreshSubscription();
-          }, 2500);
+          setTimeout(() => void refreshSubscription(), 2500);
         }
       } catch (error: any) {
         console.error("Error cargando datos de plan:", error);
@@ -344,86 +248,15 @@ const hasScheduledDowngrade = Boolean(
     return () => {
       cancelled = true;
     };
-  }, [customerId, sb, refreshSubscription, planDisplayName]);
-
-  const handleSaveProfile = async () => {
-    if (!customerId) return;
-    setProfileSaving(true);
-    setProfileMessage(null);
-    try {
-      const { error } = await sb
-        .from("customers")
-        .update({
-          name: customerProfile.name || null,
-          nif: customerProfile.nif || null,
-          address: customerProfile.address || null,
-          postal_code: customerProfile.postalCode || null,
-          city: customerProfile.city || null,
-          province: customerProfile.province || null,
-          country: customerProfile.country || null,
-          phone: customerProfile.phone || null,
-          email: customerProfile.email || null,
-        })
-        .eq("id", customerId);
-      if (error) throw error;
-      setProfileMessage("Datos guardados");
-    } catch (error: any) {
-      console.error(error);
-      setProfileMessage("Error al guardar los datos");
-    } finally {
-      setProfileSaving(false);
-    }
-  };
-
-  const handleSaveBankData = async () => {
-    if (!customerId) return;
-    setBankSaving(true);
-    setBankMessage(null);
-    try {
-      const { error } = await sb
-        .from("customers")
-        .update({
-          iban: bankData.iban || null,
-          swift: bankData.swift || null,
-          bank_name: bankData.bankName || null,
-          bank_address: bankData.bankAddress || null,
-        })
-        .eq("id", customerId);
-      if (error) throw error;
-      setBankMessage("Datos bancarios guardados");
-    } catch (error) {
-      console.error(error);
-      setBankMessage("Error guardando datos bancarios");
-    } finally {
-      setBankSaving(false);
-    }
-  };
-
-  const handleChangePassword = async () => {
-    if (!newPassword || newPassword.length < 8) {
-      setPasswordMessage("La nueva contraseña debe tener al menos 8 caracteres");
-      return;
-    }
-    setChangingPassword(true);
-    setPasswordMessage(null);
-    try {
-      const { error } = await supabase.auth.updateUser({ password: newPassword });
-      if (error) throw error;
-      setPasswordMessage("Contraseña actualizada");
-      setCurrentPassword("");
-      setNewPassword("");
-    } catch (error: any) {
-      console.error(error);
-      setPasswordMessage("No se pudo actualizar la contraseña");
-    } finally {
-      setChangingPassword(false);
-    }
-  };
+    // Nota: NO metas planDisplayName en deps para no re-ejecutar la carga en bucle.
+  }, [resolvedCustomerId, user.id, refreshSubscription]);
 
   const handlePlanChange = async (target: PaidPlanCode) => {
     setPlanError(null);
     setSelectedPlanCode(target);
     setIsChangingPlan(true);
+
+    const cid = resolvedCustomerId ?? (user as any)?.customerId ?? user.id;
 
     try {
       const targetRank = PLAN_RANK[target] ?? 0;
@@ -438,11 +271,16 @@ const hasScheduledDowngrade = Boolean(
         return;
       }
 
+      if (!cid) {
+        setPlanError("No se pudo resolver el customer_id real.");
+        return;
+      }
+
       if (isUpgrade) {
         const { checkout_url } = await changePlan({
           target_plan_code: target,
           billing_frequency: "MONTHLY",
-          customer_id: customerId || user.id,
+          customer_id: cid,
         });
 
         window.location.href = checkout_url;
@@ -453,7 +291,7 @@ const hasScheduledDowngrade = Boolean(
       await scheduleDowngrade({
         target_plan_code: target,
         billing_frequency: "MONTHLY",
-        customer_id: customerId || user.id,
+        customer_id: cid,
       });
 
       await refreshSubscription();
@@ -467,486 +305,247 @@ const hasScheduledDowngrade = Boolean(
     }
   };
 
-const handleCancelScheduledDowngrade = async () => {
-  setPlanError(null);
-  setIsChangingPlan(true);
+  const handleCancelScheduledDowngrade = async () => {
+    setPlanError(null);
+    setIsChangingPlan(true);
 
-  try {
-    // 👇 Esto lo tienes que implementar en subscriptionManage (te lo dejo abajo)
-    await cancelDowngrade({
-      customer_id: customerId || user.id,
-      app_id: "DEBACU_EVAL", // opcional, si tu service lo manda
-    });
+    const cid = resolvedCustomerId ?? (user as any)?.customerId ?? user.id;
 
-    await refreshSubscription();
-  } catch (error: any) {
-    console.error("Error cancelando downgrade:", error);
-    setPlanError(error?.message ?? "No se pudo cancelar la bajada programada.");
-  } finally {
-    setIsChangingPlan(false);
-  }
-};
+    try {
+      if (!cid) {
+        setPlanError("No se pudo resolver el customer_id real.");
+        return;
+      }
 
+      await cancelDowngrade({
+        customer_id: cid,
+        app_id: "DEBACU_EVAL",
+      });
 
+      await refreshSubscription();
+    } catch (error: any) {
+      console.error("Error cancelando downgrade:", error);
+      setPlanError(error?.message ?? "No se pudo cancelar la bajada programada.");
+    } finally {
+      setIsChangingPlan(false);
+    }
+  };
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <div className="flex flex-col gap-1">
-        <h2 className="text-2xl font-bold text-slate-800">Mi cuenta & plan</h2>
-        <p className="text-sm text-slate-500">Gestiona plan, datos del hotel, facturación y seguridad.</p>
+        <h2 className="text-2xl font-bold text-slate-800">Mi plan</h2>
+        <p className="text-sm text-slate-500">Gestiona tu suscripción, facturación y cambios de plan.</p>
       </div>
 
-      <div className="flex flex-wrap gap-3 border-b border-slate-200 pb-2">
-        {TAB_LIST.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={`px-4 py-2 text-sm font-semibold rounded-full transition ${
-              activeTab === tab.key ? "bg-slate-900 text-white" : "border border-slate-300 text-slate-600"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {activeTab === "plan" && (
-        <section className="grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)]">
-          <div className="space-y-6">
-            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm">
-              <div className="px-6 py-5 flex items-center justify-between border-b border-slate-100">
-                <div className="flex items-center gap-2">
-                  <CreditCard className="w-5 h-5 text-slate-600" />
-                  <p className="text-sm font-semibold text-slate-900">Plan actual</p>
-                </div>
-                <span
-                  className={`text-[11px] uppercase tracking-wide px-3 py-1 rounded-full border ${
-                    (activeSub?.status ?? "ACTIVE") === "ACTIVE"
-                      ? "border-green-200 text-green-700 bg-green-50"
-                      : "border-slate-200 text-slate-600 bg-white"
-                  }`}
-                >
-                  {activeSub?.status ?? "ACTIVE"}
-                </span>
+      <section className="grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)]">
+        <div className="space-y-6">
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm">
+            <div className="px-6 py-5 flex items-center justify-between border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <CreditCard className="w-5 h-5 text-slate-600" />
+                <p className="text-sm font-semibold text-slate-900">Plan actual</p>
               </div>
+              <span
+                className={`text-[11px] uppercase tracking-wide px-3 py-1 rounded-full border ${
+                  (activeSub?.status ?? "ACTIVE") === "ACTIVE"
+                    ? "border-green-200 text-green-700 bg-green-50"
+                    : "border-slate-200 text-slate-600 bg-white"
+                }`}
+              >
+                {activeSub?.status ?? "ACTIVE"}
+              </span>
+            </div>
 
-             {hasScheduledDowngrade && (
-                <div className="mx-6 mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-xs font-semibold text-amber-800 uppercase">
-                        Bajada de plan programada
+            {hasScheduledDowngrade && (
+              <div className="mx-6 mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold text-amber-800 uppercase">Bajada de plan programada</p>
+                    <p className="text-sm text-amber-900">
+                      Tu plan bajará a <b>{String((activeSub as any)?.required_plan_code ?? "BASIC")}</b> en la próxima
+                      renovación.
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={isChangingPlan || hasPendingChange}
+                    onClick={handleCancelScheduledDowngrade}
+                    className={`shrink-0 px-3 py-2 rounded-lg text-xs font-semibold uppercase transition ${
+                      isChangingPlan || hasPendingChange
+                        ? "bg-slate-200 text-slate-500 cursor-not-allowed"
+                        : "bg-amber-700 text-white hover:bg-amber-800"
+                    }`}
+                  >
+                    {isChangingPlan ? "Procesando..." : "Cancelar bajada"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="p-6 space-y-5">
+              <div className="flex items-end justify-between">
+                <div>
+                  <p className="text-3xl font-bold text-slate-900">{planPriceLabel}</p>
+                  {!isFreePlan && <p className="text-xs text-slate-500">/mes</p>}
+                </div>
+                <div className="text-right text-sm text-slate-600">
+                  <p>Inicio: {formatDate(activeSub?.start_date)}</p>
+                  <p>
+                    Próxima factura:{" "}
+                    {formatDate((activeSub as any)?.next_billing_date ?? subscriptionState?.next_billing_date)}
+                  </p>
+
+                  {(activeSub as any)?.required_plan_code ? (
+                    <div className="mt-2">
+                      <p className="text-xs text-amber-700">
+                        Tu plan bajará a <b>{String((activeSub as any).required_plan_code)}</b>
+                        {(activeSub as any)?.next_billing_date
+                          ? ` el ${formatDate((activeSub as any).next_billing_date)}`
+                          : " en la próxima renovación"}
+                        . Hasta entonces mantienes el plan actual.
                       </p>
-                      <p className="text-sm text-amber-900">
-                        Tu plan bajará a{" "}
-                        <b>{String((activeSub as any)?.required_plan_code ?? "BASIC")}</b> en la próxima renovación.
+
+                      <p className="text-[11px] text-amber-600 mt-1">
+                        No se te cobrará nada ahora. El cambio se aplica en la próxima renovación.
                       </p>
                     </div>
-
-                    <button
-                      type="button"
-                      disabled={isChangingPlan || hasPendingChange}
-                      onClick={handleCancelScheduledDowngrade}
-                      className={`shrink-0 px-3 py-2 rounded-lg text-xs font-semibold uppercase transition ${
-                        isChangingPlan || hasPendingChange
-                          ? "bg-slate-200 text-slate-500 cursor-not-allowed"
-                          : "bg-amber-700 text-white hover:bg-amber-800"
-                      }`}
-                    >
-                      {isChangingPlan ? "Procesando..." : "Cancelar bajada"}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-
-              <div className="p-6 space-y-5">
-                <div className="flex items-end justify-between">
-                  <div>
-                    <p className="text-3xl font-bold text-slate-900">{planPriceLabel}</p>
-                    {!isFreePlan && <p className="text-xs text-slate-500">/mes</p>}
-                  </div>
-                  <div className="text-right text-sm text-slate-600">
-                    <p>Inicio: {formatDate(activeSub?.start_date)}</p>
-                    <p>
-                      Próxima factura:{" "}
-                      {formatDate((activeSub as any)?.next_billing_date ?? subscriptionState?.next_billing_date)}
-                    </p>
-
-                    {/* ✅ Aviso downgrade programado (si existe en BD)  bajada de Plan activo */}
-                   {(activeSub as any)?.required_plan_code ? (
-                      <div className="mt-2">
-                        <p className="text-xs text-amber-700">
-                          Tu plan bajará a{" "}
-                          <b>{String((activeSub as any).required_plan_code)}</b>
-                          {(activeSub as any)?.next_billing_date
-                            ? ` el ${formatDate((activeSub as any).next_billing_date)}`
-                            : " en la próxima renovación"}
-                          . Hasta entonces mantienes el plan actual.
-                        </p>
-
-                        <p className="text-[11px] text-amber-600 mt-1">
-                          No se te cobrará nada ahora. El cambio se aplica en la próxima renovación.
-                        </p>
-                      </div>
-                    ) : null}
-
+                  ) : null}
 
                   <p>Facturación: {billingLabel}</p>
-
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <p className="text-xs uppercase tracking-wide text-slate-500">Plan</p>
-                  <p className="text-lg font-semibold text-slate-900">{planDisplayName}</p>
-                  <p className="text-xs text-slate-500">{limitDescription}</p>
                 </div>
               </div>
-            </div>
 
-            <div className="bg-slate-50 rounded-2xl border border-slate-100 p-5 space-y-2">
-              <span className="text-xs uppercase tracking-wide text-slate-500">Límites</span>
-              <p className="text-sm text-slate-700">
-                {maxQueries ? `Hasta ${Number(maxQueries).toLocaleString("es-ES")} consultas/mes` : "Límites según plan"}
-              </p>
-              <p className="text-xs text-slate-500">
-                Estos límites se aplican al mes en curso y se reinician automáticamente.
-              </p>
-            </div>
-
-            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm">
-              <div className="px-6 py-4 flex items-center justify-between border-b border-slate-100">
-                <p className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-slate-500" /> Facturas recientes
-                </p>
-                <button className="text-xs text-indigo-600">Ver todas</button>
+              <div className="space-y-2">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Plan</p>
+                <p className="text-lg font-semibold text-slate-900">{planDisplayName}</p>
+                <p className="text-xs text-slate-500">{limitDescription}</p>
               </div>
+            </div>
+          </div>
 
-              <div className="p-4 space-y-3">
-                {loading && invoices.length === 0 ? (
-                  <div className="flex items-center gap-2 text-sm text-slate-500">
-                    <Loader2 className="w-4 h-4 animate-spin" /> Cargando...
-                  </div>
-                ) : invoices.length === 0 ? (
-                  <p className="text-sm text-slate-500">No hay facturas recientes</p>
-                ) : (
-                  invoices.map((inv) => (
-                    <div key={inv.id} className="flex items-center justify-between text-sm text-slate-600">
-                      <div className="flex flex-col">
-                        <span>{formatDate(inv.date)}</span>
-                        <span className="text-xs text-slate-500">
-                          {inv.description}
-                          {inv.number ? ` · ${inv.number}` : ""}
-                        </span>
-                      </div>
+          <div className="bg-slate-50 rounded-2xl border border-slate-100 p-5 space-y-2">
+            <span className="text-xs uppercase tracking-wide text-slate-500">Límites</span>
+            <p className="text-sm text-slate-700">
+              {maxQueries ? `Hasta ${Number(maxQueries).toLocaleString("es-ES")} consultas/mes` : "Límites según plan"}
+            </p>
+            <p className="text-xs text-slate-500">
+              Estos límites se aplican al mes en curso y se reinician automáticamente.
+            </p>
+          </div>
 
-                      <div className="flex items-center gap-3">
-                        <div className="text-right">
-                          <span className="font-semibold text-slate-900">{formatCurrency(inv.amount)}</span>
-                          <span className="text-[11px] ml-2 rounded-full border px-2 py-0.5">{inv.status}</span>
-                        </div>
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm">
+            <div className="px-6 py-4 flex items-center justify-between border-b border-slate-100">
+              <p className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                <FileText className="w-4 h-4 text-slate-500" /> Facturas recientes
+              </p>
+              <button className="text-xs text-indigo-600" type="button">
+                Ver todas
+              </button>
+            </div>
 
-                        {inv.url ? (
-                          <a
-                            href={inv.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-xs text-indigo-600 hover:underline"
-                          >
-                            Ver PDF
-                          </a>
-                        ) : null}
-                      </div>
+            <div className="p-4 space-y-3">
+              {loading && invoices.length === 0 ? (
+                <div className="flex items-center gap-2 text-sm text-slate-500">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Cargando...
+                </div>
+              ) : invoices.length === 0 ? (
+                <p className="text-sm text-slate-500">No hay facturas recientes</p>
+              ) : (
+                invoices.map((inv) => (
+                  <div key={inv.id} className="flex items-center justify-between text-sm text-slate-600">
+                    <div className="flex flex-col">
+                      <span>{formatDate(inv.date)}</span>
+                      <span className="text-xs text-slate-500">
+                        {inv.description}
+                        {inv.number ? ` · ${inv.number}` : ""}
+                      </span>
                     </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
 
-          <div className="space-y-4">
-            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm">
-              <div className="px-6 py-4 flex items-start justify-between border-b border-slate-100 gap-4">
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">Planes disponibles</p>
-                  <p className="text-xs text-slate-500">Actualiza tu plan y completa el pago seguro en Stripe.</p>
-                </div>
-              </div>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <span className="font-semibold text-slate-900">{formatCurrency(inv.amount)}</span>
+                        <span className="text-[11px] ml-2 rounded-full border px-2 py-0.5">{inv.status}</span>
+                      </div>
 
-              <div className="space-y-4 px-6 py-5">
-                {availablePlans.length === 0 ? (
-                  <p className="text-sm text-slate-500">Cargando planes...</p>
-                ) : (
-                 availablePlans.map((option) => {
-                      const isActive = option.code === currentPlanCode;
-                      const optionRank = PLAN_RANK[option.code] ?? 0;
-                      const canChange = optionRank !== currentPlanRank;
-
-                      const buttonDisabled =
-                        isChangingPlan ||
-                        hasPendingChange ||
-                        hasScheduledDowngrade || // ✅ bloquea más cambios si ya hay downgrade programado
-                        isActive ||
-                        !canChange;
-
-                      const buttonLabel = isActive
-                        ? "Plan actual"
-                        : optionRank > currentPlanRank
-                        ? "Subir plan"
-                        : "Bajar plan";
-
-                      return (
-                        <PlanCard
-                          key={option.code}
-                          option={option}
-                          isActive={isActive}
-                          disabled={buttonDisabled}
-                          loading={isChangingPlan && selectedPlanCode === option.code}
-                          buttonLabel={buttonLabel}
-                          recommended={!isActive && currentPlanCode === "FREE" && option.code === "BASIC"}
-                          onAction={!buttonDisabled ? () => handlePlanChange(option.code) : undefined}
-                        />
-                      );
-                    })
-
-                )}
-              </div>
-
-              {hasPendingChange && (
-                <div className="px-6 pb-4">
-                  <p className="text-xs font-semibold text-amber-700 uppercase">
-                    Cambio de plan pendiente · espera confirmación de Stripe
-                  </p>
-                </div>
-              )}
-
-              {planError && (
-                <div className="px-6 pb-5">
-                  <p className="text-sm text-red-600">{planError}</p>
-                </div>
+                      {inv.url ? (
+                        <a
+                          href={inv.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs text-indigo-600 hover:underline"
+                        >
+                          Ver PDF
+                        </a>
+                      ) : null}
+                    </div>
+                  </div>
+                ))
               )}
             </div>
           </div>
-        </section>
-      )}
+        </div>
 
-      {activeTab === "empresa" && (
-        <section className="bg-white border border-slate-200 rounded-2xl shadow-sm">
-          <div className="p-6 space-y-5">
-            <div>
-              <h3 className="text-lg font-semibold text-slate-900">Datos profesionales</h3>
-              <p className="text-xs text-slate-500">Actualiza nombre, CIF y dirección del hotel.</p>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
+        <div className="space-y-4">
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm">
+            <div className="px-6 py-4 flex items-start justify-between border-b border-slate-100 gap-4">
               <div>
-                <label className="text-xs font-semibold text-slate-600">Nombre comercial</label>
-                <input
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={customerProfile.name}
-                  onChange={(event) => setCustomerProfile((prev) => ({ ...prev, name: event.target.value }))}
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-600">CIF / NIF</label>
-                <input
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={customerProfile.nif}
-                  onChange={(event) => setCustomerProfile((prev) => ({ ...prev, nif: event.target.value }))}
-                />
+                <p className="text-sm font-semibold text-slate-900">Planes disponibles</p>
+                <p className="text-xs text-slate-500">Actualiza tu plan y completa el pago seguro en Stripe.</p>
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label className="text-xs font-semibold text-slate-600">Teléfono</label>
-                <input
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={customerProfile.phone}
-                  onChange={(event) => setCustomerProfile((prev) => ({ ...prev, phone: event.target.value }))}
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-600">Email de contacto</label>
-                <input
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={customerProfile.email}
-                  onChange={(event) => setCustomerProfile((prev) => ({ ...prev, email: event.target.value }))}
-                />
-              </div>
+            <div className="space-y-4 px-6 py-5">
+              {availablePlans.length === 0 ? (
+                <p className="text-sm text-slate-500">Cargando planes...</p>
+              ) : (
+                availablePlans.map((option) => {
+                  const isActive = option.code === currentPlanCode;
+                  const optionRank = PLAN_RANK[option.code] ?? 0;
+                  const canChange = optionRank !== currentPlanRank;
+
+                  const buttonDisabled =
+                    isChangingPlan || hasPendingChange || hasScheduledDowngrade || isActive || !canChange;
+
+                  const buttonLabel = isActive
+                    ? "Plan actual"
+                    : optionRank > currentPlanRank
+                    ? "Subir plan"
+                    : "Bajar plan";
+
+                  return (
+                    <PlanCard
+                      key={option.code}
+                      option={option}
+                      isActive={isActive}
+                      disabled={buttonDisabled}
+                      loading={isChangingPlan && selectedPlanCode === option.code}
+                      buttonLabel={buttonLabel}
+                      recommended={!isActive && currentPlanCode === "FREE" && option.code === "BASIC"}
+                      onAction={!buttonDisabled ? () => handlePlanChange(option.code) : undefined}
+                    />
+                  );
+                })
+              )}
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label className="text-xs font-semibold text-slate-600">Código postal</label>
-                <input
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={customerProfile.postalCode}
-                  onChange={(event) => setCustomerProfile((prev) => ({ ...prev, postalCode: event.target.value }))}
-                />
+            {hasPendingChange && (
+              <div className="px-6 pb-4">
+                <p className="text-xs font-semibold text-amber-700 uppercase">
+                  Cambio de plan pendiente · espera confirmación de Stripe
+                </p>
               </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-600">Ciudad</label>
-                <input
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={customerProfile.city}
-                  onChange={(event) => setCustomerProfile((prev) => ({ ...prev, city: event.target.value }))}
-                />
-              </div>
-            </div>
+            )}
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label className="text-xs font-semibold text-slate-600">Provincia</label>
-                <input
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={customerProfile.province}
-                  onChange={(event) => setCustomerProfile((prev) => ({ ...prev, province: event.target.value }))}
-                />
+            {planError && (
+              <div className="px-6 pb-5">
+                <p className="text-sm text-red-600">{planError}</p>
               </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-600">País</label>
-                <input
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={customerProfile.country}
-                  onChange={(event) => setCustomerProfile((prev) => ({ ...prev, country: event.target.value }))}
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3 pt-2">
-              <button
-                disabled={profileSaving}
-                onClick={handleSaveProfile}
-                className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-60"
-              >
-                {profileSaving ? "Guardando..." : "Guardar datos"}
-              </button>
-              {profileMessage && <p className="text-sm text-slate-500">{profileMessage}</p>}
-            </div>
+            )}
           </div>
-        </section>
-      )}
-
-      {activeTab === "banco" && (
-        <section className="bg-white border border-slate-200 rounded-2xl shadow-sm">
-          <div className="p-6 space-y-4">
-            <div>
-              <h3 className="text-lg font-semibold text-slate-900">Datos bancarios</h3>
-              <p className="text-xs text-slate-500">Mantén actualizado IBAN, SWIFT y entidad.</p>
-            </div>
-
-            <div className="grid gap-4">
-              <div>
-                <label className="text-xs font-semibold text-slate-600">IBAN</label>
-                <input
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={bankData.iban}
-                  onChange={(event) => setBankData((prev) => ({ ...prev, iban: event.target.value }))}
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-600">SWIFT / BIC</label>
-                <input
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={bankData.swift}
-                  onChange={(event) => setBankData((prev) => ({ ...prev, swift: event.target.value }))}
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-600">Nombre del banco</label>
-                <input
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={bankData.bankName}
-                  onChange={(event) => setBankData((prev) => ({ ...prev, bankName: event.target.value }))}
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-600">Dirección del banco</label>
-                <input
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={bankData.bankAddress}
-                  onChange={(event) => setBankData((prev) => ({ ...prev, bankAddress: event.target.value }))}
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <button
-                onClick={handleSaveBankData}
-                disabled={bankSaving}
-                className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-60"
-              >
-                {bankSaving ? "Guardando..." : "Guardar datos bancarios"}
-              </button>
-              {bankMessage && <p className="text-sm text-slate-500">{bankMessage}</p>}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {activeTab === "seguridad" && (
-        <section className="bg-white border border-slate-200 rounded-2xl shadow-sm">
-          <div className="p-6 space-y-4">
-            <div>
-              <h3 className="text-lg font-semibold text-slate-900">Seguridad</h3>
-              <p className="text-xs text-slate-500">Cambia la contraseña y protege tu acceso.</p>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label className="text-xs font-semibold text-slate-600">Contraseña actual</label>
-                <div className="mt-1 relative">
-                  <input
-                    type={showCurrentPwd ? "text" : "password"}
-                    className="w-full border rounded-lg px-3 py-2 text-sm"
-                    value={currentPassword}
-                    onChange={(event) => setCurrentPassword(event.target.value)}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowCurrentPwd((prev) => !prev)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500"
-                  >
-                    {showCurrentPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-slate-600">Nueva contraseña</label>
-                <div className="mt-1 relative">
-                  <input
-                    type={showNewPwd ? "text" : "password"}
-                    className="w-full border rounded-lg px-3 py-2 text-sm"
-                    value={newPassword}
-                    onChange={(event) => setNewPassword(event.target.value)}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowNewPwd((prev) => !prev)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500"
-                  >
-                    {showNewPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <button
-                onClick={handleChangePassword}
-                disabled={changingPassword}
-                className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-60"
-              >
-                {changingPassword ? "Actualizando..." : "Cambiar contraseña"}
-              </button>
-              {passwordMessage && <p className="text-sm text-slate-500">{passwordMessage}</p>}
-            </div>
-          </div>
-        </section>
-      )}
+        </div>
+      </section>
     </div>
   );
 };
@@ -961,15 +560,7 @@ type PlanCardProps = {
   onAction?: () => void;
 };
 
-const PlanCard: React.FC<PlanCardProps> = ({
-  option,
-  isActive,
-  disabled,
-  loading,
-  buttonLabel,
-  recommended,
-  onAction,
-}) => (
+const PlanCard: React.FC<PlanCardProps> = ({ option, isActive, disabled, loading, buttonLabel, recommended, onAction }) => (
   <div
     className={`rounded-2xl border p-4 transition ${
       isActive ? "border-green-200 bg-green-50" : "border-slate-200 bg-white hover:border-slate-300"

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import LegalModal from "./LegalModal";   // ✅ el nuevo
+import LegalModal from "./LegalModal"; // ✅ centro legal
 import ContactDialog from "./ContactDialog";
 
 type TabKey =
@@ -9,7 +9,8 @@ type TabKey =
   | "terminos"
   | "uso"
   | "seguridad"
-  | "disclaimer";
+  | "disclaimer"
+  | "interes_legitimo"; // ✅ NUEVO
 
 export default function LegalFooter() {
   const [openLegal, setOpenLegal] = useState(false);
@@ -23,13 +24,15 @@ export default function LegalFooter() {
         { key: "cookies" as const, label: "Cookies" },
         { key: "terminos" as const, label: "Términos" },
         { key: "uso" as const, label: "Uso profesional" },
+        { key: "interes_legitimo" as const, label: "Interés legítimo (RGPD)" }, // ✅ CLAVE
         { key: "seguridad" as const, label: "Seguridad" },
         { key: "disclaimer" as const, label: "Disclaimer" },
       ] satisfies Array<{ key: TabKey; label: string }>,
     []
   );
 
-  // ✅ ahora solo abre el centro legal (sin tab)
+  // 🔒 por ahora solo abrimos el centro legal completo
+  // (si mañana quieres, aquí puedes pasar defaultTab)
   const openTab = (_tab: TabKey) => {
     setOpenLegal(true);
   };
@@ -39,6 +42,7 @@ export default function LegalFooter() {
       <footer className="mt-10 border-t border-white/10 bg-[#0b2d4d]">
         <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
           <div className="grid gap-8 sm:grid-cols-3">
+            {/* Marca */}
             <div>
               <div className="text-sm font-semibold text-white">
                 Debacu Evaluation360
@@ -52,6 +56,7 @@ export default function LegalFooter() {
               </div>
             </div>
 
+            {/* Contacto */}
             <div>
               <div className="text-xs font-semibold uppercase tracking-wide text-white/80">
                 Contacto
@@ -73,6 +78,7 @@ export default function LegalFooter() {
               </div>
             </div>
 
+            {/* Legal */}
             <div>
               <div className="text-xs font-semibold uppercase tracking-wide text-white/80">
                 Legal
@@ -103,9 +109,10 @@ export default function LegalFooter() {
         </div>
       </footer>
 
+      {/* Diálogos */}
       <ContactDialog open={openContact} onClose={() => setOpenContact(false)} />
 
-      {/* ✅ Centro legal NUEVO */}
+      {/* Centro legal */}
       <LegalModal open={openLegal} onClose={() => setOpenLegal(false)} />
     </>
   );

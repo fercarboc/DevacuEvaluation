@@ -5,9 +5,13 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 type PlanCode = "BASIC" | "MEDIUM" | "PREMIUM";
 type BillingFrequency = "MONTHLY" | "YEARLY";
+type ManageAction = "CHANGE" | "SCHEDULE_DOWNGRADE" | "CANCEL_DOWNGRADE";
 
 const DEFAULT_APP_ID = "DEBACU_EVAL";
 
+/** ======================================================
+ *  ENV
+ *  ====================================================== */
 function mustEnv(name: string) {
   const value = Deno.env.get(name);
   if (!value) throw new Error(`Missing env var ${name}`);
@@ -16,8 +20,9 @@ function mustEnv(name: string) {
 
 const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-const STRIPE_SECRET_KEY = mustEnv("STRIPE_SECRET_KEY");
+const SUPABASE_ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
 
+const STRIPE_SECRET_KEY = mustEnv("STRIPE_SECRET_KEY");
 const STRIPE_SUCCESS_URL = mustEnv("STRIPE_SUCCESS_URL");
 const STRIPE_CANCEL_URL = mustEnv("STRIPE_CANCEL_URL");
 
@@ -36,17 +41,34 @@ const PRICE_MAP: Record<PlanCode, Record<BillingFrequency, string>> = {
   },
 };
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-const corsHeaders = (origin: string | null) => ({
-  "Access-Control-Allow-Origin": origin ?? "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
-});
+/** ======================================================
+ *  CORS (whitelist + preflight 204)
+ *  ====================================================== */
+const ALLOWED_ORIGINS = new Set([
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "https://debacu.com",
+  "https://www.debacu.com",
+]);
+
+function corsHeaders(origin: string | null) {
+  const o = origin ?? "";
+  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    Vary: "Origin",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type, x-session-token",
+    "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
+    "Access-Control-Max-Age": "86400",
+  };
+}
 
 function json(status: number, origin: string | null, body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -62,6 +84,13 @@ function errToString(e: unknown) {
   } catch {
     return String(e);
   }
+}
+
+/** ======================================================
+ *  Helpers
+ *  ====================================================== */
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
 }
 
 function pickString(body: any, snake: string, camel?: string): string | undefined {
@@ -98,10 +127,75 @@ function isoDateFromUnix(sec?: number | null) {
   return new Date(sec * 1000).toISOString().slice(0, 10);
 }
 
-/* -------------------- DB helpers -------------------- */
+function readSessionToken(req: Request) {
+  return safeStr(req.headers.get("x-session-token"));
+}
 
+/** ======================================================
+ *  AuthN (JWT real) + AuthZ (org membership) + Session token
+ *  ====================================================== */
+function userClient(req: Request) {
+  const auth = req.headers.get("Authorization") ?? "";
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: auth } },
+  });
+}
+
+async function requireJwtUser(req: Request) {
+  const sb = userClient(req);
+  const { data, error } = await sb.auth.getUser();
+  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
+  return data.user;
+}
+
+async function requireEvalSession(token: string, customer_id: string, app_id: string) {
+  const now = new Date().toISOString();
+
+  const { data, error } = await admin
+    .from("debacu_eval_sessions")
+    .select("token, expires_at, revoked_at")
+    .eq("token", token)
+    .eq("customer_id", customer_id)
+    .eq("app_code", app_id)
+    .is("revoked_at", null)
+    .maybeSingle();
+
+  if (error) throw new Error(`SESSION_CHECK_FAILED: ${error.message}`);
+  if (!data) throw new Error("SESSION_INVALID");
+  if (data.expires_at && String(data.expires_at) <= now) throw new Error("SESSION_EXPIRED");
+}
+
+async function requireOrgMember(customer_id: string, user_id: string) {
+  const { data: org, error: orgErr } = await admin
+    .from("debacu_eval_organizations")
+    .select("id")
+    .eq("customer_id", customer_id)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (orgErr) throw new Error(`ORG_LOOKUP_FAILED: ${orgErr.message}`);
+  if (!org?.id) throw new Error("FORBIDDEN_NO_ORG");
+
+  const { data: mem, error: memErr } = await admin
+    .from("debacu_eval_org_members")
+    .select("id, role")
+    .eq("org_id", org.id)
+    .eq("user_id", user_id)
+    .maybeSingle();
+
+  if (memErr) throw new Error(`MEMBERSHIP_FAILED: ${memErr.message}`);
+  if (!mem?.id) throw new Error("FORBIDDEN");
+
+  return { org_id: org.id, role: mem.role ?? null };
+}
+
+/** ======================================================
+ *  DB helpers (mínimos cambios: GET robusto)
+ *  ====================================================== */
 async function getActiveSubscription(customer_id: string, app_id: string) {
-  const { data, error } = await supabase
+  const { data, error } = await admin
     .from("subscriptions")
     .select("*")
     .eq("customer_id", customer_id)
@@ -116,7 +210,7 @@ async function getActiveSubscription(customer_id: string, app_id: string) {
 }
 
 async function getPendingSubscription(customer_id: string, app_id: string) {
-  const { data, error } = await supabase
+  const { data, error } = await admin
     .from("subscriptions")
     .select("*")
     .eq("customer_id", customer_id)
@@ -129,21 +223,56 @@ async function getPendingSubscription(customer_id: string, app_id: string) {
   return data;
 }
 
-async function getLatestSubscriptionAnyState(customer_id: string, app_id: string) {
-  const { data, error } = await supabase
+// ✅ Antes: "latest por created_at" podía devolver REPLACED y next_billing_date null.
+// ✅ Ahora: elegimos la mejor suscripción para UI (prioriza ACTIVE y filtra REPLACED).
+const STATUS_ORDER = ["ACTIVE", "TRIAL_ACTIVE", "SUSPENDED", "PENDING_PAYMENT"] as const;
+
+function scoreStatus(s?: string | null) {
+  const up = String(s ?? "").toUpperCase();
+  const idx = STATUS_ORDER.indexOf(up as any);
+  return idx === -1 ? 999 : idx;
+}
+
+async function getBestSubscription(customer_id: string, app_id: string) {
+  const { data, error } = await admin
     .from("subscriptions")
     .select("*")
     .eq("customer_id", customer_id)
     .eq("app_id", app_id)
+    .order("start_date", { ascending: false, nullsFirst: false })
+    .order("updated_at", { ascending: false })
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(50);
+
   if (error) throw error;
-  return data;
+
+  const rows = (data ?? []).filter((r: any) => String(r?.status ?? "").toUpperCase() !== "REPLACED");
+  if (!rows.length) return null;
+
+  rows.sort((a: any, b: any) => {
+    const sa = scoreStatus(a.status);
+    const sb = scoreStatus(b.status);
+    if (sa !== sb) return sa - sb;
+
+    // Penaliza filas "colgadas" sin fecha o sin ids de stripe
+    const pa =
+      (!a.next_billing_date ? 10 : 0) +
+      (!(a.stripe_subscription_id || a.provider_subscription_id) ? 10 : 0);
+    const pb =
+      (!b.next_billing_date ? 10 : 0) +
+      (!(b.stripe_subscription_id || b.provider_subscription_id) ? 10 : 0);
+    if (pa !== pb) return pa - pb;
+
+    const da = String(a.start_date ?? a.created_at ?? "");
+    const db = String(b.start_date ?? b.created_at ?? "");
+    return db.localeCompare(da);
+  });
+
+  return rows[0] as any;
 }
 
 async function getPlanByCode(app_id: string, code: string) {
-  const { data, error } = await supabase
+  const { data, error } = await admin
     .from("plans")
     .select("*")
     .eq("app_id", app_id)
@@ -155,7 +284,7 @@ async function getPlanByCode(app_id: string, code: string) {
 }
 
 async function getPlanById(plan_id: string) {
-  const { data, error } = await supabase
+  const { data, error } = await admin
     .from("plans")
     .select("*")
     .eq("id", plan_id)
@@ -165,9 +294,8 @@ async function getPlanById(plan_id: string) {
   return data;
 }
 
-/** customers snake_case: id,email */
 async function getCustomerById(customer_id: string) {
-  const { data, error } = await supabase
+  const { data, error } = await admin
     .from("customers")
     .select("id, email")
     .eq("id", customer_id)
@@ -187,7 +315,7 @@ async function insertEvent(params: {
 }) {
   const stripe_event_id = params.stripe_event_id ?? `manage_${crypto.randomUUID()}`;
 
-  const { error } = await supabase.from("subscription_events").insert({
+  const { error } = await admin.from("subscription_events").insert({
     stripe_event_id,
     type: params.type,
     payload: params.payload ?? {},
@@ -204,26 +332,25 @@ async function insertEvent(params: {
   }
 }
 
-/* -------------------- Handlers -------------------- */
-
+/** ======================================================
+ *  Handlers (tu lógica, sin romper)
+ *  ====================================================== */
 async function handleGet(customer_id: string, app_id: string) {
-  const latest = await getLatestSubscriptionAnyState(customer_id, app_id);
+  const best = await getBestSubscription(customer_id, app_id);
   const active = await getActiveSubscription(customer_id, app_id);
   const pending = await getPendingSubscription(customer_id, app_id);
 
   const plan =
-    active?.plan_id && typeof active.plan_id === "string"
+    best?.plan_id && typeof best.plan_id === "string"
+      ? await getPlanById(best.plan_id)
+      : active?.plan_id && typeof active.plan_id === "string"
       ? await getPlanById(active.plan_id)
       : null;
 
-  return { latest, active, pending, plan };
+  // Compatibilidad: "latest" ahora es la mejor para UI (no REPLACED)
+  return { latest: best, active, pending, plan };
 }
 
-/**
- * CHANGE:
- * - Upgrade -> Checkout
- * - (Opcional) si llega downgrade aquí, lo rechazamos y pedimos SCHEDULE_DOWNGRADE
- */
 async function handleChange(body: any) {
   const customer_id = pickString(body, "customer_id", "customerId");
   const app_id = pickString(body, "app_id", "appId") ?? DEFAULT_APP_ID;
@@ -237,7 +364,6 @@ async function handleChange(body: any) {
   const price_id = PRICE_MAP[target_plan_code][billing_frequency];
   if (!price_id) return { status: 400, body: { error: "stripe price not configured" } };
 
-  // 1) Si ya hay pendiente, no creamos otro checkout
   const pending = await getPendingSubscription(customer_id, app_id);
   if (pending) {
     return {
@@ -251,24 +377,18 @@ async function handleChange(body: any) {
     };
   }
 
-  // 2) Plan destino en BD
   const plan_row = await getPlanByCode(app_id, target_plan_code);
   if (!plan_row) {
     return { status: 400, body: { error: `Plan ${target_plan_code} no encontrado en BD` } };
   }
 
-  // 3) Customer en BD (para email checkout)
   const customer = await getCustomerById(customer_id);
-
-  // 4) Active actual
   const active_sub = await getActiveSubscription(customer_id, app_id);
 
   const currentPlanRow = active_sub?.plan_id ? await getPlanById(active_sub.plan_id) : null;
   const current_code = String(currentPlanRow?.code ?? "").toUpperCase();
 
   const isDowngrade = active_sub && planRank(target_plan_code) < planRank(current_code);
-
-  // Si es downgrade, forzamos usar action SCHEDULE_DOWNGRADE (para separar flujos)
   if (isDowngrade) {
     return {
       status: 400,
@@ -279,13 +399,8 @@ async function handleChange(body: any) {
     };
   }
 
-  // ----------------------------
-  // ✅ UPGRADE (CON CHECKOUT)
-  // ----------------------------
-
   const replaces_subscription_id = active_sub?.id ?? null;
 
-  // Creamos fila PENDING y Checkout
   const pending_subscription_id = crypto.randomUUID();
   const now_iso = new Date().toISOString();
   const start_date = now_iso.slice(0, 10);
@@ -318,7 +433,7 @@ async function handleChange(body: any) {
     client_reference_id: customer_id,
   });
 
-  const { error: insertError } = await supabase.from("subscriptions").insert({
+  const { error: insertError } = await admin.from("subscriptions").insert({
     id: pending_subscription_id,
     customer_id,
     app_id,
@@ -369,12 +484,6 @@ async function handleChange(body: any) {
   };
 }
 
-/**
- * ✅ SCHEDULE_DOWNGRADE (next_cycle)
- * - Crea Stripe Subscription Schedule: mantiene precio actual hasta periodEnd y luego aplica nuevo price
- * - Guarda required_plan_code/required_billing_frequency/stripe_schedule_id en la suscripción ACTIVE
- * - Devuelve effective_date (YYYY-MM-DD)
- */
 async function handleScheduleDowngrade(body: any) {
   const customer_id = pickString(body, "customer_id", "customerId");
   const app_id = pickString(body, "app_id", "appId") ?? DEFAULT_APP_ID;
@@ -388,7 +497,6 @@ async function handleScheduleDowngrade(body: any) {
   const price_id = PRICE_MAP[target_plan_code][billing_frequency];
   if (!price_id) return { status: 400, body: { error: "stripe price not configured" } };
 
-  // Si hay checkout pendiente, no permitimos programar downgrade (evita líos)
   const pending = await getPendingSubscription(customer_id, app_id);
   if (pending) {
     return {
@@ -402,13 +510,11 @@ async function handleScheduleDowngrade(body: any) {
     };
   }
 
-  // ACTIVE actual
   const active_sub = await getActiveSubscription(customer_id, app_id);
   if (!active_sub) {
     return { status: 409, body: { error: "No hay suscripción ACTIVE para programar downgrade." } };
   }
 
-  // Si ya hay downgrade programado en BD, no duplicar
   if ((active_sub as any)?.required_plan_code) {
     return {
       status: 409,
@@ -422,8 +528,9 @@ async function handleScheduleDowngrade(body: any) {
     };
   }
 
-  // Plan actual y check de que sea downgrade real
-  const currentPlanRow = (active_sub as any)?.plan_id ? await getPlanById((active_sub as any).plan_id) : null;
+  const currentPlanRow = (active_sub as any)?.plan_id
+    ? await getPlanById((active_sub as any).plan_id)
+    : null;
   const current_code = String(currentPlanRow?.code ?? "").toUpperCase();
 
   if (!(planRank(target_plan_code) < planRank(current_code))) {
@@ -449,7 +556,6 @@ async function handleScheduleDowngrade(body: any) {
     };
   }
 
-  // 1) Traer sub completa + price actual + periodos
   const stripeSub = await stripe.subscriptions.retrieve(stripeSubId, {
     expand: ["items.data.price", "customer"],
   });
@@ -462,12 +568,10 @@ async function handleScheduleDowngrade(body: any) {
     return { status: 500, body: { error: "Stripe subscription missing current price/period" } };
   }
 
-  // 2) Crear schedule desde la suscripción
   const schedule = await stripe.subscriptionSchedules.create({
     from_subscription: stripeSubId,
   });
 
-  // 3) Setear fases: mantener price actual hasta periodEnd, luego el nuevo price
   await stripe.subscriptionSchedules.update(schedule.id, {
     end_behavior: "release",
     phases: [
@@ -486,18 +590,17 @@ async function handleScheduleDowngrade(body: any) {
   });
 
   const nowIso = new Date().toISOString();
-  const effective_date = isoDateFromUnix(periodEnd); // ✅ YYYY-MM-DD
+  const effective_date = isoDateFromUnix(periodEnd);
 
-  // 4) Guardar en BD (SIN tocar stripe_price_id actual)
-  const { error: upErr } = await supabase
+  const { error: upErr } = await admin
     .from("subscriptions")
     .update({
       required_plan_code: target_plan_code,
       required_billing_frequency: billing_frequency,
       stripe_schedule_id: schedule.id,
-      next_billing_date: effective_date, // ✅ añade esto
+      next_billing_date: effective_date,
       updated_at: nowIso,
-    })
+    } as any)
     .eq("id", (active_sub as any).id);
 
   if (upErr) throw upErr;
@@ -513,8 +616,7 @@ async function handleScheduleDowngrade(body: any) {
       target_plan_code,
       billing_frequency,
       mode: "SCHEDULE_NEXT_CYCLE",
-      stripe_schedule_id: schedule.id, // ✅
-      schedule_id: schedule.id, // (compat opcional)
+      stripe_schedule_id: schedule.id,
       effective_unix: periodEnd,
       effective_date,
       current_plan_code: current_code || null,
@@ -536,12 +638,6 @@ async function handleScheduleDowngrade(body: any) {
   };
 }
 
-/**
- * ✅ CANCEL_DOWNGRADE
- * - release() del Subscription Schedule en Stripe
- * - limpia required_plan_code/required_billing_frequency/stripe_schedule_id en BD
- * - registra evento DOWNGRADE_CANCELLED
- */
 async function handleCancelDowngrade(body: any) {
   const customer_id = pickString(body, "customer_id", "customerId");
   const app_id = pickString(body, "app_id", "appId") ?? DEFAULT_APP_ID;
@@ -574,47 +670,45 @@ async function handleCancelDowngrade(body: any) {
     };
   }
 
-  // 1) Stripe: release schedule (mantiene suscripción actual sin cambios)
   try {
     await stripe.subscriptionSchedules.release(scheduleId);
   } catch (e: any) {
-    // Si Stripe ya no lo conoce, limpiamos igual para no bloquear UI
     const msg = String(e?.message ?? e).toLowerCase();
     const code = String(e?.code ?? "");
-    const isNotFound =
-      code === "resource_missing" || msg.includes("no such subscription schedule");
+    const isNotFound = code === "resource_missing" || msg.includes("no such subscription schedule");
     if (!isNotFound) throw e;
   }
 
-  // ✅ 1.5) Calcular next_billing_date real desde Stripe (current_period_end)
-  let effectiveNextDate: string | null = null;   
-  
+  // Recuperar la fecha desde Stripe: si falla, NO pisar next_billing_date con null
+  let effectiveNextDate: string | null = null;
   try {
     const stripeSub = await stripe.subscriptions.retrieve(stripeSubId);
     const end = (stripeSub as any)?.current_period_end as number | undefined;
     effectiveNextDate = end ? new Date(end * 1000).toISOString().slice(0, 10) : null;
   } catch {
-    // Si falla Stripe por lo que sea, no bloqueamos cancelación
     effectiveNextDate = null;
   }
 
   const nowIso = new Date().toISOString();
 
-  // 2) BD: limpiar flags downgrade + schedule
-  const { error: upErr } = await supabase
+  // ✅ FIX: NO BORRAR next_billing_date si Stripe no devolvió la fecha
+  const updatePayload: Record<string, any> = {
+    required_plan_code: null,
+    required_billing_frequency: null,
+    stripe_schedule_id: null,
+    updated_at: nowIso,
+  };
+  if (effectiveNextDate) {
+    updatePayload.next_billing_date = effectiveNextDate;
+  }
+
+  const { error: upErr } = await admin
     .from("subscriptions")
-    .update({
-      required_plan_code: null,
-      required_billing_frequency: null,
-      stripe_schedule_id: null,
-      next_billing_date: effectiveNextDate, // ✅ ahora existe
-      updated_at: nowIso,
-    })
+    .update(updatePayload as any)
     .eq("id", (active_sub as any).id);
 
   if (upErr) throw upErr;
 
-  // 3) Evento
   await insertEvent({
     app_id,
     customer_id,
@@ -631,50 +725,90 @@ async function handleCancelDowngrade(body: any) {
   return { status: 200, body: { ok: true, next_billing_date: effectiveNextDate } };
 }
 
-/* -------------------- Server -------------------- */
-
+/** ======================================================
+ *  Server (ahora con seguridad)
+ *  ====================================================== */
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
 
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders(origin) });
+    return new Response(null, { status: 204, headers: corsHeaders(origin) });
   }
 
   try {
+    // ✅ 1) JWT obligatorio
+    const user = await requireJwtUser(req);
+
+    // ✅ 2) Parse de input (GET o POST)
+    let customer_id: string | undefined;
+    let app_id: string = DEFAULT_APP_ID;
+    let action: ManageAction | "" = "";
+
     if (req.method === "GET") {
       const url = new URL(req.url);
-      const customer_id =
-        url.searchParams.get("customer_id") ?? url.searchParams.get("customerId") ?? undefined;
-      const app_id =
-        url.searchParams.get("app_id") ?? url.searchParams.get("appId") ?? DEFAULT_APP_ID;
+      customer_id =
+        url.searchParams.get("customer_id") ??
+        url.searchParams.get("customerId") ??
+        undefined;
+      app_id =
+        url.searchParams.get("app_id") ??
+        url.searchParams.get("appId") ??
+        DEFAULT_APP_ID;
+      action = "CHANGE"; // no aplica, pero no se usa en GET
+    } else {
+      const body = await req.json().catch(() => ({}));
+      action = String(body?.action ?? "").toUpperCase() as ManageAction;
+      customer_id = pickString(body, "customer_id", "customerId");
+      app_id = pickString(body, "app_id", "appId") ?? DEFAULT_APP_ID;
 
-      if (!customer_id) return json(400, origin, { error: "customer_id query param required" });
+      // ✅ x-session-token obligatorio (en POST)
+      const sessionToken = readSessionToken(req);
+      if (!sessionToken) return json(401, origin, { error: "Missing x-session-token" });
+      if (!customer_id) return json(400, origin, { error: "customer_id is required" });
 
-      const data = await handleGet(customer_id, app_id);
-      return json(200, origin, data);
+      await requireEvalSession(sessionToken, customer_id, app_id);
+      await requireOrgMember(customer_id, user.id);
+
+      if (action === "CHANGE") {
+        const result = await handleChange(body);
+        return json(result.status, origin, result.body);
+      }
+
+      if (action === "SCHEDULE_DOWNGRADE") {
+        const result = await handleScheduleDowngrade(body);
+        return json(result.status, origin, result.body);
+      }
+
+      if (action === "CANCEL_DOWNGRADE") {
+        const result = await handleCancelDowngrade(body);
+        return json(result.status, origin, result.body);
+      }
+
+      return json(400, origin, { error: "Unsupported action" });
     }
 
-    const body = await req.json().catch(() => ({}));
-    const action = String(body?.action ?? "").toUpperCase();
+    // ✅ GET: protegido (JWT + session + org)
+    const sessionToken = readSessionToken(req);
+    if (!sessionToken) return json(401, origin, { error: "Missing x-session-token" });
+    if (!customer_id) return json(400, origin, { error: "customer_id query param required" });
 
-    if (action === "CHANGE") {
-      const result = await handleChange(body);
-      return json(result.status, origin, result.body);
-    }
+    await requireEvalSession(sessionToken, customer_id, app_id);
+    await requireOrgMember(customer_id, user.id);
 
-    if (action === "SCHEDULE_DOWNGRADE") {
-      const result = await handleScheduleDowngrade(body);
-      return json(result.status, origin, result.body);
-    }
-
-    if (action === "CANCEL_DOWNGRADE") {
-      const result = await handleCancelDowngrade(body);
-      return json(result.status, origin, result.body);
-    }
-
-    return json(400, origin, { error: "Unsupported action" });
+    const data = await handleGet(customer_id, app_id);
+    return json(200, origin, data);
   } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const code =
+      msg === "UNAUTHENTICATED"
+        ? 401
+        : msg === "SESSION_INVALID" || msg === "SESSION_EXPIRED"
+        ? 401
+        : msg.startsWith("FORBIDDEN")
+        ? 403
+        : 500;
+
     console.error("debacu_eval_subscription_manage error:", error);
-    return json(500, origin, { error: "Unhandled error", detail: errToString(error) });
+    return json(code, origin, { error: "Request failed", detail: errToString(error) });
   }
 });

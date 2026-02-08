@@ -17,6 +17,17 @@ async function readJsonSafe(res: Response) {
   }
 }
 
+export class EvalApiError extends Error {
+  error_obj?: any;
+  status?: number;
+  constructor(message: string, opts?: { error_obj?: any; status?: number }) {
+    super(message);
+    this.name = "EvalApiError";
+    this.error_obj = opts?.error_obj;
+    this.status = opts?.status;
+  }
+}
+
 export async function evalLogin(username: string, password: string) {
   const res = await fetch(fnUrl("debacu-eval-login"), {
     method: "POST",
@@ -32,9 +43,11 @@ export async function evalLogin(username: string, password: string) {
 
   if (!res.ok) {
     console.error("LOGIN ERROR BODY:", text);
-    throw new Error(json?.error || json?.detail || text || "Login error");
+    throw new EvalApiError(
+      json?.error || json?.detail || text || "Login error",
+      { error_obj: json?.error_obj, status: res.status }
+    );
   }
 
-  // Debe devolver: { authEmail, session_token, user }
   return json as { authEmail: string; session_token: string; user: any };
 }

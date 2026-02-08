@@ -16,26 +16,46 @@ function bucketizeCount(n: number): CountBucket {
 
 function bucketToMinCount(bucket: CountBucket): number {
   switch (bucket) {
-    case "0": return 0;
-    case "1-2": return 1;
-    case "3-5": return 3;
-    case "6-10": return 6;
-    case "10+": return 10;
-    default: return 0;
+    case "0":
+      return 0;
+    case "1-2":
+      return 1;
+    case "3-5":
+      return 3;
+    case "6-10":
+      return 6;
+    case "10+":
+      return 10;
+    default:
+      return 0;
   }
 }
 
-const corsHeaders: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-session-token",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+// CORS allowlist (mejor que "*")
+const ALLOWED_ORIGINS = new Set([
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "https://debacu.com",
+  "https://www.debacu.com",
+]);
 
-function json(resBody: unknown, status = 200) {
-  return new Response(JSON.stringify(resBody), {
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("Origin") ?? "";
+  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type, x-session-token",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin",
+  };
+}
+
+function json(req: Request, body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...corsHeaders },
+    headers: { "Content-Type": "application/json", ...corsHeaders(req) },
   });
 }
 
@@ -45,10 +65,21 @@ function json(resBody: unknown, status = 200) {
 function normalizeEmail(s: string) {
   return s.trim().toLowerCase();
 }
+
+/**
+ * Normaliza documentos (DNI/NIE/PASAPORTE genérico) quitando espacios/guiones
+ * y pasando a mayúsculas.
+ */
 function normalizeDoc(s: string) {
   return s.trim().toUpperCase().replace(/[\s-]/g, "");
 }
-function normalizePhone(s: string) {
+
+/**
+ * Variantes de teléfono: solo dígitos.
+ * - Si 9 dígitos: añade prefijo 34
+ * - Si empieza por 34 y 11 dígitos: añade variante sin 34
+ */
+function normalizePhoneVariants(s: string) {
   const digits = s.replace(/\D/g, "");
   const variants = new Set<string>();
   if (digits) {
@@ -56,22 +87,76 @@ function normalizePhone(s: string) {
     if (digits.length === 9) variants.add("34" + digits);
     if (digits.startsWith("34") && digits.length === 11) variants.add(digits.slice(2));
   }
-  return { digits, variants: Array.from(variants) };
+  return Array.from(variants);
 }
+
+/**
+ * Heurística robusta:
+ * 1) email
+ * 2) doc (DNI/NIE/patrón doc mixto con letra+digitos)  <-- CLAVE: antes que phone
+ * 3) phone (solo si parece realmente teléfono)
+ */
 function detectKind(q: string): "email" | "phone" | "doc" | "unknown" {
   const v = q.trim();
+  if (!v) return "unknown";
+
+  // email
   if (v.includes("@")) return "email";
-  const digits = v.replace(/\D/g, "");
-  if (digits.length >= 7 && digits.length >= v.replace(/\s/g, "").length * 0.7) return "phone";
-  if (/[A-Za-z]/.test(v) && /\d/.test(v)) return "doc";
+
+  const compact = v.replace(/\s+/g, "");
+  const doc = normalizeDoc(compact);
+
+  // DNI: 8 dígitos + letra
+  if (/^\d{8}[A-Z]$/.test(doc)) return "doc";
+
+  // NIE: X/Y/Z + 7 dígitos + letra
+  if (/^[XYZ]\d{7}[A-Z]$/.test(doc)) return "doc";
+
+  // Pasaporte / doc genérico: mezcla letras+digitos y longitud razonable
+  // (evita clasificar cosas raras muy cortas)
+  if (/[A-Z]/.test(doc) && /\d/.test(doc) && doc.length >= 7 && doc.length <= 20) return "doc";
+
+  // phone: exige que sea casi todo dígitos (o con +) y longitud típica
+  const digits = compact.replace(/\D/g, "");
+  const nonDigits = compact.replace(/\d/g, "");
+  const isMostlyDigits = digits.length >= 7 && digits.length >= compact.length - nonDigits.length;
+  const isPhoneLike =
+    /^\+?\d[\d\s().-]*$/.test(compact) &&
+    digits.length >= 7 &&
+    digits.length <= 15 &&
+    isMostlyDigits;
+
+  if (isPhoneLike) return "phone";
+
   return "unknown";
+}
+
+function looksLikeNameOnly(q: string) {
+  const t = q.trim();
+  if (t.length < 5) return false;
+  if (t.includes("@")) return false;
+
+  // si parece documento DNI/NIE, no es nombre
+  const kind = detectKind(t);
+  if (kind === "doc" || kind === "phone" || kind === "email") return false;
+
+  const parts = t.split(/\s+/).filter(Boolean);
+  const hasLetters = /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(t);
+  return hasLetters && parts.length >= 2;
+}
+
+function classifyStrength(q: string): MatchStrength {
+  const kind = detectKind(q);
+  if (kind === "email" || kind === "phone" || kind === "doc") return "STRONG";
+  if (looksLikeNameOnly(q)) return "WEAK";
+  return "MEDIUM";
 }
 
 function maskForAudit(kind: string, raw: string) {
   const v = raw.trim();
   if (!v) return "—";
   if (kind === "email") {
-    const [a, b] = v.split("@");
+    const [a] = v.split("@");
     const left = (a ?? "").slice(0, 2);
     return `${left}•••@•••`;
   }
@@ -79,35 +164,47 @@ function maskForAudit(kind: string, raw: string) {
     const digits = v.replace(/\D/g, "");
     return digits.slice(0, 2) + "•••";
   }
-  if (kind === "doc") {
-    return v.slice(0, 2) + "•••";
-  }
+  if (kind === "doc") return v.slice(0, 2) + "•••";
   return v.slice(0, 2) + "•••";
+}
+
+// riesgo simple (sin tipologías)
+function computeRisk(countExact: number, avgStars: number | null): Risk {
+  if (!countExact || countExact <= 0) return "NO_CONCLUYENTE";
+  if (avgStars == null) return "NO_CONCLUYENTE";
+
+  if (countExact >= 3 && avgStars <= 2.2) return "ALTO";
+  if (countExact >= 2 && avgStars <= 3.0) return "MEDIO";
+  if (avgStars >= 4.0) return "BAJO";
+  return "MEDIO";
 }
 
 serve(async (req) => {
   try {
-    if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+    if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(req) });
+    if (req.method !== "POST") return json(req, { error: "Method not allowed" }, 405);
 
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
     const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-    if (!SUPABASE_URL || !SERVICE_ROLE) return json({ error: "Missing server configuration" }, 500);
+    if (!SUPABASE_URL || !SERVICE_ROLE) {
+      return json(req, { error: "Missing server configuration" }, 500);
+    }
 
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
       auth: { persistSession: false },
     });
 
     const sessionToken = req.headers.get("x-session-token") || "";
-    if (!sessionToken) return json({ error: "Missing x-session-token" }, 401);
+    if (!sessionToken) return json(req, { error: "Missing x-session-token" }, 401);
 
     const body = await req.json().catch(() => ({}));
-    const q_raw = String(body?.q_input ?? body?.query ?? "").trim();
+    const q_raw = String(body?.q_input ?? body?.query ?? body?.q_raw ?? "").trim();
     const months = Number(body?.months ?? 24);
     const k = Number(body?.k ?? 3);
+    const maxRatingsForAvg = Number(body?.max_avg_samples ?? 500);
 
     if (!q_raw) {
-      return json({
+      return json(req, {
         matchStrength: "MEDIUM" as MatchStrength,
         hasMatches: false,
         countExact: 0,
@@ -120,121 +217,191 @@ serve(async (req) => {
       });
     }
 
-    // 1) Validar sesión
+    // 1) validar sesión Debacu propia
     const { data: session, error: sessErr } = await supabase
       .from("debacu_eval_sessions")
       .select("customer_id,expires_at,revoked_at")
       .eq("token", sessionToken)
       .maybeSingle();
 
-    if (sessErr || !session) return json({ error: "Invalid session" }, 401);
-    if (session.revoked_at) return json({ error: "Session revoked" }, 401);
+    if (sessErr || !session) return json(req, { error: "Invalid session" }, 401);
+    if (session.revoked_at) return json(req, { error: "Session revoked" }, 401);
     if (session.expires_at && new Date(session.expires_at).getTime() < Date.now()) {
-      return json({ error: "Session expired" }, 401);
+      return json(req, { error: "Session expired" }, 401);
     }
 
-    // 2) Normalizar input (para aumentar match)
+    const strength = classifyStrength(q_raw);
+
+    // si es nombre/apellidos solo -> NO_CONCLUYENTE
+    if (strength === "WEAK") {
+      try {
+        await supabase.from("debacu_eval_audit_log").insert({
+          action: "CHECK_SIGNALS",
+          event_type: "CHECK_SIGNALS",
+          entity: "EVALUATION_SEARCH",
+          entity_id: null,
+          customer_id: session.customer_id,
+          app_id: "DEBACU_EVAL",
+          search_kind: "WEAK",
+          search_value_masked: maskForAudit("unknown", q_raw),
+          search_value_hash: null,
+          result_count: 0,
+          meta: { message: "WEAK_NAME_ONLY" },
+          created_at: new Date().toISOString(),
+        });
+      } catch {
+        // ignore
+      }
+
+      return json(req, {
+        matchStrength: "WEAK" as MatchStrength,
+        hasMatches: false,
+        countExact: 0,
+        countBucket: "0" as CountBucket,
+        risk: "NO_CONCLUYENTE" as Risk,
+        timeWindow: `${months}M`,
+        topTypologies: [],
+        avgStars: null,
+        message:
+          "Resultado no concluyente: el dato aportado puede corresponder a varias personas. Para una comprobación técnica, añade email/teléfono/documento.",
+      });
+    }
+
+    // 2) normalizar + construir filtro
     const kind = detectKind(q_raw);
 
-    let q_input = q_raw;
-    if (kind === "email") q_input = normalizeEmail(q_raw);
-    if (kind === "doc") q_input = normalizeDoc(q_raw);
-    if (kind === "phone") {
-      // Enviamos el dígito principal, pero dejamos la info de variantes en meta para depurar.
-      const ph = normalizePhone(q_raw);
-      q_input = ph.digits; // (ideal: la RPC debería admitir variantes)
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - Math.max(1, Math.min(60, months)));
+    const cutoffISO = cutoff.toISOString();
+
+    const base = supabase
+      .from("debacu_evaluations")
+      .select("id", { count: "exact", head: true })
+      .gte("created_at", cutoffISO);
+
+    let countExact = 0;
+
+    if (kind === "email") {
+      const q = normalizeEmail(q_raw);
+      const { count, error } = await base.eq("email", q);
+      if (error) return json(req, { error: "Query failed", detail: error.message }, 500);
+      countExact = Number(count ?? 0);
+    } else if (kind === "doc") {
+      const q = normalizeDoc(q_raw);
+      const { count, error } = await base.eq("document", q);
+      if (error) return json(req, { error: "Query failed", detail: error.message }, 500);
+      countExact = Number(count ?? 0);
+    } else if (kind === "phone") {
+      const vars = normalizePhoneVariants(q_raw);
+      if (!vars.length) {
+        countExact = 0;
+      } else {
+        const { count, error } = await base.in("phone", vars);
+        if (error) return json(req, { error: "Query failed", detail: error.message }, 500);
+        countExact = Number(count ?? 0);
+      }
+    } else {
+      countExact = 0;
     }
 
-    // 3) RPC agregada
-    const { data, error } = await supabase.rpc("debacu_eval_check_signals", {
-      q_input,
-      months,
-      k,
-    });
+    const countBucket = bucketizeCount(countExact);
+    const hasMatches = countExact > 0;
 
-    if (error) return json({ error: "RPC failed", detail: error.message }, 500);
+    // 3) avgStars (sin RPC): sample limitado
+    let avgStars: number | null = null;
+    if (hasMatches) {
+      let rows: Array<{ rating: unknown }> = [];
 
-    const row = Array.isArray(data) ? data[0] : data;
+      const lim = Math.max(50, Math.min(2000, maxRatingsForAvg));
 
-    const countBucket: CountBucket = (() => {
-      const raw = String(row?.count_bucket ?? "").trim();
-      if (raw === "0" || raw === "1-2" || raw === "3-5" || raw === "6-10" || raw === "10+") return raw;
-      const c = Number(row?.count_exact ?? row?.count ?? row?.total ?? 0);
-      return bucketizeCount(c);
-    })();
+      if (kind === "email") {
+        const q = normalizeEmail(q_raw);
+        const { data, error } = await supabase
+          .from("debacu_evaluations")
+          .select("rating")
+          .eq("email", q)
+          .gte("created_at", cutoffISO)
+          .limit(lim);
+        if (!error && Array.isArray(data)) rows = data as any;
+      } else if (kind === "doc") {
+        const q = normalizeDoc(q_raw);
+        const { data, error } = await supabase
+          .from("debacu_evaluations")
+          .select("rating")
+          .eq("document", q)
+          .gte("created_at", cutoffISO)
+          .limit(lim);
+        if (!error && Array.isArray(data)) rows = data as any;
+      } else if (kind === "phone") {
+        const vars = normalizePhoneVariants(q_raw);
+        if (vars.length) {
+          const { data, error } = await supabase
+            .from("debacu_evaluations")
+            .select("rating")
+            .in("phone", vars)
+            .gte("created_at", cutoffISO)
+            .limit(lim);
+          if (!error && Array.isArray(data)) rows = data as any;
+        }
+      }
 
-    const countExact = Number(row?.count_exact ?? row?.count ?? row?.total ?? 0) || 0;
+      const nums = rows
+        .map((r) => Number((r as any)?.rating ?? 0))
+        .filter((n) => n >= 1 && n <= 5);
 
-    const hasMatches = Boolean(
-      row?.has_matches ?? ((countBucket !== "0") || (countExact > 0)),
-    );
+      if (nums.length) {
+        avgStars = nums.reduce((a, b) => a + b, 0) / nums.length;
+        avgStars = Math.max(0, Math.min(5, avgStars));
+      }
+    }
 
-    const avgStars =
-      row?.avg_stars === null || row?.avg_stars === undefined
-        ? null
-        : Math.max(0, Math.min(5, Number(row.avg_stars)));
+    const risk = computeRisk(countExact, avgStars);
 
-    const riskUp = String(row?.risk ?? "NO_CONCLUYENTE").toUpperCase();
-    const risk: Risk =
-      (riskUp === "BAJO" || riskUp === "MEDIO" || riskUp === "ALTO")
-        ? (riskUp as Risk)
-        : "NO_CONCLUYENTE";
-
+    // 4) Audit log best-effort
     const resultCountForAudit = bucketToMinCount(countBucket);
-
-    // 4) Audit log (best-effort)
     try {
       await supabase.from("debacu_eval_audit_log").insert({
         action: "CHECK_SIGNALS",
         event_type: "CHECK_SIGNALS",
         entity: "EVALUATION_SEARCH",
         entity_id: null,
-
         customer_id: session.customer_id,
         app_id: "DEBACU_EVAL",
 
-        search_kind: row?.match_strength ?? kind ?? null,
+        search_kind: kind,
         search_value_masked: maskForAudit(kind, q_raw),
         search_value_hash: null,
 
-        // ⚠️ si quieres privacidad: usa resultCountForAudit
         result_count: resultCountForAudit,
-
         meta: {
           has_matches: hasMatches,
           count_exact: countExact,
           count_bucket: countBucket,
           avg_stars: avgStars,
           risk,
-          match_strength: row?.match_strength ?? null,
-          window: row?.time_window ?? `${months}M`,
-          input_kind: kind,
-          input_raw_masked: maskForAudit(kind, q_raw),
-          input_norm_used: q_input,
-          // si es phone, dejamos variantes para depurar (SIN PII exacta si te preocupa; aquí va “digits”, ya es PII)
-          // quítalo si no quieres:
-          // phone_variants: kind === "phone" ? normalizePhone(q_raw).variants : undefined,
+          match_strength: strength,
+          window: `${months}M`,
         },
-
         created_at: new Date().toISOString(),
       });
     } catch {
       // ignore
     }
 
-    // 5) Respuesta al front
-    return json({
-      matchStrength: (row?.match_strength ?? "MEDIUM") as MatchStrength,
+    // 5) Respuesta
+    return json(req, {
+      matchStrength: strength,
       hasMatches,
       countExact,
       countBucket,
       avgStars,
       risk,
-      topTypologies: Array.isArray(row?.top_typologies) ? row.top_typologies : [],
-      timeWindow: String(row?.time_window ?? `${months}M`),
-      message: String(row?.message ?? ""),
+      topTypologies: [],
+      timeWindow: `${months}M`,
+      message: "",
+      k,
     });
   } catch (e) {
-    return json({ error: "Unexpected error", detail: String((e as any)?.message ?? e) }, 500);
+    return json(req, { error: "Unexpected error", detail: String((e as any)?.message ?? e) }, 500);
   }
 });

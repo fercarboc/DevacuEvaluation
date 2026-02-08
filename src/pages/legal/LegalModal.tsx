@@ -7,6 +7,7 @@ import Terminos from "./pages/Terminos";
 import PoliticaAccesoUso from "./pages/PoliticaAccesoUso";
 import Seguridad from "./pages/Seguridad";
 import Disclaimer from "./pages/Disclaimer";
+import InteresLegitimo from "./pages/InteresLegitimo"; // ✅ NUEVO
 
 type DocKey =
   | "aviso"
@@ -14,6 +15,7 @@ type DocKey =
   | "cookies"
   | "terminos"
   | "uso"
+  | "interes_legitimo" // ✅ NUEVO
   | "seguridad"
   | "disclaimer";
 
@@ -23,6 +25,7 @@ const DOCS: Array<{ key: DocKey; label: string }> = [
   { key: "cookies", label: "Cookies" },
   { key: "terminos", label: "Términos" },
   { key: "uso", label: "Uso profesional" },
+  { key: "interes_legitimo", label: "Interés legítimo (RGPD)" }, // ✅ NUEVO
   { key: "seguridad", label: "Seguridad" },
   { key: "disclaimer", label: "Disclaimer" },
 ];
@@ -52,6 +55,7 @@ export default function LegalModal({
       cookies: Cookies,
       terminos: Terminos,
       uso: PoliticaAccesoUso,
+      interes_legitimo: InteresLegitimo, // ✅ NUEVO
       seguridad: Seguridad,
       disclaimer: Disclaimer,
     };
@@ -88,8 +92,7 @@ export default function LegalModal({
           </div>
 
           {/* ✅ clave: overflow-hidden aquí */}
-         <div className="grid grid-cols-[260px_1fr] gap-0 h-[70vh] overflow-hidden min-h-0">
-
+          <div className="grid grid-cols-[260px_1fr] gap-0 h-[70vh] overflow-hidden min-h-0">
             <aside className="bg-[#0b2a57] text-white px-4 py-4">
               <div className="text-xs font-semibold text-white/70 mb-3">
                 DOCUMENTOS
@@ -114,19 +117,14 @@ export default function LegalModal({
                   );
                 })}
               </div>
-
-             
             </aside>
 
             {/* ✅ un único scroller */}
-         <main className="bg-white min-h-0 overflow-y-auto overscroll-contain legal-scroll">
-
-          <div className="p-8">
-            <Page />
-          </div>
-        </main>
-
-
+            <main className="bg-white min-h-0 overflow-y-auto overscroll-contain legal-scroll">
+              <div className="p-8">
+                <Page />
+              </div>
+            </main>
           </div>
 
           <div className="px-6 py-3 bg-[#0b2a57] text-white/70 text-xs">
