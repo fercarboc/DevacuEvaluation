@@ -2,6 +2,7 @@
 import { supabase } from "@/services/supabaseClient";
 import type { Rating } from "@/types/types";
 import type { Database } from "@/types/database";
+import { callEvalFn } from "./callEvalFn";
 
 /** =========================================================
  *  Tipos DB
@@ -10,7 +11,7 @@ export type EvaluationRow = Database["public"]["Tables"]["debacu_evaluations"]["
 export type EvaluationInsert = Database["public"]["Tables"]["debacu_evaluations"]["Insert"];
 
 /** =========================================================
- *  Helpers Edge
+ *  Helpers Edge (JWT real + x-session-token)
  * ========================================================= */
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
 const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
@@ -40,18 +41,18 @@ function getSessionTokenOrThrow() {
 
 /**
  * Call Edge Function usando tu esquema:
- * - Authorization: Bearer ANON
+ * - Authorization: Bearer <supabase jwt real>
  * - apikey: ANON
  * - x-session-token: tu token de sesión propio
  *
  * Acepta respuestas:
  * - { ok: true, data: ... }
+ * - { ok: true, rows: ... }
  * - o devuelve directo el objeto
  */
 export async function callEdge<T>(name: string, body: any): Promise<T> {
   const session_token = getSessionTokenOrThrow();
 
-  // ✅ token REAL del usuario (no anon)
   const { data } = await supabase.auth.getSession();
   const jwt = data.session?.access_token || "";
   if (!jwt) throw new Error("missing_supabase_jwt");
@@ -68,16 +69,27 @@ export async function callEdge<T>(name: string, body: any): Promise<T> {
   });
 
   const { json, text } = await readJsonSafe(res);
+
   if (!res.ok) {
     console.error(`${name} failed:`, res.status, text);
     throw new Error(`${name}_failed`);
   }
 
+  // Respuesta estándar { ok: true/false, ... }
   if (json && typeof json === "object" && "ok" in json) {
-    if (json.ok === true) return (json.data ?? null) as T;
+    if ((json as any).ok === true) {
+      // ✅ Si la función devuelve "rows" + "signals" (u otros metadatos), NO la desenvuelvas
+      if ("signals" in json || "meta" in json || "summary" in json) {
+        return json as T;
+      }
+      return ((json as any).data ?? (json as any).rows ?? json) as T;
+    }
+
+    // ok === false
     throw new Error(String((json as any).error ?? `${name}_error`));
   }
 
+  // Respuesta no estándar: devuelve el JSON tal cual
   return (json ?? null) as T;
 }
 
@@ -111,14 +123,17 @@ function maskDoc(doc?: string | null): string | null {
   return `${d.slice(0, 2)}••••${d.slice(-2)}`;
 }
 
-function mapEvaluationToRating(row: EvaluationRow): Rating {
+export function mapEvaluationToRating(row: EvaluationRow): Rating {
+  // Rating es tipo UI legacy (camelCase). Aquí lo mantenemos para no romper el resto.
   return {
     id: row.id,
     value: (row as any).rating ?? 0,
     comment: (row as any).comment || "",
     createdAt: (row as any).evaluation_date || (row as any).created_at,
-    authorId: (row as any).creator_customer_id || "HISTORICO",
+
+    authorId: ((row as any).creator_customer_uuid ?? (row as any).customer_id ?? "") as string,
     authorName: (row as any).creator_customer_name || (row as any).platform || "Histórico",
+
     platform: (row as any).platform || undefined,
     clientData: {
       fullName: (row as any).full_name || "",
@@ -132,36 +147,69 @@ function mapEvaluationToRating(row: EvaluationRow): Rating {
 
 /** =========================================================
  *  RESUMEN GLOBAL (paneles laterales) -> Edge Function
- *  - NO devolver total visible en UI si no quieres (UI decide)
+ *  ✅ snake_case
  * ========================================================= */
-export interface GlobalSummary {
-  totalCount: number; // lo puedes ignorar en UI
-  platformCounts: Record<string, number>;
-  countryCounts: Record<string, number>;
-}
+export type GlobalSummary = {
+  total_count: number;
+  platform_counts: Record<string, number>;
+  country_counts: Record<string, number>;
+};
 
 export async function getGlobalSummary(): Promise<GlobalSummary> {
-  // Edge: debacu-eval-global-summary
-  return await callEdge<GlobalSummary>("debacu-eval-global-summary", {});
+  const raw = await callEdge<any>("debacu-eval-global-summary", {});
+  // Normaliza por si el edge devolviera legacy
+  return {
+    total_count: Number(raw?.total_count ?? raw?.totalCount ?? 0),
+    platform_counts: (raw?.platform_counts ?? raw?.platformCounts ?? {}) as Record<string, number>,
+    country_counts: (raw?.country_counts ?? raw?.countryCounts ?? {}) as Record<string, number>,
+  };
 }
 
 /** =========================================================
  *  GLOBAL RGPD-SAFE (Edge Function)
+ *  ✅ snake_case en output
  * ========================================================= */
 export type MatchStrength = "STRONG" | "MEDIUM" | "WEAK";
 export type CountBucket = "0" | "1-2" | "3-5" | "6-10" | "10+";
 export type RiskLevel = "BAJO" | "MEDIO" | "ALTO" | "NO_CONCLUYENTE";
 
+export type MoneyRange = { min: number; max: number };
+
+export type StructuredSummary = {
+  has_evidence?: boolean;
+  dominant_signal?: string;
+  pattern?: "LOW" | "MODERATE" | "HIGH" | string;
+  time_window?: string;
+  last_seen_label?: string;
+
+  economic_impact_range?: MoneyRange | string | null;
+  net_loss_range?: MoneyRange | string | null;
+};
+
 export type GlobalSignals = {
-  matchStrength: MatchStrength;
-  hasMatches: boolean;
-  countExact?: number;
-  countBucket: CountBucket;
-  avgStars?: number | null;
-  risk?: RiskLevel;
-  topTypologies?: string[];
-  timeWindow?: string;
+  match_strength: MatchStrength;
+  has_matches: boolean;
+  count_exact?: number;
+  count_bucket: CountBucket;
+  avg_stars?: number | null;
+  risk_level?: RiskLevel;
+  top_typologies?: string[];
+  time_window?: string;
   message?: string;
+
+  economic_time_window?: string | null;
+  economic_gross_bucket?: string | null;
+  economic_gross_label?: string | null;
+  economic_net_bucket?: string | null;
+  economic_net_label?: string | null;
+
+  sources_label?: string | null;
+  last_seen_bucket?: string | null;
+  documents_bucket?: string | null;
+  hotel_category?: number | null;
+  stars_multiplier?: number | null;
+
+  structured_summary?: StructuredSummary | null;
 };
 
 function looksLikeEmail(q: string) {
@@ -189,11 +237,6 @@ function classifyQuery(q: string): MatchStrength {
   return "MEDIUM";
 }
 
-
-
-
- 
-// ✅ Normalizadores para GLOBAL (antes de llamar a Edge)
 function normalizeEmail(q: string) {
   return q.trim().toLowerCase();
 }
@@ -204,47 +247,45 @@ function normalizeDoc(q: string) {
   return q.trim().toUpperCase().replace(/\s+/g, "");
 }
 function normalizePhone(q: string) {
-  // devolvemos variantes útiles para matching (Edge decide qué usar)
   const digits = onlyDigits(q);
   const last9 = digits.length >= 9 ? digits.slice(-9) : digits;
-  // E164 simple: si ya trae prefijo país (>=11) lo dejamos; si no, suponemos ES (+34)
-  const e164 = digits.length === 9 ? `34${digits}` : digits; // sin "+" para facilitar SQL
+  const e164 = digits.length === 9 ? `34${digits}` : digits;
   return { digits, last9, e164 };
 }
 
 function buildGlobalQueryPayload(raw: string) {
   const q = (raw || "").trim();
 
-  const isEmail = looksLikeEmail(q);
-  const isPhone = looksLikePhone(q);
-  const isDoc = looksLikeDoc(q);
+  const is_email = looksLikeEmail(q);
+  const is_phone = looksLikePhone(q);
+  const is_doc = looksLikeDoc(q);
 
   const strength = classifyQuery(q);
 
-  let q_input = q; // lo que mandamos como principal a Edge
+  let q_input = q;
   let email_norm: string | null = null;
   let doc_norm: string | null = null;
   let phone_digits: string | null = null;
   let phone_last9: string | null = null;
   let phone_e164: string | null = null;
 
-  if (isEmail) {
+  if (is_email) {
     email_norm = normalizeEmail(q);
     q_input = email_norm;
-  } else if (isDoc) {
+  } else if (is_doc) {
     doc_norm = normalizeDoc(q);
     q_input = doc_norm;
-  } else if (isPhone) {
+  } else if (is_phone) {
     const p = normalizePhone(q);
     phone_digits = p.digits;
     phone_last9 = p.last9;
     phone_e164 = p.e164;
-    q_input = phone_digits; // principal por simplicidad
+    q_input = phone_digits;
   }
 
   return {
     q_raw: q,
-    q_input, // ✅ principal
+    q_input,
     strength,
     allow_weak: strength === "WEAK",
     email_norm,
@@ -257,30 +298,38 @@ function buildGlobalQueryPayload(raw: string) {
 
 export async function checkSignalsGlobal(query: string, months = 24): Promise<GlobalSignals> {
   const raw = (query || "").trim();
+  const payload = buildGlobalQueryPayload(raw);
+
   if (!raw) {
     return {
-      matchStrength: "MEDIUM",
-      hasMatches: false,
-      countExact: 0,
-      countBucket: "0",
-      risk: "NO_CONCLUYENTE",
-      timeWindow: `${months}M`,
+      match_strength: "MEDIUM",
+      has_matches: false,
+      count_exact: 0,
+      count_bucket: "0",
+      risk_level: "NO_CONCLUYENTE",
+      time_window: `${months}M`,
       message: "Introduce un criterio válido.",
+      structured_summary: null,
+
+      economic_time_window: null,
+      economic_gross_bucket: null,
+      economic_gross_label: null,
+      economic_net_bucket: null,
+      economic_net_label: null,
+      sources_label: null,
+      last_seen_bucket: null,
+      documents_bucket: null,
+      hotel_category: null,
+      stars_multiplier: null,
     };
   }
 
-  const payload = buildGlobalQueryPayload(raw);
-
-  // ✅ YA NO cortamos en cliente por WEAK.
-  // Dejamos que Edge decida (y si no soporta weak, devolverá 0).
   try {
     const row = await callEdge<any>("debacu-eval-check-signals", {
       q_input: payload.q_input,
       q_raw: payload.q_raw,
       months,
       k: 3,
-
-      // extras (Edge puede ignorar si no los usa)
       allow_weak: payload.allow_weak,
       match_strength_hint: payload.strength,
       email_norm: payload.email_norm,
@@ -290,78 +339,157 @@ export async function checkSignalsGlobal(query: string, months = 24): Promise<Gl
       phone_e164: payload.phone_e164,
     });
 
-    const countExact =
-      typeof row?.countExact === "number" ? row.countExact : Number(row?.countExact ?? 0);
+    const count_exact =
+      typeof row?.count_exact === "number"
+        ? row.count_exact
+        : typeof row?.countExact === "number"
+        ? row.countExact
+        : Number(row?.count_exact ?? row?.countExact ?? 0);
 
-    const hasMatches = Boolean(row?.hasMatches ?? countExact > 0);
+    const has_matches = Boolean(row?.has_matches ?? row?.hasMatches ?? count_exact > 0);
 
-    // ✅ Política producto:
-    // - si es WEAK (nombre), aunque Edge diga que hay señales, siempre NO_CONCLUYENTE
-    //   y mensaje instructivo.
-    const finalStrength = (row?.matchStrength ?? payload.strength) as MatchStrength;
+    const match_strength = (row?.match_strength ?? row?.matchStrength ?? payload.strength) as MatchStrength;
 
-    const finalRisk: RiskLevel =
-      payload.allow_weak
-        ? "NO_CONCLUYENTE"
-        : ((row?.risk ?? "NO_CONCLUYENTE") as RiskLevel);
+    const risk_level: RiskLevel = payload.allow_weak
+      ? "NO_CONCLUYENTE"
+      : ((row?.risk_level ?? row?.risk ?? row?.riskLevel ?? "NO_CONCLUYENTE") as RiskLevel);
 
-    const finalMessage =
-      payload.allow_weak
-        ? (hasMatches
-            ? "Hay señales asociadas, pero el criterio es no concluyente (nombre). Para comprobación técnica usa email/teléfono/documento."
-            : "Resultado no concluyente: el dato aportado puede corresponder a varias personas. Para una comprobación técnica, añade email/teléfono/documento.")
-        : (row?.message ?? "");
+    const message = payload.allow_weak
+      ? has_matches
+        ? "Hay señales asociadas, pero el criterio es no concluyente (nombre). Para comprobación técnica usa email/teléfono/documento."
+        : "Resultado no concluyente: el dato aportado puede corresponder a varias personas. Para una comprobación técnica, añade email/teléfono/documento."
+      : String(row?.message ?? "");
+
+    const avg_stars =
+      typeof row?.avg_stars === "number"
+        ? row.avg_stars
+        : typeof row?.avgStars === "number"
+        ? row.avgStars
+        : row?.avg_stars ?? row?.avgStars ?? null;
+
+    const top_typologies = Array.isArray(row?.top_typologies)
+      ? row.top_typologies
+      : Array.isArray(row?.topTypologies)
+      ? row.topTypologies
+      : [];
+
+    const structured_summary = (row?.structured_summary ?? null) as StructuredSummary | null;
 
     return {
-      matchStrength: finalStrength,
-      hasMatches,
-      countExact,
-      countBucket: (row?.countBucket ?? "0") as CountBucket,
-      avgStars: typeof row?.avgStars === "number" ? row.avgStars : row?.avgStars ?? null,
-      risk: finalRisk,
-      topTypologies: Array.isArray(row?.topTypologies) ? row.topTypologies : [],
-      timeWindow: row?.timeWindow ?? `${months}M`,
-      message: finalMessage,
+      match_strength,
+      has_matches,
+      count_exact,
+      count_bucket: (row?.count_bucket ?? row?.countBucket ?? "0") as CountBucket,
+      avg_stars,
+      risk_level,
+      top_typologies,
+      time_window: String(row?.time_window ?? row?.timeWindow ?? `${months}M`),
+      message,
+
+      economic_time_window: row?.economic_time_window ?? row?.economicTimeWindow ?? null,
+      economic_gross_bucket: row?.economic_gross_bucket ?? row?.economicGrossBucket ?? null,
+      economic_gross_label: row?.economic_gross_label ?? row?.economicGrossLabel ?? null,
+      economic_net_bucket: row?.economic_net_bucket ?? row?.economicNetBucket ?? null,
+      economic_net_label: row?.economic_net_label ?? row?.economicNetLabel ?? null,
+
+      sources_label: row?.sources_label ?? row?.sourcesLabel ?? null,
+      last_seen_bucket: row?.last_seen_bucket ?? row?.lastSeenBucket ?? null,
+      documents_bucket: row?.documents_bucket ?? row?.documentsBucket ?? null,
+      hotel_category:
+        typeof row?.hotel_category === "number"
+          ? row.hotel_category
+          : typeof row?.hotelCategory === "number"
+          ? row.hotelCategory
+          : row?.hotel_category ?? row?.hotelCategory ?? null,
+      stars_multiplier:
+        typeof row?.stars_multiplier === "number"
+          ? row.stars_multiplier
+          : typeof row?.starsMultiplier === "number"
+          ? row.starsMultiplier
+          : row?.stars_multiplier ?? row?.starsMultiplier ?? null,
+
+      structured_summary,
     };
   } catch (e) {
     console.error("checkSignalsGlobal failed:", e);
     return {
-      matchStrength: payload.strength,
-      hasMatches: false,
-      countExact: 0,
-      countBucket: "0",
-      risk: "NO_CONCLUYENTE",
-      timeWindow: `${months}M`,
+      match_strength: payload.strength,
+      has_matches: false,
+      count_exact: 0,
+      count_bucket: "0",
+      risk_level: "NO_CONCLUYENTE",
+      time_window: `${months}M`,
       message: "No se ha podido completar la comprobación.",
+      structured_summary: null,
+
+      economic_time_window: null,
+      economic_gross_bucket: null,
+      economic_gross_label: null,
+      economic_net_bucket: null,
+      economic_net_label: null,
+      sources_label: null,
+      last_seen_bucket: null,
+      documents_bucket: null,
+      hotel_category: null,
+      stars_multiplier: null,
     };
   }
 }
 
-
-
-
-
-
 /** =========================================================
- *  “MIS REGISTROS” -> Edge Function (evita 403 por RLS)
+ *  “MIS REGISTROS” -> Edge Function (rows + signals)
+ *  ✅ snake_case en output
  * ========================================================= */
-export async function searchMyRatingsInSupabase(query: string, authorId: string): Promise<Rating[]> {
-  const q = (query || "").trim();
-  if (!q) return [];
-  if (!authorId) return [];
+export type MyRatingsSignals = {
+  has_matches: boolean;
+  count_exact: number;
+  count_bucket: CountBucket;
+  avg_stars: number | null;
+  risk_level: RiskLevel;
+  time_window: "MINE";
+  top_typologies: string[];
+  economic_gross_label: string | null;
+  economic_net_label: string | null;
+  economic_time_window: "MINE";
+  last_seen_label: string | null;
+};
 
-  // Edge: debacu-eval-my-ratings-search
-  const rows = await callEdge<EvaluationRow[]>("debacu-eval-my-ratings-search", {
-    q,
-    authorId,
-    limit: 50,
-  });
+export type MyRatingsSearchResponse = {
+  rows: any[];
+  signals: MyRatingsSignals | null;
+};
 
-  return (rows || []).map(mapEvaluationToRating);
+export async function searchMyRatingsInSupabase(q: string, limit = 50): Promise<MyRatingsSearchResponse> {
+  const res = await callEdge<any>("debacu-eval-my-ratings-search", { q, limit });
+
+  // Si por cualquier motivo volviera array, fallback
+  if (Array.isArray(res)) return { rows: res, signals: null };
+
+  const rows = Array.isArray(res?.rows) ? res.rows : [];
+
+  // Normaliza signals snake_case por si el edge devolviese legacy
+  const s = res?.signals ?? null;
+  const signals: MyRatingsSignals | null = s
+    ? {
+        has_matches: Boolean(s?.has_matches ?? s?.hasMatches ?? false),
+        count_exact: Number(s?.count_exact ?? s?.countExact ?? 0),
+        count_bucket: (s?.count_bucket ?? s?.countBucket ?? "0") as CountBucket,
+        avg_stars: s?.avg_stars ?? s?.avgStars ?? null,
+        risk_level: (s?.risk_level ?? s?.risk ?? s?.riskLevel ?? "NO_CONCLUYENTE") as RiskLevel,
+        time_window: "MINE",
+        top_typologies: Array.isArray(s?.top_typologies) ? s.top_typologies : Array.isArray(s?.topTypologies) ? s.topTypologies : [],
+        economic_gross_label: s?.economic_gross_label ?? s?.economicGrossLabel ?? null,
+        economic_net_label: s?.economic_net_label ?? s?.economicNetLabel ?? null,
+        economic_time_window: "MINE",
+        last_seen_label: s?.last_seen_label ?? s?.lastSeenLabel ?? null,
+      }
+    : null;
+
+  return { rows, signals };
 }
 
 /** =========================================================
- *  Insert (via Edge Function)
+ *  Insert (via Edge Function) - usando callEdge (JWT real)
  * ========================================================= */
 export interface AddEvaluationInput {
   document: string;
@@ -372,7 +500,7 @@ export interface AddEvaluationInput {
   rating: number;
   comment?: string | null;
   platform?: string | null;
-  evaluation_date?: string | null; // yyyy-mm-dd
+  evaluation_date?: string | null;
   creator_customer_id?: string | null;
   creator_customer_name?: string | null;
 }
@@ -382,12 +510,6 @@ export async function addEvaluation(
   currentCustomerId: string,
   currentCustomerName: string
 ): Promise<EvaluationRow | null> {
-  const session_token = localStorage.getItem("debacu_eval_session_token") || "";
-  if (!session_token) {
-    console.error("Falta debacu_eval_session_token. Haz login otra vez.");
-    return null;
-  }
-
   const payload: EvaluationInsert = {
     document: (input.document || "").trim(),
     full_name: (input.full_name || "").trim(),
@@ -398,75 +520,52 @@ export async function addEvaluation(
     comment: input.comment ? String(input.comment).trim() : null,
     platform: input.platform ? String(input.platform).trim() : "DEBACU_EVAL",
     evaluation_date: input.evaluation_date || todayISO(),
+
     creator_customer_id: input.creator_customer_id ?? currentCustomerId ?? null,
     creator_customer_name: input.creator_customer_name ?? currentCustomerName ?? null,
   };
 
-  const res = await fetch(fnUrl("debacu-eval-add"), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      apikey: ANON_KEY,
-      Authorization: `Bearer ${ANON_KEY}`,
-      "x-session-token": session_token,
-    },
-    body: JSON.stringify({
-      app_code: "DEBACU_EVAL",
-      accept_declaration: true,
-      input: payload,
-    }),
+  const out = await callEdge<any>("debacu-eval-add", {
+    app_code: "DEBACU_EVAL",
+    accept_declaration: true,
+    input: payload,
+    currentCustomerId,
+    currentCustomerName,
   });
 
-  const { json, text } = await readJsonSafe(res);
-  if (!res.ok) {
-    console.error("debacu-eval-add failed:", res.status, text);
-    return null;
-  }
-
-  const row = json?.row;
-  if (!row) {
-    console.error("debacu-eval-add: missing row in response", json);
-    return null;
-  }
-
+  const row = out?.row ?? out;
+  if (!row) return null;
   return row as EvaluationRow;
 }
 
-
 /** =========================================================
  *  GLOBAL RISK SNAPSHOT -> Edge Function
- *  (a día de hoy = histórico completo)
+ *  ✅ snake_case en output
  * ========================================================= */
 export type GlobalRiskSnapshot = {
-  pct5: number;
-  pct4: number;
-  pct3: number;
-  pct2: number;
-  pct1: number;
-  pct_bajo: number;  // 4-5
-  pct_medio: number; // 3
-  pct_alto: number;  // 1-2
+  pct_5: number;
+  pct_4: number;
+  pct_3: number;
+  pct_2: number;
+  pct_1: number;
+  pct_bajo: number;
+  pct_medio: number;
+  pct_alto: number;
 };
 
 export async function getGlobalRiskSnapshot(): Promise<GlobalRiskSnapshot> {
-  // Tu callEdge (el de arriba) acepta:
-  // - { ok:true, data: ... } o objeto directo
   const data = await callEdge<any>("debacu-eval-global-risk-snapshot", {});
-
   return {
-    pct5: Number(data?.pct5 ?? 0),
-    pct4: Number(data?.pct4 ?? 0),
-    pct3: Number(data?.pct3 ?? 0),
-    pct2: Number(data?.pct2 ?? 0),
-    pct1: Number(data?.pct1 ?? 0),
+    pct_5: Number(data?.pct_5 ?? data?.pct5 ?? 0),
+    pct_4: Number(data?.pct_4 ?? data?.pct4 ?? 0),
+    pct_3: Number(data?.pct_3 ?? data?.pct3 ?? 0),
+    pct_2: Number(data?.pct_2 ?? data?.pct2 ?? 0),
+    pct_1: Number(data?.pct_1 ?? data?.pct1 ?? 0),
     pct_bajo: Number(data?.pct_bajo ?? 0),
     pct_medio: Number(data?.pct_medio ?? 0),
     pct_alto: Number(data?.pct_alto ?? 0),
   };
 }
-
-
-
 
 /** =========================================================
  *  whoami (Edge Function)
@@ -489,18 +588,22 @@ export async function client_whoami(): Promise<ClientWhoami> {
   return data.data as ClientWhoami;
 }
 
+/** =========================================================
+ *  client_dashboard (Edge Function)
+ *  ✅ snake_case en output (normaliza legacy)
+ * ========================================================= */
 export type ClientDashboardData = {
-  customerId: string;
-  monthStart: string;
-  planCard: {
+  customer_id: string;
+  month_start: string;
+  plan_card: {
     name: string;
     status: string;
-    billingFrequency: string | null;
-    nextBilling: string | null;
+    billing_frequency: string | null;
+    next_billing: string | null;
     limit: number | null;
   } | null;
-  queryCount: number;
-  createdThisMonth: number;
+  query_count: number;
+  created_this_month: number;
   activity: Array<{
     id: string;
     date: string;
@@ -512,5 +615,195 @@ export type ClientDashboardData = {
 };
 
 export async function getClientDashboard(): Promise<ClientDashboardData> {
-  return await callEdge<ClientDashboardData>("client_dashboard", {});
+  const raw = await callEdge<any>("client_dashboard", {});
+  // Normaliza por si viniera legacy
+  return {
+    customer_id: String(raw?.customer_id ?? raw?.customerId ?? ""),
+    month_start: String(raw?.month_start ?? raw?.monthStart ?? ""),
+    plan_card: raw?.plan_card ?? raw?.planCard ?? null,
+    query_count: Number(raw?.query_count ?? raw?.queryCount ?? 0),
+    created_this_month: Number(raw?.created_this_month ?? raw?.createdThisMonth ?? 0),
+    activity: Array.isArray(raw?.activity) ? raw.activity : [],
+  };
+}
+
+/** =========================================================
+ *  AUDITORÍA - Histórico de consultas (Edge Functions)
+ *  ✅ snake_case extremo (request/response)
+ * ========================================================= */
+export type AuditHistoryItem = {
+  audit_id: string;
+  created_at: string;
+
+  event_type: string | null;
+
+  risk_level: string | null;
+  avg_stars: number | null;
+  match_strength: string | null;
+  count_bucket: string | null;
+  count_exact: number | null;
+  time_window: string | null;
+
+  input_kind: string | null;
+  search_value_masked: string | null;
+
+  result_count: number | null;
+
+  actor_user_id: string | null;
+  actor_role: string | null;
+  actor_email: string | null;
+
+  meta: any;
+};
+
+export type ListAuditHistoryResp = {
+  items: AuditHistoryItem[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
+function normalize_audit_item(row: any): AuditHistoryItem {
+  const meta = (row?.meta ?? {}) as any;
+
+  const audit_id = String(row?.audit_id ?? row?.id ?? "");
+  const created_at = String(row?.created_at ?? "");
+
+  const event_type = (row?.event_type ?? null) as string | null;
+
+  const risk_level = (row?.risk_level ?? row?.risk ?? meta?.risk ?? null) as string | null;
+
+  const avg_stars =
+    typeof row?.avg_stars === "number"
+      ? row.avg_stars
+      : typeof meta?.avg_stars === "number"
+      ? meta.avg_stars
+      : row?.avg_stars ?? meta?.avg_stars ?? null;
+
+  const match_strength =
+    (row?.match_strength ?? meta?.match_strength ?? row?.matchStrength ?? meta?.matchStrength ?? null) as string | null;
+
+  const count_bucket = (row?.count_bucket ?? meta?.count_bucket ?? row?.countBucket ?? meta?.countBucket ?? null) as string | null;
+
+  const count_exact =
+    typeof row?.count_exact === "number"
+      ? row.count_exact
+      : typeof meta?.count_exact === "number"
+      ? meta.count_exact
+      : row?.count_exact ?? meta?.count_exact ?? row?.countExact ?? meta?.countExact ?? null;
+
+  const time_window =
+    (row?.time_window ??
+      row?.window ??
+      meta?.time_window ??
+      meta?.window ??
+      meta?.months_received ??
+      null) as string | null;
+
+  const input_kind = (row?.input_kind ?? meta?.input_kind ?? row?.search_kind ?? null) as string | null;
+
+  const search_value_masked = (row?.search_value_masked ?? row?.search_value_masked ?? null) as string | null;
+
+  const result_count =
+    typeof row?.result_count === "number" ? row.result_count : row?.result_count ?? row?.resultCount ?? null;
+
+  const actor_user_id = (row?.actor_user_id ?? row?.actor_user_id ?? null) as string | null;
+
+  const actor_role = (row?.actor_role ?? row?.userRole ?? null) as string | null;
+  const actor_email = (row?.actor_email ?? row?.requested_by_email ?? null) as string | null;
+
+  return {
+    audit_id,
+    created_at,
+    event_type,
+    risk_level,
+    avg_stars,
+    match_strength,
+    count_bucket,
+    count_exact,
+    time_window,
+    input_kind,
+    search_value_masked,
+    result_count,
+    actor_user_id,
+    actor_role,
+    actor_email,
+    meta,
+  };
+}
+
+function normalize_list_audit_history(raw: any, fallback: { page: number; page_size: number }): ListAuditHistoryResp {
+  const page = Number(raw?.page ?? fallback.page ?? 1);
+  const page_size = Number(raw?.page_size ?? raw?.pageSize ?? fallback.page_size ?? 10);
+  const total = Number(raw?.total ?? raw?.count ?? raw?.total_count ?? 0);
+  const items_raw = Array.isArray(raw?.items) ? raw.items : Array.isArray(raw?.rows) ? raw.rows : [];
+  const items = items_raw.map(normalize_audit_item);
+  return { items, total, page, page_size };
+}
+
+export async function list_audit_history(params: {
+  page: number;
+  page_size: number;
+  q?: string | null;
+  event_type?: string | null;
+
+  // ✅ preparado para siguiente paso (filtro fechas)
+  date_from?: string | null; // yyyy-mm-dd
+  date_to?: string | null; // yyyy-mm-dd
+}): Promise<ListAuditHistoryResp> {
+  const payload = {
+    page: params.page,
+    page_size: params.page_size,
+    q: params.q ?? null,
+    event_type: params.event_type ?? "CHECK_SIGNALS",
+    date_from: params.date_from ?? null,
+    date_to: params.date_to ?? null,
+  };
+
+  const raw = await callEvalFn<any>("client_audit_history_list", payload);
+  return normalize_list_audit_history(raw, { page: params.page, page_size: params.page_size });
+}
+
+export async function get_audit_history_detail(audit_id: string): Promise<AuditHistoryItem> {
+  const raw = await callEvalFn<any>("client_audit_history_detail", { audit_id });
+  const item = raw?.item ?? raw?.data?.item ?? raw?.row ?? raw;
+  return normalize_audit_item(item);
+}
+
+export type IssueAuditPdfResp = {
+  pdf_event_id: string;
+  pdf_event_created_at: string | null;
+  download_url: string | null;
+  storage_path: string | null;
+};
+
+export async function issue_audit_pdf(params: { source_audit_id: string; template_version?: string }) {
+  const raw = await callEvalFn<any>("client_audit_pdf_issue", {
+    source_audit_id: params.source_audit_id,
+    template_version: params.template_version ?? "v1",
+  });
+
+  // ⚠️ Tu edge actual SOLO registra trazabilidad y NO genera PDF -> no hay download_url.
+  return {
+    pdf_event_id: String(raw?.pdf_event_id ?? raw?.id ?? ""),
+    pdf_event_created_at: raw?.pdf_event_created_at ?? raw?.pdf_event_created_at ?? null,
+    download_url: raw?.download_url ?? null,
+    storage_path: raw?.storage_path ?? null,
+  } as IssueAuditPdfResp;
+}
+
+
+export async function audit_export_generate(payload: {
+  export_type: "PDF" | "CSV";
+  export_scope: string;
+  period_from: string; // YYYY-MM-DD
+  period_to: string;   // YYYY-MM-DD
+  filters?: Record<string, unknown>;
+  source_audit_id?: string | null;
+}) {
+  return callEvalFn("client_audit_export_generate", payload);
+}
+
+export async function audit_export_download(export_id: string) {
+  return callEvalFn("client_audit_export_download", { export_id });
 }

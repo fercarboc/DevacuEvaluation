@@ -1,9 +1,10 @@
+// src/pages/DashboardHome.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import EmptyState from "@/components/ui/EmptyState";
 import { DataTable, Td, Th, Tr } from "@/components/ui/DataTable";
 import { getClientDashboard, type ClientDashboardData } from "@/services/clientService";
 
-function formatBillingFrequency(v?: string | null) {
+function format_billing_frequency(v?: string | null) {
   const x = (v ?? "").toUpperCase();
   if (x === "MONTHLY") return "MONTHLY";
   if (x === "YEARLY" || x === "ANNUAL" || x === "ANNUALLY") return "YEARLY";
@@ -16,7 +17,7 @@ function formatBillingFrequency(v?: string | null) {
  * - ACTIVE sin fecha => "—" (no inventar "Pendiente")
  * - SUSPENDED => "Bloqueado"
  */
-function formatNextBilling(status?: string | null, v?: string | null) {
+function format_next_billing(status?: string | null, v?: string | null) {
   const s = (status ?? "").toUpperCase();
 
   if (s === "PENDING_PAYMENT") return "Pendiente";
@@ -28,7 +29,7 @@ function formatNextBilling(status?: string | null, v?: string | null) {
   return dt.toLocaleDateString();
 }
 
-function statusBadge(status?: string | null) {
+function status_badge(status?: string | null) {
   const s = (status ?? "UNKNOWN").toUpperCase();
   const base = "inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold";
   if (s === "ACTIVE" || s === "TRIALING") {
@@ -44,32 +45,36 @@ function statusBadge(status?: string | null) {
 }
 
 export default function DashboardHome() {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [dash, setDash] = useState<ClientDashboardData | null>(null);
+  const [loading, set_loading] = useState(true);
+  const [error, set_error] = useState<string | null>(null);
+  const [dash, set_dash] = useState<ClientDashboardData | null>(null);
 
-  const usagePercent = useMemo(() => {
-    const limit = dash?.planCard?.limit ?? 0;
-    const used = dash?.queryCount ?? 0;
+  const usage_percent = useMemo(() => {
+    const limit = dash?.plan_card?.limit ?? 0;
+    const used = dash?.query_count ?? 0;
     if (!limit) return 0;
     return Math.min(100, Math.round((used / limit) * 100));
+  }, [dash]);
+
+  const activity = useMemo(() => {
+    return Array.isArray(dash?.activity) ? dash!.activity : [];
   }, [dash]);
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      setLoading(true);
-      setError(null);
+      set_loading(true);
+      set_error(null);
 
       try {
         const data = await getClientDashboard();
-        if (!cancelled) setDash(data);
+        if (!cancelled) set_dash(data);
       } catch (e) {
         console.error(e);
-        if (!cancelled) setError("No ha sido posible cargar el dashboard.");
+        if (!cancelled) set_error("No ha sido posible cargar el dashboard.");
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) set_loading(false);
       }
     })();
 
@@ -94,7 +99,7 @@ export default function DashboardHome() {
     );
   }
 
-  const planCard = dash.planCard;
+  const plan_card = dash.plan_card;
 
   return (
     <div className="space-y-6">
@@ -106,24 +111,24 @@ export default function DashboardHome() {
                 Plan activo
               </p>
               <div className="mt-3 text-xl font-semibold text-slate-900">
-                {planCard?.name ?? "—"}
+                {plan_card?.name ?? "—"}
               </div>
             </div>
-            {statusBadge(planCard?.status)}
+            {status_badge(plan_card?.status)}
           </div>
 
-          {planCard ? (
+          {plan_card ? (
             <>
               <div className="mt-3 flex items-center justify-between text-sm text-slate-600">
                 <span>Facturación</span>
                 <span className="font-semibold text-slate-900">
-                  {formatBillingFrequency(planCard.billingFrequency)}
+                  {format_billing_frequency(plan_card.billing_frequency)}
                 </span>
               </div>
               <div className="mt-2 flex items-center justify-between text-sm text-slate-600">
                 <span>Próx. cobro</span>
                 <span className="font-semibold text-slate-900">
-                  {formatNextBilling(planCard?.status, planCard?.nextBilling)}
+                  {format_next_billing(plan_card?.status, plan_card?.next_billing)}
                 </span>
               </div>
             </>
@@ -136,12 +141,12 @@ export default function DashboardHome() {
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Consultas este mes
           </p>
-          <div className="mt-3 text-3xl font-semibold text-slate-900">{dash.queryCount}</div>
+          <div className="mt-3 text-3xl font-semibold text-slate-900">{dash.query_count}</div>
 
           <div className="text-sm text-slate-600">
             Límite:{" "}
-            {planCard?.limit != null && planCard.limit > 0 ? (
-              <span className="font-semibold text-slate-900">{planCard.limit}</span>
+            {plan_card?.limit != null && plan_card.limit > 0 ? (
+              <span className="font-semibold text-slate-900">{plan_card.limit}</span>
             ) : (
               "Sin límite"
             )}{" "}
@@ -151,20 +156,20 @@ export default function DashboardHome() {
           <div className="mt-4 h-2 rounded-full bg-slate-100">
             <div
               className="h-2 rounded-full bg-indigo-600 transition-all"
-              style={{ width: `${usagePercent}%` }}
+              style={{ width: `${usage_percent}%` }}
             />
           </div>
-          <div className="mt-2 text-sm text-slate-500">{usagePercent}% del plan utilizado</div>
+          <div className="mt-2 text-sm text-slate-500">{usage_percent}% del plan utilizado</div>
         </section>
 
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Registros añadidos este mes
           </p>
-          <div className="mt-3 text-3xl font-semibold text-slate-900">{dash.createdThisMonth}</div>
-          <div className="text-sm text-slate-600">
-            Evaluaciones recientes ingresadas manualmente
+          <div className="mt-3 text-3xl font-semibold text-slate-900">
+            {dash.created_this_month}
           </div>
+          <div className="text-sm text-slate-600">Evaluaciones recientes ingresadas manualmente</div>
         </section>
       </div>
 
@@ -175,7 +180,7 @@ export default function DashboardHome() {
         </div>
 
         <div className="mt-4">
-          {dash.activity.length === 0 ? (
+          {activity.length === 0 ? (
             <EmptyState
               title="Sin actividad"
               description="Cuando el sistema registre la primera consulta, aparecerá aquí."
@@ -192,7 +197,7 @@ export default function DashboardHome() {
                 </tr>
               </thead>
               <tbody>
-                {dash.activity.map((row) => (
+                {activity.map((row) => (
                   <Tr key={row.id}>
                     <Td className="text-xs text-slate-500">{row.date}</Td>
                     <Td>{row.type}</Td>

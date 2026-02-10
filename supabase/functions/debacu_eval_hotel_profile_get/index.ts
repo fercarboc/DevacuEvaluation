@@ -104,6 +104,48 @@ async function requireEvalSession(params: {
 }
 
 /** ======================================================
+ *  Completeness / Audit
+ *  ====================================================== */
+type AuditState = { audit_ok: boolean; missing_fields: string[] };
+
+function computeAudit(params: {
+  country: string | null;
+  province: string | null;
+  city: string | null;
+
+  property_type: string | null;
+  hotel_category: number | null;
+  currency: string | null;
+  timezone: string | null;
+  rooms_count: number | null;
+}): AuditState {
+  const miss: string[] = [];
+
+  const country = safeStr(params.country) || null;
+  const province = safeStr(params.province) || null;
+  const city = safeStr(params.city) || null;
+
+  const property_type = safeStr(params.property_type) || null;
+  const currency = safeStr(params.currency) || null;
+  const timezone = safeStr(params.timezone) || null;
+
+  const hotel_category = params.hotel_category ?? null;
+  const rooms_count = params.rooms_count ?? null;
+
+  if (!property_type) miss.push("property_type");
+  if (!country) miss.push("country");
+  if (!province) miss.push("province");
+  if (!city) miss.push("city");
+
+  if (hotel_category === null || !Number.isFinite(Number(hotel_category))) miss.push("hotel_category");
+  if (!currency) miss.push("currency");
+  if (!timezone) miss.push("timezone");
+  if (rooms_count === null || rooms_count <= 0) miss.push("rooms_count");
+
+  return { audit_ok: miss.length === 0, missing_fields: miss };
+}
+
+/** ======================================================
  *  Handler
  *  ====================================================== */
 Deno.serve(async (req) => {
@@ -146,16 +188,7 @@ Deno.serve(async (req) => {
       app_code: appId,
     });
 
-    // 1) location desde customers
-    const { data: cust, error: custErr } = await admin
-      .from("customers")
-      .select("id, country, province, city")
-      .eq("id", customerId)
-      .maybeSingle();
-
-    if (custErr) throw new Error(`DB_CUSTOMERS_GET:${custErr.message}`);
-
-    // 2) profile desde debacu_eval_hotel_profile
+    // ✅ TODO desde debacu_eval_hotel_profile (sin customers)
     const { data: profile, error: pErr } = await admin
       .from("debacu_eval_hotel_profile")
       .select("*")
@@ -165,15 +198,24 @@ Deno.serve(async (req) => {
 
     if (pErr) throw new Error(`DB_PROFILE_GET:${pErr.message}`);
 
+    const audit = computeAudit({
+      country: (profile as any)?.country ?? null,
+      province: (profile as any)?.province ?? null,
+      city: (profile as any)?.city ?? null,
+
+      property_type: (profile as any)?.property_type ?? null,
+      hotel_category: (profile as any)?.hotel_category ?? null,
+      currency: (profile as any)?.currency ?? null,
+      timezone: (profile as any)?.timezone ?? null,
+      rooms_count: (profile as any)?.rooms_count ?? null,
+    });
+
     return json(origin, 200, {
       ok: true,
       meta: { customer_id: customerId, app_id: appId },
       profile: profile ?? null,
-      location: {
-        country: cust?.country ?? null,
-        province: cust?.province ?? null,
-        city: cust?.city ?? null,
-      },
+      audit_ok: audit.audit_ok,
+      missing_fields: audit.missing_fields,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

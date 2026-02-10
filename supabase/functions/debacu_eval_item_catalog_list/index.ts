@@ -1,4 +1,3 @@
-// supabase/functions/debacu_eval_item_catalog_list/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
@@ -14,7 +13,7 @@ function corsHeaders(origin: string | null) {
   const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
   return {
     "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
+    Vary: "Origin",
     "Access-Control-Allow-Headers":
       "authorization, x-client-info, apikey, content-type, x-session-token",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -58,12 +57,37 @@ async function assertEvalSession(
 
   const tokenCustomerId = String(data.customer_id);
 
-  // Si el cliente manda customerId, lo validamos contra el token
   if (customerIdFromBody && String(customerIdFromBody) !== tokenCustomerId) {
     throw new Error("customerId mismatch vs session token");
   }
 
   return { customerId: tokenCustomerId };
+}
+
+type GlobalItem = {
+  item_code: string;
+  title: string | null;
+  category: string | null;
+  unit_price: number | null;
+  currency: string | null;
+  description: string | null;
+  is_active: boolean;
+  updated_at: string | null;
+};
+
+type HotelItem = {
+  item_code: string;
+  title: string | null;
+  category: string | null;
+  unit_price: number | null;
+  currency: string | null;
+  description: string | null;
+  is_active: boolean | null; // por si tu tabla permite null
+  updated_at: string | null;
+};
+
+function normCode(x: unknown) {
+  return String(x ?? "").trim().toUpperCase();
 }
 
 Deno.serve(async (req) => {
@@ -83,7 +107,7 @@ Deno.serve(async (req) => {
       return json(origin, 401, { ok: false, error: "Missing x-session-token" });
     }
 
-    // Body opcional: puede venir vacío o incluso no ser JSON.
+    // Body opcional
     let body: any = {};
     try {
       body = await req.json();
@@ -95,53 +119,94 @@ Deno.serve(async (req) => {
       auth: { persistSession: false },
     });
 
-    // customerId real SIEMPRE viene del token (y si body lo trae, se valida)
     const { customerId } = await assertEvalSession(
       supabase,
       sessionToken,
       body?.customerId ?? null,
     );
 
-    // Global
+    // 1) Global activos
     const { data: globalItems, error: e1 } = await supabase
       .from("debacu_item_catalog")
-      .select(
-        "item_code,title,category,unit_price,currency,description,is_active,updated_at",
-      )
-      .eq("is_active", true)
-      .order("title", { ascending: true });
+      .select("item_code,title,category,unit_price,currency,description,is_active,updated_at")
+      .eq("is_active", true);
 
     if (e1) return json(origin, 500, { ok: false, error: e1.message });
 
-    // Hotel (si tienes is_active ahí, puedes filtrar también; lo dejo como lo tenías)
+    // 2) Hotel items (NO filtrar is_active, porque si el hotel lo pone false
+    // necesitamos leerlo para desactivar un item global)
     const { data: hotelItems, error: e2 } = await supabase
       .from("debacu_hotel_item_catalog")
-      .select(
-        "item_code,title,category,unit_price,currency,description,is_active,updated_at",
-      )
-      .eq("customer_id", customerId)
-      .order("title", { ascending: true });
+      .select("item_code,title,category,unit_price,currency,description,is_active,updated_at")
+      .eq("customer_id", customerId);
 
     if (e2) return json(origin, 500, { ok: false, error: e2.message });
 
-    // Merge: si el hotel define mismo item_code, gana hotel
-    const map = new Map<string, any>();
-    for (const it of globalItems ?? []) {
-      map.set(it.item_code, { ...it, scope: "GLOBAL" });
-    }
-    for (const it of hotelItems ?? []) {
-      map.set(it.item_code, { ...it, scope: "HOTEL" });
+    const globals = (globalItems ?? []) as any as GlobalItem[];
+    const hotels = (hotelItems ?? []) as any as HotelItem[];
+
+    const gMap = new Map<string, GlobalItem>();
+    for (const g of globals) {
+      const code = normCode(g.item_code);
+      if (!code) continue;
+      gMap.set(code, { ...g, item_code: code });
     }
 
-    const items = Array.from(map.values()).sort((a, b) =>
-      String(a.title).localeCompare(String(b.title))
-    );
+    const hMap = new Map<string, HotelItem>();
+    for (const h of hotels) {
+      const code = normCode(h.item_code);
+      if (!code) continue;
+      hMap.set(code, { ...h, item_code: code });
+    }
 
-    return json(origin, 200, { ok: true, customerId, items });
+    // 3) Merge effective
+    const out: any[] = [];
+
+    // a) todo lo global (aplicando override si existe)
+    for (const [code, g] of gMap.entries()) {
+      const h = hMap.get(code) ?? null;
+
+      const effectiveActive = h ? (h.is_active ?? true) : true;
+      if (!effectiveActive) continue;
+
+      out.push({
+        item_code: code,
+        title: h?.title ?? g.title,
+        category: h?.category ?? g.category,
+        unit_price: h?.unit_price ?? g.unit_price,
+        currency: h?.currency ?? g.currency,
+        description: h?.description ?? g.description,
+        is_active: true,
+        source: h ? "OVERRIDE" : "GLOBAL",
+      });
+    }
+
+    // b) custom (hotel items que no existen en global)
+    for (const [code, h] of hMap.entries()) {
+      if (gMap.has(code)) continue;
+
+      const active = h.is_active ?? true;
+      if (!active) continue;
+
+      out.push({
+        item_code: code,
+        title: h.title ?? code,
+        category: h.category ?? "CUSTOM",
+        unit_price: h.unit_price ?? null,
+        currency: h.currency ?? "EUR",
+        description: h.description ?? null,
+        is_active: true,
+        source: "CUSTOM",
+      });
+    }
+
+    // 4) Orden estable (técnico) -> UI ya ordenará si quiere por title
+    out.sort((a, b) => String(a.item_code).localeCompare(String(b.item_code)));
+
+    return json(origin, 200, { ok: true, customerId, items: out });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
 
-    // Clasificación simple de errores "esperables" (cliente/auth) vs server
     const isAuthOrClient =
       msg.includes("Missing") ||
       msg.includes("Invalid session") ||

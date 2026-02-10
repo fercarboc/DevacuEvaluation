@@ -1,4 +1,3 @@
-// supabase/functions/debacu_eval_incident_catalog_list/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
@@ -12,10 +11,9 @@ const ALLOWED_ORIGINS = new Set([
 function corsHeaders(origin: string | null) {
   const o = origin ?? "";
   const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-
   return {
     "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
+    Vary: "Origin",
     "Access-Control-Allow-Headers":
       "authorization, x-client-info, apikey, content-type, x-session-token",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -47,6 +45,32 @@ function getBearer(req: Request) {
   return m?.[1] ?? "";
 }
 
+type BaseIncident = {
+  incident_type: string;
+  title: string | null;
+  description: string | null;
+  severity: number | null;
+  default_gross_min: number | null;
+  default_gross_max: number | null;
+  default_recovery_pct: number | null;
+  suggested_actions: string | null;
+  is_active: boolean;
+};
+
+type HotelOverride = {
+  incident_type: string;
+  is_active: boolean;
+
+  severity_override: number | null;
+  default_gross_min_override: number | null;
+  default_gross_max_override: number | null;
+  default_recovery_pct_override: number | null;
+
+  title_override: string | null;
+  description_override: string | null;
+  suggested_actions_override: string | null;
+};
+
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
 
@@ -54,15 +78,15 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders(origin) });
   }
-  if (req.method !== "POST") return json(origin, 405, { error: "Method not allowed" });
+  if (req.method !== "POST") return json(origin, 405, { ok: false, error: "Method not allowed" });
 
   try {
-    // --------- Headers de seguridad ----------
+    // --------- Security headers ----------
     const jwt = getBearer(req);
-    if (!jwt) return json(origin, 401, { error: "Missing Authorization Bearer token" });
+    if (!jwt) return json(origin, 401, { ok: false, error: "Missing Authorization Bearer token" });
 
     const sessionToken = req.headers.get("x-session-token") || "";
-    if (!sessionToken) return json(origin, 401, { error: "Missing x-session-token" });
+    if (!sessionToken) return json(origin, 401, { ok: false, error: "Missing x-session-token" });
 
     // --------- Body ----------
     const body = await req.json().catch(() => ({}));
@@ -76,96 +100,120 @@ Deno.serve(async (req) => {
       auth: { persistSession: false },
       global: {
         headers: {
-          // opcional: para que quede claro en logs
           Authorization: `Bearer ${SERVICE_ROLE}`,
         },
       },
     });
 
     // --------- Validar JWT Supabase (usuario logado) ----------
-    // Con service role, podemos validar el JWT del usuario llamando a auth.getUser(jwt)
     const { data: u, error: uErr } = await supabase.auth.getUser(jwt);
-    if (uErr || !u?.user) return json(origin, 401, { error: "Invalid Supabase JWT" });
+    if (uErr || !u?.user) return json(origin, 401, { ok: false, error: "Invalid Supabase JWT" });
 
     // --------- Resolver sesión Debacu (sessionToken -> customerId) ----------
-    // AJUSTA AQUÍ si tu tabla/columnas difieren.
-    // En tus dumps: debacu_eval_sessions tiene: id, token, customer_id, customer_name, app_code, ...
     const { data: sess, error: sErr } = await supabase
       .from("debacu_eval_sessions")
       .select("token, customer_id, app_code, expires_at, revoked_at")
       .eq("token", sessionToken)
       .maybeSingle();
 
-    if (sErr) return json(origin, 500, { error: sErr.message });
-
-    // Si no existe sesión, cortamos
-    if (!sess) return json(origin, 401, { error: "Invalid debacu session token" });
-
-    // Chequeos básicos de sesión
-    if (sess.revoked_at) return json(origin, 401, { error: "Session revoked" });
+    if (sErr) return json(origin, 500, { ok: false, error: sErr.message });
+    if (!sess) return json(origin, 401, { ok: false, error: "Invalid debacu session token" });
+    if (sess.revoked_at) return json(origin, 401, { ok: false, error: "Session revoked" });
     if (sess.app_code && sess.app_code !== appId) {
-      return json(origin, 401, { error: "Session app mismatch" });
+      return json(origin, 401, { ok: false, error: "Session app mismatch" });
     }
     if (sess.expires_at) {
       const exp = new Date(sess.expires_at).getTime();
       if (!Number.isNaN(exp) && exp < Date.now()) {
-        return json(origin, 401, { error: "Session expired" });
+        return json(origin, 401, { ok: false, error: "Session expired" });
       }
     }
 
     const customerId: string | null = sess.customer_id ?? customerIdFromBody;
     if (!customerId) {
-      return json(origin, 400, { error: "Missing customerId (session has no customer_id)" });
+      return json(origin, 400, { ok: false, error: "Missing customerId (session has no customer_id)" });
     }
 
-    // --------- 1) Catálogo base de incidencias ----------
-    // OJO: en tu código pusiste "debacu_incident_catalog".
-    // En Debacu Eval normalmente prefijas con debacu_eval_... pero dejo tu nombre tal cual.
+    // --------- 1) Catálogo base de incidencias (global) ----------
     const { data: base, error: e1 } = await supabase
       .from("debacu_incident_catalog")
-      .select("*")
+      .select(
+        "incident_type,title,description,severity,default_gross_min,default_gross_max,default_recovery_pct,suggested_actions,is_active"
+      )
       .eq("is_active", true)
       .order("incident_type", { ascending: true });
 
-    if (e1) return json(origin, 500, { error: e1.message });
+    if (e1) return json(origin, 500, { ok: false, error: e1.message });
 
-    // --------- 2) Overrides del hotel ----------
-    // Esta tabla mezcla overrides de incidentes y artículos.
+    // --------- 2) Overrides del hotel (NUEVA tabla) ----------
+    // OJO: aquí NO filtramos is_active=true, porque si el hotel desactiva (false)
+    // necesitamos leerlo para excluirlo.
     const { data: overrides, error: e2 } = await supabase
-      .from("debacu_hotel_incident_pricing")
-      .select("*")
-      .eq("customer_id", customerId)
-      .eq("is_active", true);
+      .from("debacu_hotel_incident_overrides")
+      .select(
+        "incident_type,is_active,severity_override,default_gross_min_override,default_gross_max_override,default_recovery_pct_override,title_override,description_override,suggested_actions_override"
+      )
+      .eq("customer_id", customerId);
 
-    if (e2) return json(origin, 500, { error: e2.message });
+    if (e2) return json(origin, 500, { ok: false, error: e2.message });
 
-    const overrideByIncident = new Map<string, any>();
-    for (const row of overrides ?? []) {
-      // interpretamos como override de incidencia cuando hay incident_type y NO hay item_code
-      if (row?.incident_type && !row?.item_code) {
-        overrideByIncident.set(row.incident_type, row);
-      }
+    const overrideByType = new Map<string, HotelOverride>();
+    for (const row of (overrides ?? []) as any[]) {
+      if (!row?.incident_type) continue;
+      overrideByType.set(String(row.incident_type), {
+        incident_type: String(row.incident_type),
+        is_active: !!row.is_active,
+        severity_override: row.severity_override ?? null,
+        default_gross_min_override: row.default_gross_min_override ?? null,
+        default_gross_max_override: row.default_gross_max_override ?? null,
+        default_recovery_pct_override: row.default_recovery_pct_override ?? null,
+        title_override: row.title_override ?? null,
+        description_override: row.description_override ?? null,
+        suggested_actions_override: row.suggested_actions_override ?? null,
+      });
     }
 
-    const incidents = (base ?? []).map((i: any) => {
-      const ov = overrideByIncident.get(i.incident_type) ?? null;
-      return {
-        ...i,
-        override: ov
-          ? {
-              unit_price_override: ov.unit_price_override ?? null,
-              gross_min_override: ov.gross_min_override ?? null,
-              gross_max_override: ov.gross_max_override ?? null,
-              recovery_pct_override: ov.recovery_pct_override ?? null,
-              notes: ov.notes ?? null,
-              updated_at: ov.updated_at ?? null,
-            }
-          : null,
-      };
-    });
+    // --------- 3) Merge effective (Opción A) ----------
+    const items = ((base ?? []) as any[])
+      .map((b): any => {
+        const g: BaseIncident = {
+          incident_type: String(b.incident_type),
+          title: b.title ?? null,
+          description: b.description ?? null,
+          severity: b.severity ?? null,
+          default_gross_min: b.default_gross_min ?? null,
+          default_gross_max: b.default_gross_max ?? null,
+          default_recovery_pct: b.default_recovery_pct ?? null,
+          suggested_actions: b.suggested_actions ?? null,
+          is_active: !!b.is_active,
+        };
 
-    return json(origin, 200, { appId, customerId, incidents });
+        const ov = overrideByType.get(g.incident_type) ?? null;
+
+        // is_active efectivo
+        const isActive = ov ? !!ov.is_active : g.is_active;
+        if (!isActive) return null;
+
+        return {
+          incident_type: g.incident_type,
+          title: ov?.title_override ?? g.title,
+          description: ov?.description_override ?? g.description,
+          severity: ov?.severity_override ?? g.severity,
+          default_gross_min: ov?.default_gross_min_override ?? g.default_gross_min,
+          default_gross_max: ov?.default_gross_max_override ?? g.default_gross_max,
+          default_recovery_pct: ov?.default_recovery_pct_override ?? g.default_recovery_pct,
+          suggested_actions: ov?.suggested_actions_override ?? g.suggested_actions,
+          is_active: true,
+          source: ov ? "OVERRIDE" : "GLOBAL",
+        };
+      })
+      .filter(Boolean);
+
+    // orden estable por incident_type
+    items.sort((a: any, b: any) => String(a.incident_type).localeCompare(String(b.incident_type)));
+
+    return json(origin, 200, { ok: true, appId, customerId, items });
   } catch (e) {
-    return json(origin, 500, { error: String((e as any)?.message ?? e) });
+    return json(origin, 500, { ok: false, error: String((e as any)?.message ?? e) });
   }
 });

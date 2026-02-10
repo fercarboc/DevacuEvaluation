@@ -1,6 +1,7 @@
 // supabase/functions/debacu-eval-check-signals/index.ts
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { serve } from "https://deno.land/std@0.177.1/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 type Risk = "BAJO" | "MEDIO" | "ALTO" | "NO_CONCLUYENTE";
 type MatchStrength = "STRONG" | "MEDIUM" | "WEAK";
@@ -14,6 +15,7 @@ function bucketizeCount(n: number): CountBucket {
   return "10+";
 }
 
+// Para auditoría RGPD: guardamos bucket mínimo, no el exacto.
 function bucketToMinCount(bucket: CountBucket): number {
   switch (bucket) {
     case "0":
@@ -31,7 +33,9 @@ function bucketToMinCount(bucket: CountBucket): number {
   }
 }
 
-// CORS allowlist (mejor que "*")
+/* ======================================================
+ * CORS allowlist
+ * ====================================================== */
 const ALLOWED_ORIGINS = new Set([
   "http://localhost:3000",
   "http://localhost:5173",
@@ -41,14 +45,16 @@ const ALLOWED_ORIGINS = new Set([
 
 function corsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
+  const allowOrigin =
+    origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
+
   return {
     "Access-Control-Allow-Origin": allowOrigin,
+    Vary: "Origin",
     "Access-Control-Allow-Headers":
       "authorization, x-client-info, apikey, content-type, x-session-token",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Max-Age": "86400",
-    Vary: "Origin",
   };
 }
 
@@ -59,26 +65,17 @@ function json(req: Request, body: unknown, status = 200) {
   });
 }
 
-// --------------------
-// Normalizadores
-// --------------------
+/* ======================================================
+ * Normalizadores
+ * ====================================================== */
 function normalizeEmail(s: string) {
   return s.trim().toLowerCase();
 }
 
-/**
- * Normaliza documentos (DNI/NIE/PASAPORTE genérico) quitando espacios/guiones
- * y pasando a mayúsculas.
- */
 function normalizeDoc(s: string) {
   return s.trim().toUpperCase().replace(/[\s-]/g, "");
 }
 
-/**
- * Variantes de teléfono: solo dígitos.
- * - Si 9 dígitos: añade prefijo 34
- * - Si empieza por 34 y 11 dígitos: añade variante sin 34
- */
 function normalizePhoneVariants(s: string) {
   const digits = s.replace(/\D/g, "");
   const variants = new Set<string>();
@@ -93,14 +90,13 @@ function normalizePhoneVariants(s: string) {
 /**
  * Heurística robusta:
  * 1) email
- * 2) doc (DNI/NIE/patrón doc mixto con letra+digitos)  <-- CLAVE: antes que phone
- * 3) phone (solo si parece realmente teléfono)
+ * 2) doc (antes que phone)
+ * 3) phone (si parece realmente teléfono)
  */
 function detectKind(q: string): "email" | "phone" | "doc" | "unknown" {
   const v = q.trim();
   if (!v) return "unknown";
 
-  // email
   if (v.includes("@")) return "email";
 
   const compact = v.replace(/\s+/g, "");
@@ -108,15 +104,12 @@ function detectKind(q: string): "email" | "phone" | "doc" | "unknown" {
 
   // DNI: 8 dígitos + letra
   if (/^\d{8}[A-Z]$/.test(doc)) return "doc";
-
   // NIE: X/Y/Z + 7 dígitos + letra
   if (/^[XYZ]\d{7}[A-Z]$/.test(doc)) return "doc";
-
-  // Pasaporte / doc genérico: mezcla letras+digitos y longitud razonable
-  // (evita clasificar cosas raras muy cortas)
+  // Pasaporte / doc genérico: mezcla letras+digitos (longitud razonable)
   if (/[A-Z]/.test(doc) && /\d/.test(doc) && doc.length >= 7 && doc.length <= 20) return "doc";
 
-  // phone: exige que sea casi todo dígitos (o con +) y longitud típica
+  // phone: casi todo dígitos (o +) y longitud típica
   const digits = compact.replace(/\D/g, "");
   const nonDigits = compact.replace(/\d/g, "");
   const isMostlyDigits = digits.length >= 7 && digits.length >= compact.length - nonDigits.length;
@@ -136,7 +129,6 @@ function looksLikeNameOnly(q: string) {
   if (t.length < 5) return false;
   if (t.includes("@")) return false;
 
-  // si parece documento DNI/NIE, no es nombre
   const kind = detectKind(t);
   if (kind === "doc" || kind === "phone" || kind === "email") return false;
 
@@ -179,7 +171,15 @@ function computeRisk(countExact: number, avgStars: number | null): Risk {
   return "MEDIO";
 }
 
+function clampInt(n: unknown, min: number, max: number, def: number) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return def;
+  return Math.max(min, Math.min(max, Math.trunc(x)));
+}
+
 serve(async (req) => {
+  const origin = req.headers.get("Origin");
+
   try {
     if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(req) });
     if (req.method !== "POST") return json(req, { error: "Method not allowed" }, 405);
@@ -191,17 +191,24 @@ serve(async (req) => {
     }
 
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
-      auth: { persistSession: false },
+      auth: { persistSession: false, autoRefreshToken: false },
     });
 
     const sessionToken = req.headers.get("x-session-token") || "";
     if (!sessionToken) return json(req, { error: "Missing x-session-token" }, 401);
 
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => ({} as any));
+
     const q_raw = String(body?.q_input ?? body?.query ?? body?.q_raw ?? "").trim();
-    const months = Number(body?.months ?? 24);
-    const k = Number(body?.k ?? 3);
-    const maxRatingsForAvg = Number(body?.max_avg_samples ?? 500);
+
+    // ventana: por defecto 24M, permitido 1..60 (si quieres 48 por defecto, cambia def=48)
+    const months = clampInt(body?.months, 1, 60, 24);
+
+    // k (por si lo usas en UI)
+    const k = clampInt(body?.k, 1, 20, 3);
+
+    // muestreo para avg
+    const maxRatingsForAvg = clampInt(body?.max_avg_samples, 50, 2000, 500);
 
     if (!q_raw) {
       return json(req, {
@@ -214,13 +221,14 @@ serve(async (req) => {
         topTypologies: [],
         avgStars: null,
         message: "Introduce un criterio válido.",
+        k,
       });
     }
 
     // 1) validar sesión Debacu propia
     const { data: session, error: sessErr } = await supabase
       .from("debacu_eval_sessions")
-      .select("customer_id,expires_at,revoked_at")
+      .select("customer_id, expires_at, revoked_at")
       .eq("token", sessionToken)
       .maybeSingle();
 
@@ -232,26 +240,30 @@ serve(async (req) => {
 
     const strength = classifyStrength(q_raw);
 
-    // si es nombre/apellidos solo -> NO_CONCLUYENTE
+    // Si es nombre/apellidos solo -> NO_CONCLUYENTE (+ audit)
     if (strength === "WEAK") {
-      try {
-        await supabase.from("debacu_eval_audit_log").insert({
-          action: "CHECK_SIGNALS",
-          event_type: "CHECK_SIGNALS",
-          entity: "EVALUATION_SEARCH",
-          entity_id: null,
-          customer_id: session.customer_id,
-          app_id: "DEBACU_EVAL",
-          search_kind: "WEAK",
-          search_value_masked: maskForAudit("unknown", q_raw),
-          search_value_hash: null,
-          result_count: 0,
-          meta: { message: "WEAK_NAME_ONLY" },
-          created_at: new Date().toISOString(),
-        });
-      } catch {
-        // ignore
-      }
+      const auditPayload = {
+        action: "CHECK_SIGNALS", // ✅ OBLIGATORIO (NOT NULL)
+        entity: "EVALUATION_SEARCH", // ✅ OBLIGATORIO (NOT NULL)
+
+        event_type: "CHECK_SIGNALS",
+        entity_id: null as any,
+        actor_user_id: null as any,
+        evaluation_id: null as any,
+
+        customer_id: session.customer_id ?? null,
+        app_id: "DEBACU_EVAL",
+
+        search_kind: "WEAK",
+        search_value_masked: maskForAudit("unknown", q_raw),
+        search_value_hash: null as any,
+
+        result_count: 0,
+        meta: { message: "WEAK_NAME_ONLY" },
+      };
+
+      const ins = await supabase.from("debacu_eval_audit_log").insert(auditPayload);
+      if (ins.error) console.error("AUDIT INSERT FAILED (WEAK)", ins.error, auditPayload);
 
       return json(req, {
         matchStrength: "WEAK" as MatchStrength,
@@ -264,6 +276,7 @@ serve(async (req) => {
         avgStars: null,
         message:
           "Resultado no concluyente: el dato aportado puede corresponder a varias personas. Para una comprobación técnica, añade email/teléfono/documento.",
+        k,
       });
     }
 
@@ -271,10 +284,10 @@ serve(async (req) => {
     const kind = detectKind(q_raw);
 
     const cutoff = new Date();
-    cutoff.setMonth(cutoff.getMonth() - Math.max(1, Math.min(60, months)));
+    cutoff.setMonth(cutoff.getMonth() - months);
     const cutoffISO = cutoff.toISOString();
 
-    const base = supabase
+    const baseCount = supabase
       .from("debacu_evaluations")
       .select("id", { count: "exact", head: true })
       .gte("created_at", cutoffISO);
@@ -283,12 +296,12 @@ serve(async (req) => {
 
     if (kind === "email") {
       const q = normalizeEmail(q_raw);
-      const { count, error } = await base.eq("email", q);
+      const { count, error } = await baseCount.eq("email", q);
       if (error) return json(req, { error: "Query failed", detail: error.message }, 500);
       countExact = Number(count ?? 0);
     } else if (kind === "doc") {
       const q = normalizeDoc(q_raw);
-      const { count, error } = await base.eq("document", q);
+      const { count, error } = await baseCount.eq("document", q);
       if (error) return json(req, { error: "Query failed", detail: error.message }, 500);
       countExact = Number(count ?? 0);
     } else if (kind === "phone") {
@@ -296,7 +309,7 @@ serve(async (req) => {
       if (!vars.length) {
         countExact = 0;
       } else {
-        const { count, error } = await base.in("phone", vars);
+        const { count, error } = await baseCount.in("phone", vars);
         if (error) return json(req, { error: "Query failed", detail: error.message }, 500);
         countExact = Number(count ?? 0);
       }
@@ -309,10 +322,11 @@ serve(async (req) => {
 
     // 3) avgStars (sin RPC): sample limitado
     let avgStars: number | null = null;
-    if (hasMatches) {
-      let rows: Array<{ rating: unknown }> = [];
 
-      const lim = Math.max(50, Math.min(2000, maxRatingsForAvg));
+    if (hasMatches) {
+      const lim = maxRatingsForAvg;
+
+      let rows: Array<{ rating: unknown }> = [];
 
       if (kind === "email") {
         const q = normalizeEmail(q_raw);
@@ -357,35 +371,42 @@ serve(async (req) => {
 
     const risk = computeRisk(countExact, avgStars);
 
-    // 4) Audit log best-effort
+    // 4) Audit log (best-effort, pero NO silencioso)
     const resultCountForAudit = bucketToMinCount(countBucket);
-    try {
-      await supabase.from("debacu_eval_audit_log").insert({
-        action: "CHECK_SIGNALS",
-        event_type: "CHECK_SIGNALS",
-        entity: "EVALUATION_SEARCH",
-        entity_id: null,
-        customer_id: session.customer_id,
-        app_id: "DEBACU_EVAL",
 
-        search_kind: kind,
-        search_value_masked: maskForAudit(kind, q_raw),
-        search_value_hash: null,
+    const auditPayload = {
+      action: "CHECK_SIGNALS", // ✅ OBLIGATORIO (NOT NULL)
+      entity: "EVALUATION_SEARCH", // ✅ OBLIGATORIO (NOT NULL)
 
-        result_count: resultCountForAudit,
-        meta: {
-          has_matches: hasMatches,
-          count_exact: countExact,
-          count_bucket: countBucket,
-          avg_stars: avgStars,
-          risk,
-          match_strength: strength,
-          window: `${months}M`,
-        },
-        created_at: new Date().toISOString(),
-      });
-    } catch {
-      // ignore
+      event_type: "CHECK_SIGNALS",
+      entity_id: null as any,
+      actor_user_id: null as any,
+      evaluation_id: null as any,
+
+      customer_id: session.customer_id ?? null,
+      app_id: "DEBACU_EVAL",
+
+      search_kind: kind,
+      search_value_masked: maskForAudit(kind, q_raw),
+      search_value_hash: null as any,
+
+      result_count: resultCountForAudit,
+      meta: {
+        has_matches: hasMatches,
+        count_exact: countExact,
+        count_bucket: countBucket,
+        avg_stars: avgStars,
+        risk,
+        match_strength: strength,
+        window: `${months}M`,
+      },
+    };
+
+    const ins = await supabase.from("debacu_eval_audit_log").insert(auditPayload);
+    if (ins.error) {
+      console.error("AUDIT INSERT FAILED", ins.error, auditPayload);
+      // No rompemos la respuesta al hotel por un fallo de auditoría,
+      // pero YA no se queda silencioso en logs.
     }
 
     // 5) Respuesta
@@ -402,6 +423,7 @@ serve(async (req) => {
       k,
     });
   } catch (e) {
+    console.error("CHECK_SIGNALS UNEXPECTED ERROR", e);
     return json(req, { error: "Unexpected error", detail: String((e as any)?.message ?? e) }, 500);
   }
 });

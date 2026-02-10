@@ -8,13 +8,20 @@ function fnUrl(name: string) {
   return `${SUPABASE_URL}/functions/v1/${name}`;
 }
 
-export async function callEvalFn<T>(
-  fnName: string,
-  body: unknown = {},
-): Promise<T> {
+function pickErrorMessage(json: any, fallbackText: string, status: number) {
+  return (
+    json?.error_obj?.message ||
+    json?.detail ||
+    json?.error ||
+    json?.message ||
+    fallbackText ||
+    `HTTP ${status}`
+  );
+}
+
+export async function callEvalFn<T = any>(fnName: string, body: unknown = {}): Promise<T> {
   const debacuSessionToken = localStorage.getItem("debacu_eval_session_token") || "";
 
-  // token REAL del usuario (no el que guardaste a mano)
   const { data } = await supabase.auth.getSession();
   const jwt = data.session?.access_token || "";
 
@@ -25,28 +32,33 @@ export async function callEvalFn<T>(
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "apikey": ANON_KEY,
-      "authorization": `Bearer ${jwt}`,
+      apikey: ANON_KEY,
+      authorization: `Bearer ${jwt}`,
       "x-session-token": debacuSessionToken,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body ?? {}),
   });
 
   const text = await res.text();
   let json: any = null;
-  try { json = JSON.parse(text); } catch {}
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
 
+  // 1) Error HTTP (4xx/5xx)
   if (!res.ok) {
-    const msg =
-  json?.error_obj?.message ||
-  json?.detail ||
-  json?.error ||
-  json?.message ||
-  text ||
-  `HTTP ${res.status}`;
-
+    const msg = pickErrorMessage(json, text, res.status);
     throw new Error(msg);
   }
 
+  // 2) Error lógico (Edge devuelve 200 con {ok:false,...})
+  if (json && typeof json === "object" && "ok" in json && json.ok === false) {
+    const msg = pickErrorMessage(json, text, res.status);
+    throw new Error(msg);
+  }
+
+  // 3) Respuesta OK
   return (json ?? ({} as any)) as T;
 }

@@ -17,7 +17,6 @@ import { StarRating } from "@/components/StarRating";
 import {
   Search,
   Calendar,
-  User as UserIcon,
   ShieldAlert,
   Info,
   ShieldCheck,
@@ -36,7 +35,7 @@ import {
  *
  * ⚠️ IMPORTANTE:
  * - checkSignalsGlobal(query) NO debe devolver full_name/email/phone/document ni filas individuales.
- * - searchMyRatingsInSupabase(query, authorId) debe filtrar por authorId en BD (no filtrar en cliente).
+ * - searchMyRatingsInSupabase(query, limit) resuelve el autor en Edge con x-session-token.
  */
 
 interface SearchRatingsProps {
@@ -72,29 +71,10 @@ function maskDoc(doc?: string | null) {
   return `${d.slice(0, 2)}••••${d.slice(-2)}`;
 }
 
-function maskSurname(s?: string | null) {
-  const v = (s || "").trim();
-  if (!v) return "";
-  // Si es muy corto, 3 asteriscos y punto
-  if (v.length <= 2) return "*".repeat(v.length);
-  return "*".repeat(v.length);
+/** En el nuevo UI NO mostramos nombre real. Devuelve etiqueta genérica. */
+function displayClientLabel(_full?: string | null) {
+  return "Nombre: **********";
 }
-
-function maskFullName(full?: string | null) {
-  const raw = (full || "").trim().replace(/\s+/g, " ");
-  if (!raw) return "";
-
-  const parts = raw.split(" ").filter(Boolean);
-  if (parts.length === 0) return "";
-
-  const first = parts[0];                 // nombre
-  const rest = parts.slice(1);            // apellidos
-
-  // Nombre visible, apellidos enmascarados
-  const maskedRest = rest.map(maskSurname).join(" ");
-  return maskedRest ? `${first} ${maskedRest}` : first;
-}
-
 
 /** -------------------------------
  * % list con counts (necesario para “Resto (X países más)”)
@@ -105,7 +85,12 @@ function calcPercentListWithCounts(map: Record<string, number>) {
     .filter((x) => x.count > 0);
 
   const total = entries.reduce((acc, x) => acc + x.count, 0);
-  if (!total) return { list: [] as Array<{ key: string; count: number; pct: number }>, total: 0 };
+  if (!total) {
+    return {
+      list: [] as Array<{ key: string; count: number; pct: number }>,
+      total: 0,
+    };
+  }
 
   const list = entries
     .map((x) => ({ key: x.key, count: x.count, pct: (x.count / total) * 100 }))
@@ -130,7 +115,7 @@ function groupTopAndRestWithMeta(
       ? [...top, { key: restLabelBuilder(restCount), count: 0, pct: restPct }]
       : top;
 
-  // Ajuste para que sume 100.0 (por decimales)
+  // Ajuste para sumar 100 exacto (por redondeos)
   const sum = out.reduce((acc, x) => acc + x.pct, 0);
   const diff = 100 - sum;
   if (out.length && Math.abs(diff) >= 0.05) {
@@ -144,7 +129,6 @@ function groupTopAndRestWithMeta(
  * Parse comentarios estructurados (Mis registros)
  * -------------------------------- */
 function parseControlledComment(comment?: string | null) {
-  // Formato: reasons=... | severity=... | evidence=... | notes=...
   const raw = (comment || "").trim();
   const out: Record<string, string> = {};
   if (!raw) return out;
@@ -164,7 +148,56 @@ function parseControlledComment(comment?: string | null) {
 }
 
 /** -------------------------------
- * Normalizadores (defensivos)
+ * Structured summary (Edge) helpers
+ * -------------------------------- */
+type StructuredSummaryUI = {
+  hasEvidence?: boolean;
+  dominantSignal?: string;
+  pattern?: "LOW" | "MODERATE" | "HIGH" | string;
+  timeWindow?: string;
+  lastSeenLabel?: string;
+  economicImpactRange?: any;
+  netLossRange?: any;
+};
+
+function labelDominantSignal(s?: string | null) {
+  const v = String(s ?? "").trim();
+  if (!v) return "";
+  if (v === "INCIDENT_ECONOMIC") return "Incidencia económica";
+  if (v === "BAD_RATING") return "Valoración negativa";
+  if (v === "NEUTRAL_RATING") return "Valoración neutra";
+  if (v === "IMPACT_ITEMS") return "Objetos afectados";
+  if (v === "INFO_ONLY") return "Registro informativo";
+  return v.replace(/_/g, " ");
+}
+
+function labelPattern(p?: string | null) {
+  const v = String(p ?? "").trim();
+  if (!v) return "";
+  if (v === "LOW") return "Bajo";
+  if (v === "MODERATE") return "Moderado";
+  if (v === "HIGH") return "Alto";
+  return v;
+}
+
+function pickStructuredSummary(raw: any): StructuredSummaryUI | null {
+  const ss = raw?.structured_summary ?? raw?.structuredSummary ?? null;
+  if (!ss || typeof ss !== "object") return null;
+
+  return {
+    hasEvidence: typeof ss.hasEvidence === "boolean" ? ss.hasEvidence : undefined,
+    dominantSignal: typeof ss.dominantSignal === "string" ? ss.dominantSignal : undefined,
+    pattern: typeof ss.pattern === "string" ? ss.pattern : undefined,
+    timeWindow: typeof ss.timeWindow === "string" ? ss.timeWindow : undefined,
+    lastSeenLabel: typeof ss.lastSeenLabel === "string" ? ss.lastSeenLabel : undefined,
+    economicImpactRange:
+      ss.economicImpactRange ?? ss.economic_impact_range ?? ss.impactRange ?? undefined,
+    netLossRange: ss.netLossRange ?? ss.net_loss_range ?? ss.lossRange ?? undefined,
+  };
+}
+
+/** -------------------------------
+ * Normalizadores (defensivos) para filas de “Mis registros”
  * -------------------------------- */
 function toIsoDateString(v: unknown): string {
   if (!v) return new Date().toISOString();
@@ -178,6 +211,7 @@ function toIsoDateString(v: unknown): string {
 
 function normalizeRating(raw: any): Rating {
   const clientRaw = raw?.clientData ?? raw?.client_data ?? {};
+
   const createdAt =
     raw?.createdAt ??
     raw?.created_at ??
@@ -190,8 +224,8 @@ function normalizeRating(raw: any): Rating {
     typeof raw?.value === "number"
       ? raw.value
       : typeof raw?.rating === "number"
-        ? raw.rating
-        : Number(raw?.value ?? raw?.rating ?? 0);
+      ? raw.rating
+      : Number(raw?.value ?? raw?.rating ?? 0);
 
   const fullName =
     clientRaw?.fullName ??
@@ -210,7 +244,9 @@ function normalizeRating(raw: any): Rating {
     raw?.author_id ??
     raw?.creatorCustomerId ??
     raw?.creator_customer_id ??
+    raw?.creator_customer_uuid ??
     "";
+
   const authorName =
     raw?.authorName ??
     raw?.author_name ??
@@ -220,6 +256,8 @@ function normalizeRating(raw: any): Rating {
 
   const platform = raw?.platform ?? null;
   const comment = raw?.comment ?? raw?.comments ?? raw?.notes ?? null;
+
+  const structured_summary = pickStructuredSummary(raw);
 
   return {
     id: raw?.id ?? "",
@@ -236,40 +274,58 @@ function normalizeRating(raw: any): Rating {
       nationality,
     },
     platform,
+    ...(structured_summary ? ({ structured_summary } as any) : {}),
   } as Rating;
 }
 
+function safeNormalizeRating(raw: any): Rating | null {
+  try {
+    const r = normalizeRating(raw);
+    if (!r?.id) return null;
+    if (!r?.createdAt) r.createdAt = new Date().toISOString();
+    return r;
+  } catch (e) {
+    console.error("normalizeRating failed for row:", raw, e);
+    return null;
+  }
+}
+
+/** -------------------------------
+ * Normaliza summary GLOBAL (getGlobalSummary ya devuelve snake_case, pero defendemos legacy)
+ * -------------------------------- */
 function normalizeSummary(raw: any): {
-  totalCount: number;
-  platformCounts: Record<string, number>;
-  countryCounts: Record<string, number>;
+  total_count: number;
+  platform_counts: Record<string, number>;
+  country_counts: Record<string, number>;
 } {
-  const totalCount = Number(raw?.totalCount ?? raw?.total_count ?? raw?.total ?? 0);
-  const platformCounts =
-    raw?.platformCounts ??
+  const total_count = Number(raw?.total_count ?? raw?.totalCount ?? raw?.total ?? 0);
+
+  const platform_counts =
     raw?.platform_counts ??
+    raw?.platformCounts ??
     raw?.platformSummary ??
     raw?.platform_summary ??
     {};
-  const countryCounts =
-    raw?.countryCounts ??
+
+  const country_counts =
     raw?.country_counts ??
+    raw?.countryCounts ??
     raw?.countrySummary ??
     raw?.country_summary ??
     {};
 
   const safeObj = (o: any) => (o && typeof o === "object" ? o : {});
   return {
-    totalCount,
-    platformCounts: safeObj(platformCounts),
-    countryCounts: safeObj(countryCounts),
+    total_count,
+    platform_counts: safeObj(platform_counts),
+    country_counts: safeObj(country_counts),
   };
 }
 
 /** -------------------------------
  * UI helpers
  * -------------------------------- */
-function riskBadgeClasses(risk: RiskLevel | undefined) {
+function riskBadgeClasses(risk: RiskLevel | undefined | null) {
   const r = risk ?? "NO_CONCLUYENTE";
   if (r === "BAJO") return "bg-green-100 text-green-700";
   if (r === "MEDIO") return "bg-amber-100 text-amber-800";
@@ -293,7 +349,7 @@ function safeStars(v?: number | null) {
 /** Donut simple con conic-gradient (sin librerías) */
 function buildConicGradient(items: Array<{ label: string; pct: number }>) {
   const palette = [
-    "rgba(15, 23, 42, 0.80)", // slate-900
+    "rgba(15, 23, 42, 0.80)",
     "rgba(15, 23, 42, 0.60)",
     "rgba(15, 23, 42, 0.45)",
     "rgba(15, 23, 42, 0.30)",
@@ -318,47 +374,192 @@ function buildConicGradient(items: Array<{ label: string; pct: number }>) {
   return `conic-gradient(${stops.join(", ")})`;
 }
 
+/** -------------------------------
+ * Rangos económicos
+ * -------------------------------- */
+type MoneyRange = { min: number; max: number } | null;
+
+function formatMoneyEUR(n: number) {
+  return new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0 }).format(n);
+}
+
+function formatMoneyRangeEUR(r: MoneyRange) {
+  if (!r) return "—";
+  const a = Math.round(r.min);
+  const b = Math.round(r.max);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return "—";
+  if (a === 0 && b === 0) return "0 €";
+  if (b >= 999999999) return `≥ ${formatMoneyEUR(a)} €`;
+  return `${formatMoneyEUR(a)}–${formatMoneyEUR(b)} €`;
+}
+
+/** "1.500" -> 1500 ; "1.500,25" -> 1500.25 */
+function parseEsNumber(raw: string): number {
+  const s = raw.trim().replace(/\./g, "").replace(/,/g, ".");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+/** Acepta {min,max} o "301–400 €" o "751–1.000 €" o "5.001+ €" o "0 €" o "≥ 600 €" */
+function coerceMoneyRange(v: any): MoneyRange {
+  if (!v) return null;
+
+  // {min,max}
+  if (typeof v === "object" && typeof v.min === "number" && typeof v.max === "number") {
+    return { min: v.min, max: v.max };
+  }
+
+  if (typeof v !== "string") return null;
+
+  const s0 = v.trim();
+
+  // "0 €"
+  if (/^0\s*€?$/.test(s0.replace(/\s/g, ""))) {
+    return { min: 0, max: 0 };
+  }
+
+  // "≥ 600 €"  o ">= 600 €"
+  const ge = s0.match(/^(?:≥|>=)\s*([\d\.,]+)\s*€?$/);
+  if (ge) {
+    const min = parseEsNumber(ge[1]);
+    if (!Number.isFinite(min)) return null;
+    return { min, max: 999999999 };
+  }
+
+  // "5.001+ €"  o "5001+"
+  const plus = s0.match(/^([\d\.,]+)\s*\+\s*€?$/);
+  if (plus) {
+    const min = parseEsNumber(plus[1]);
+    if (!Number.isFinite(min)) return null;
+    return { min, max: 999999999 };
+  }
+
+  // "751–1.000 €" (soporta –, - , —)
+  const range = s0.match(/^([\d\.,]+)\s*[\-–—]\s*([\d\.,]+)\s*€?$/);
+  if (range) {
+    const min = parseEsNumber(range[1]);
+    const max = parseEsNumber(range[2]);
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+    return { min, max };
+  }
+
+  return null;
+}
+
+/** Extendemos GlobalSignals (snake_case) con tolerancia a legacy */
+type GlobalSignalsExt = GlobalSignals & {
+  // tolerancia legacy (si en algún sitio queda algo viejo)
+  matchStrength?: MatchStrength;
+  hasMatches?: boolean;
+  countExact?: number;
+  countBucket?: CountBucket;
+  avgStars?: number | null;
+  risk?: RiskLevel;
+
+  economicGrossLabel?: string | null;
+  economicNetLabel?: string | null;
+  economicGrossBucket?: string | null;
+  economicNetBucket?: string | null;
+  economicTimeWindow?: string | null;
+  hotelCategory?: number | null;
+  starsMultiplier?: number | null;
+};
+
+function getEconomicRangesForGlobal(
+  globalSignals: GlobalSignalsExt | null
+): { impact: MoneyRange; loss: MoneyRange } {
+  if (!globalSignals) return { impact: null, loss: null };
+
+  // ✅ snake_case (modelo actual)
+  const impactFromLabels = coerceMoneyRange(
+    (globalSignals as any)?.economic_gross_label ?? (globalSignals as any)?.economicGrossLabel ?? null
+  );
+  const lossFromLabels = coerceMoneyRange(
+    (globalSignals as any)?.economic_net_label ?? (globalSignals as any)?.economicNetLabel ?? null
+  );
+
+  if (impactFromLabels || lossFromLabels) {
+    return { impact: impactFromLabels, loss: lossFromLabels };
+  }
+
+  const ss =
+    (globalSignals as any)?.structured_summary ??
+    (globalSignals as any)?.structuredSummary ??
+    null;
+
+  const impact = coerceMoneyRange(ss?.economicImpactRange ?? ss?.economic_impact_range ?? null);
+  const loss = coerceMoneyRange(ss?.netLossRange ?? ss?.net_loss_range ?? null);
+
+  return { impact, loss };
+}
+
+function getEconomicRangesForMineSignals(mySignals: any): { impact: MoneyRange; loss: MoneyRange } {
+  if (!mySignals) return { impact: null, loss: null };
+
+  const impact = coerceMoneyRange(
+    mySignals?.economic_gross_label ?? mySignals?.economicGrossLabel ?? null
+  );
+  const loss = coerceMoneyRange(
+    mySignals?.economic_net_label ?? mySignals?.economicNetLabel ?? null
+  );
+  return { impact, loss };
+}
+
 export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => {
   const [mode, setMode] = useState<"GLOBAL" | "MINE">("GLOBAL");
   const [query, setQuery] = useState("");
 
-  // ✅ Ventana GLOBAL configurable (para checkSignalsGlobal)
- // const [globalWindow, setGlobalWindow] = useState<12 | 24 | 36>(24);
-  const GLOBAL_WINDOW_MONTHS: 12 | 24 | 36 = 24; // fijo para MVP
+  // ✅ ventana global configurable
+  const GLOBAL_WINDOW_MONTHS: 12 | 24 | 36 = 24;
 
+  /** -------------------------------
+   * MINE (Edge) -> snake_case (modelo actual)
+   * -------------------------------- */
+  type MySignals = {
+    has_matches: boolean;
+    count_exact: number;
+    count_bucket: CountBucket;
+    avg_stars: number | null;
+    risk_level: RiskLevel;
+    time_window: "MINE";
+    top_typologies: string[];
+    economic_gross_label: string | null;
+    economic_net_label: string | null;
+    economic_time_window: "MINE";
+    last_seen_label: string | null;
+  };
 
-  // MODO MINE (detalle)
+  const [mySignals, setMySignals] = useState<MySignals | null>(null);
   const [myResults, setMyResults] = useState<Rating[]>([]);
 
-  // MODO GLOBAL (agregado)
-  const [globalSignals, setGlobalSignals] = useState<GlobalSignals | null>(null);
+  // ✅ GLOBAL signals (Edge) snake_case
+  const [globalSignals, setGlobalSignals] = useState<GlobalSignalsExt | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
 
-  // Resumen global (no mostramos el total en UI)
   const [platformSummary, setPlatformSummary] = useState<Record<string, number>>({});
   const [countrySummary, setCountrySummary] = useState<Record<string, number>>({});
 
-  // ✅ Indicador riesgo REAL (global total, sin ventana)
   const [riskLoading, setRiskLoading] = useState(false);
   const [riskError, setRiskError] = useState<string>("");
   const [riskSnap, setRiskSnap] = useState<GlobalRiskSnapshot | null>(null);
 
-  // 🔑 En vuestro modelo nuevo: authorId debe ser el customer/org id (no el auth.user.id).
+  // (compat, ya no se usa en Edge MINE, pero lo dejo por si lo referencian fuera)
   const authorIdForMine = (
     (currentUser as any)?.org_id ||
     (currentUser as any)?.customer_id ||
     currentUser.id
   ) as string;
+  void authorIdForMine;
 
   useEffect(() => {
     const load = async () => {
       try {
         const rawSummary = await getGlobalSummary();
         const summary = normalizeSummary(rawSummary);
-        setPlatformSummary(summary.platformCounts);
-        setCountrySummary(summary.countryCounts);
+        setPlatformSummary(summary.platform_counts);
+        setCountrySummary(summary.country_counts);
       } catch (e) {
         console.error("Error cargando resumen global:", e);
         setPlatformSummary({});
@@ -368,7 +569,6 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
     void load();
   }, []);
 
-  // ✅ Carga indicador de riesgo REAL (sin meses, sin ventana)
   useEffect(() => {
     let alive = true;
 
@@ -376,7 +576,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
       setRiskLoading(true);
       setRiskError("");
       try {
-        const r = await getGlobalRiskSnapshot(); // ✅ sin meses
+        const r = await getGlobalRiskSnapshot();
         if (!alive) return;
         setRiskSnap(r);
       } catch (e: any) {
@@ -394,7 +594,6 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
     };
   }, []);
 
-
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     const q = query.trim();
@@ -403,66 +602,125 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
     setLoading(true);
     setSearched(true);
 
-    // Reset
+    // reset
     setMyResults([]);
+    setMySignals(null);
     setGlobalSignals(null);
 
     try {
       if (mode === "MINE") {
-        const raw = await searchMyRatingsInSupabase(q, authorIdForMine);
-        const data: Rating[] = Array.isArray(raw) ? raw.map(normalizeRating) : [];
+        const res = await searchMyRatingsInSupabase(q, 50);
+
+        // ✅ signals snake_case (modelo actual)
+        const s = (res as any)?.signals ?? null;
+        const normalizedSignals: MySignals | null = s
+          ? {
+              has_matches: Boolean(s?.has_matches ?? s?.hasMatches ?? false),
+              count_exact: Number(s?.count_exact ?? s?.countExact ?? 0),
+              count_bucket: (s?.count_bucket ?? s?.countBucket ?? "0") as CountBucket,
+              avg_stars: (s?.avg_stars ?? s?.avgStars ?? null) as number | null,
+              risk_level: (s?.risk_level ?? s?.riskLevel ?? s?.risk ?? "NO_CONCLUYENTE") as RiskLevel,
+              time_window: "MINE",
+              top_typologies: Array.isArray(s?.top_typologies)
+                ? s.top_typologies
+                : Array.isArray(s?.topTypologies)
+                ? s.topTypologies
+                : [],
+              economic_gross_label: s?.economic_gross_label ?? s?.economicGrossLabel ?? null,
+              economic_net_label: s?.economic_net_label ?? s?.economicNetLabel ?? null,
+              economic_time_window: "MINE",
+              last_seen_label: s?.last_seen_label ?? s?.lastSeenLabel ?? null,
+            }
+          : null;
+
+        setMySignals(normalizedSignals);
+
+        // ✅ rows
+        const rows = Array.isArray((res as any)?.rows) ? (res as any).rows : [];
+
+        // ✅ normaliza sin matar el render
+        const data: Rating[] = rows
+          .map((x: any) => safeNormalizeRating(x))
+          .filter(Boolean) as Rating[];
+
         const sorted = [...data].sort(
           (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
         );
+
         setMyResults(sorted);
+
+        // DEBUG: signals>0 pero lista vacía => normalize/shape
+        if ((normalizedSignals?.count_exact ?? 0) > 0 && sorted.length === 0) {
+          console.warn("MINE: signals>0 pero myResults=0. Revisa normalizeRating/shape.", {
+            signals: normalizedSignals,
+            firstRow: rows[0],
+          });
+        }
+
         return;
       }
 
-      // GLOBAL (RGPD-safe) ✅ ventana configurable 12/24/36
-     const s = await checkSignalsGlobal(q, GLOBAL_WINDOW_MONTHS);
+      // GLOBAL (RGPD-safe) -> ya viene en snake_case desde clientService.ts
+      const res = await checkSignalsGlobal(q, GLOBAL_WINDOW_MONTHS);
 
-      const normalized: GlobalSignals = {
-        matchStrength: (s?.matchStrength ?? "MEDIUM") as MatchStrength,
-        hasMatches: Boolean(s?.hasMatches),
-        countExact: typeof (s as any)?.countExact === "number" ? (s as any).countExact : undefined,
-        countBucket: (s?.countBucket ?? "0") as CountBucket,
-        avgStars: typeof s?.avgStars === "number" ? s.avgStars : null,
-        risk: (s?.risk ?? "NO_CONCLUYENTE") as RiskLevel,
-        topTypologies: Array.isArray(s?.topTypologies) ? s.topTypologies.slice(0, 6) : [],
-       timeWindow: s?.timeWindow ?? `${GLOBAL_WINDOW_MONTHS}M`,
-        message: s?.message ?? "",
+      // tolerancia legacy por si quedó algo viejo en runtime
+      const normalized: GlobalSignalsExt = {
+        ...(res as any),
+        // si vinieran camelCase, los rellenamos
+        match_strength: (res as any)?.match_strength ?? (res as any)?.matchStrength ?? "MEDIUM",
+        has_matches: Boolean((res as any)?.has_matches ?? (res as any)?.hasMatches ?? false),
+        count_exact: Number((res as any)?.count_exact ?? (res as any)?.countExact ?? 0),
+        count_bucket: ((res as any)?.count_bucket ?? (res as any)?.countBucket ?? "0") as CountBucket,
+        avg_stars: ((res as any)?.avg_stars ?? (res as any)?.avgStars ?? null) as number | null,
+        risk_level: ((res as any)?.risk_level ?? (res as any)?.riskLevel ?? (res as any)?.risk ?? "NO_CONCLUYENTE") as RiskLevel,
+        top_typologies: Array.isArray((res as any)?.top_typologies)
+          ? (res as any).top_typologies
+          : Array.isArray((res as any)?.topTypologies)
+          ? (res as any).topTypologies
+          : [],
+        time_window: String((res as any)?.time_window ?? (res as any)?.timeWindow ?? `${GLOBAL_WINDOW_MONTHS}M`),
+        message: String((res as any)?.message ?? ""),
       };
 
       setGlobalSignals(normalized);
     } catch (error) {
       console.error(error);
+
       if (mode === "GLOBAL") {
         setGlobalSignals({
-          matchStrength: "MEDIUM",
-          hasMatches: false,
-          countExact: 0,
-          countBucket: "0",
-          avgStars: null,
-          risk: "NO_CONCLUYENTE",
-          timeWindow:  `${GLOBAL_WINDOW_MONTHS}M`,
+          match_strength: "MEDIUM",
+          has_matches: false,
+          count_exact: 0,
+          count_bucket: "0",
+          avg_stars: null,
+          risk_level: "NO_CONCLUYENTE",
+          time_window: `${GLOBAL_WINDOW_MONTHS}M`,
           message: "No se ha podido completar la comprobación. Inténtalo de nuevo.",
-          topTypologies: [],
-        });
+          top_typologies: [],
+          structured_summary: null,
+          economic_time_window: null,
+          economic_gross_bucket: null,
+          economic_gross_label: null,
+          economic_net_bucket: null,
+          economic_net_label: null,
+          sources_label: null,
+          last_seen_bucket: null,
+          documents_bucket: null,
+          hotel_category: null,
+          stars_multiplier: null,
+        } as any);
       } else {
         setMyResults([]);
+        setMySignals(null);
       }
     } finally {
       setLoading(false);
     }
   };
 
-  const getMaskedAuthor = (authorName: string, authorId: string) => {
-    if (authorId === authorIdForMine) return `${authorName} (Tú)`;
-    const parts = (authorName || "").split(" ").filter(Boolean);
-    return parts.map((p) => (p ? p[0] + "*".repeat(Math.max(p.length - 1, 0)) : "")).join(" ");
-  };
+  const getMaskedAuthor = (_authorName: string, _authorId: string) => "Establecimiento";
 
-  // KPI “Mis registros”
+  /** KPI MINE: si no hay lista, no inventamos avg; usamos signals para count */
   const myKpi = useMemo(() => {
     if (!myResults.length) return null;
     const avg = myResults.reduce((acc, r) => acc + (r.value || 0), 0) / myResults.length;
@@ -471,9 +729,6 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
     return { avg, count: myResults.length, lastDate: last.createdAt, score };
   }, [myResults]);
 
-  /** -------------------------------
-   * Plataformas (donut + lista top + otros)
-   * -------------------------------- */
   const platformPctList = useMemo(() => {
     const { list } = calcPercentListWithCounts(platformSummary);
     return groupTopAndRestWithMeta(list, 6, () => "Otros");
@@ -484,20 +739,19 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
     return items.length ? buildConicGradient(items) : "";
   }, [platformPctList]);
 
-  /** -------------------------------
-   * Países (Top 5 + Resto (X países más))
-   * -------------------------------- */
   const countryPctList = useMemo(() => {
     const { list } = calcPercentListWithCounts(countrySummary);
     return groupTopAndRestWithMeta(list, 5, (n) => (n > 0 ? `Resto (${n} países más)` : "Resto"));
   }, [countrySummary]);
 
-  // Header dinámico
   const headerTitle = mode === "GLOBAL" ? "Comprobación asociada a solicitud" : "Mis registros";
   const headerSubtitle =
     mode === "GLOBAL"
       ? "Introduce un identificador de la solicitud (email/teléfono/documento). El resultado muestra señales agregadas y no identificables."
-      : "Revisa y gestiona únicamente los registros creados por tu establecimiento.";
+      : "Revisa y gestiona únicamente los registros propios del establecimiento.";
+
+  const globalRanges = useMemo(() => getEconomicRangesForGlobal(globalSignals), [globalSignals]);
+  const mineRanges = useMemo(() => getEconomicRangesForMineSignals(mySignals), [mySignals]);
 
   return (
     <div className="max-w-6xl mx-auto">
@@ -516,6 +770,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
               setSearched(false);
               setGlobalSignals(null);
               setMyResults([]);
+              setMySignals(null);
             }}
             className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
               mode === "GLOBAL"
@@ -534,6 +789,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
               setSearched(false);
               setGlobalSignals(null);
               setMyResults([]);
+              setMySignals(null);
             }}
             className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
               mode === "MINE"
@@ -544,8 +800,6 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
             <FileText className="inline-block w-3.5 h-3.5 mr-1 -mt-0.5" />
             Mis registros
           </button>
-  
-           
         </div>
 
         <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-3">
@@ -559,7 +813,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="block w-full pl-10 pr-3 py-3 border border-slate-300 rounded-2xl focus:ring-indigo-500 focus:border-indigo-500"
-              placeholder={mode === "GLOBAL" ? "Email, teléfono o documento…" : "Documento, email, teléfono o nombre…"}
+              placeholder={mode === "GLOBAL" ? "Email, teléfono o documento…" : "Documento, email o teléfono…"}
               autoComplete="off"
             />
           </div>
@@ -585,9 +839,15 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
             </div>
             <div>
               {mode === "GLOBAL" ? (
-                <>Debacu no devuelve datos personales ni confirma identidades. Se muestran únicamente señales agregadas y no identificables.</>
+                <>
+                  Debacu no devuelve datos personales ni confirma identidades. Se muestran únicamente señales agregadas y
+                  no identificables.
+                </>
               ) : (
-                <>Email/teléfono/documento se muestran enmascarados. El detalle completo debe resolverse por política (RLS/auditoría).</>
+                <>
+                  Email/teléfono/documento se muestran enmascarados. El detalle completo debe resolverse por política
+                  (RLS/auditoría).
+                </>
               )}
             </div>
           </div>
@@ -596,7 +856,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
 
       {/* GRID */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* IZQ (Plataformas visual) */}
+        {/* IZQ */}
         <section className="lg:col-span-1">
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 h-full">
             <div className="flex items-start justify-between gap-3 mb-3">
@@ -636,7 +896,6 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                     </div>
                   ))}
                 </div>
- 
               </>
             )}
           </div>
@@ -651,19 +910,13 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
               {!searched ? (
                 <div className="text-sm text-slate-500">Introduce un criterio arriba.</div>
               ) : mode === "MINE" ? (
-                myKpi ? (
+                mySignals ? (
                   <div className="flex items-center gap-2 text-xs">
-                    <span className="rounded-full border px-3 py-1 text-slate-700 bg-white">{myKpi.count} registros</span>
-                    <span
-                      className={`rounded-full px-3 py-1 font-semibold ${
-                        myKpi.avg >= 4
-                          ? "bg-green-100 text-green-700"
-                          : myKpi.avg >= 3
-                            ? "bg-amber-100 text-amber-800"
-                            : "bg-red-100 text-red-700"
-                      }`}
-                    >
-                      {myKpi.score} · {myKpi.avg.toFixed(1)}
+                    <span className="rounded-full border px-3 py-1 text-slate-700 bg-white">
+                      {mySignals.count_exact} registros
+                    </span>
+                    <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses(mySignals.risk_level)}`}>
+                      {mySignals.risk_level} · {mySignals.avg_stars ?? "—"}
                     </span>
                   </div>
                 ) : (
@@ -672,10 +925,10 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
               ) : globalSignals ? (
                 <div className="flex items-center gap-2 text-xs">
                   <span className="rounded-full border px-3 py-1 text-slate-700 bg-white">
-                    Coincidencias: {globalSignals.hasMatches ? "Sí" : "No"}
+                    Coincidencias: {(globalSignals as any).has_matches ? "Sí" : "No"}
                   </span>
-                  <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses(globalSignals.risk)}`}>
-                    {globalSignals.risk ?? "NO CONCLUYENTE"}
+                  <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses((globalSignals as any).risk_level)}`}>
+                    {(globalSignals as any).risk_level ?? "NO_CONCLUYENTE"}
                   </span>
                 </div>
               ) : (
@@ -684,224 +937,397 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
             </div>
 
             <div className="flex-1 overflow-y-auto pr-1 space-y-4">
-              {/* MODO GLOBAL */}
-              {mode === "GLOBAL" && searched && (
+              {/* =========================
+                  MODO: MINE
+                 ========================= */}
+              {mode === "MINE" && searched && (
                 <>
-                  {globalSignals ? (
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-2">
-                            <Shield className="w-4 h-4 text-slate-600" />
-                            <h4 className="font-bold text-sm text-slate-900">Señales agregadas (no identificables)</h4>
-                          </div>
+                  {(() => {
+                    const mineCount = Number(mySignals?.count_exact ?? myResults.length ?? 0);
+                    const showMineEconomics = mineCount > 0;
 
-                          <div className="text-xs text-slate-600 mb-3">
-                            {globalSignals.message?.trim()
-                              ? globalSignals.message
-                              : "El resultado no confirma identidades ni muestra datos personales. Está asociado a la solicitud consultada."}
-                          </div>
-
-                          <div className="flex flex-wrap gap-2 text-xs">
-                            <span className="rounded-full border bg-white px-3 py-1 text-slate-700">
-                              Coincidencias: <span className="font-semibold">{globalSignals.hasMatches ? "Sí" : "No"}</span>
-                            </span>
-
-                            <span className="rounded-full border bg-white px-3 py-1 text-slate-700">
-                              Nº registros: <span className="font-semibold">{bucketLabel(globalSignals.countBucket)}</span>
-                            </span>
-
-                            <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses(globalSignals.risk)}`}>
-                              {globalSignals.risk ?? "NO CONCLUYENTE"}
-                            </span>
-
-                             
-                          </div>
-
-                          <div className="mt-4 rounded-2xl bg-white border border-slate-200 p-4">
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                              <div>
-                                <div className="text-xs font-semibold text-slate-700 mb-1">Valoración media agregada</div>
-                                {safeStars(globalSignals.avgStars ?? null) !== null ? (
-                                  <StarRating rating={safeStars(globalSignals.avgStars ?? null) as number} size="lg" />
-                                ) : (
-                                  <div className="text-xs text-slate-500">Información no disponible</div>
-                                )}
+                    return (
+                      <>
+                        {showMineEconomics ? (
+                          <>
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                              <div className="flex items-center gap-2 mb-2">
+                                <ShieldCheck className="w-4 h-4 text-slate-600" />
+                                <h4 className="font-bold text-sm text-slate-900">
+                                  Estimación basada en tus registros
+                                </h4>
                               </div>
 
-                              <div className="text-xs text-slate-500">
-                                Coincidencia técnica:{" "}
-                                <span className="font-semibold text-slate-700">
-                                  {globalSignals.matchStrength === "STRONG"
-                                    ? "Fuerte"
-                                    : globalSignals.matchStrength === "MEDIUM"
-                                      ? "Media"
-                                      : "Débil"}
-                                </span>
+                              <div className="rounded-2xl bg-white border border-slate-200 p-4">
+                                <div className="text-xs text-slate-700 font-semibold mb-2">
+                                  Impacto económico estimado en tus registros:{" "}
+                                  <span className="font-bold">{formatMoneyRangeEUR(mineRanges.impact)}</span>
+                                </div>
+                                <div className="text-xs text-slate-700 font-semibold mb-2">
+                                  Pérdida neta estimada:{" "}
+                                  <span className="font-bold">{formatMoneyRangeEUR(mineRanges.loss)}</span>
+                                </div>
+                                <div className="text-[11px] text-slate-500">
+                                  Estimación basada únicamente en registros propios del establecimiento.
+                                </div>
+                              </div>
+
+                              <div className="mt-3 text-[11px] text-slate-500">
+                                Los datos personales se muestran enmascarados.
                               </div>
                             </div>
 
-                            <div className="mt-3">
-                              <div className="text-xs font-semibold text-slate-700 mb-2">Tipologías agregadas</div>
-                              <div className="flex flex-wrap gap-2">
-                                {(globalSignals.topTypologies ?? []).length ? (
-                                  (globalSignals.topTypologies ?? []).map((t) => (
-                                    <span key={t} className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-700">
-                                      {t}
-                                    </span>
-                                  ))
-                                ) : (
-                                  <span className="text-xs text-slate-500">Sin tipologías destacadas.</span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
+                            {/* LISTA */}
+                            {myResults.map((rating) => {
+                              const cc = parseControlledComment(rating.comment);
+                              const reasons = (cc["reasons"] || "")
+                                .split(",")
+                                .map((x) => x.trim())
+                                .filter(Boolean);
+                              const severity = cc["severity"] || "";
+                              const evidence = cc["evidence"] || "";
+                              const notes = cc["notes"] || "";
+                              const hasControlled = !!cc["reasons"] || !!cc["severity"] || !!cc["evidence"];
 
-                          <div className="mt-4 text-[11px] text-slate-500">
-                            Debacu no confirma identidades ni revela fuentes. Este resultado está diseñado para apoyo operativo cumpliendo RGPD/LOPDGDD.
+                              const ss: StructuredSummaryUI | null = (rating as any)?.structured_summary ?? null;
+                              const ssHasAny =
+                                !!ss?.dominantSignal ||
+                                !!ss?.pattern ||
+                                !!ss?.timeWindow ||
+                                !!ss?.lastSeenLabel ||
+                                typeof ss?.hasEvidence === "boolean";
+
+                              return (
+                                <div
+                                  key={rating.id}
+                                  className="rounded-2xl border border-slate-200 bg-slate-50 p-4 hover:border-slate-300 transition-colors"
+                                >
+                                  <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                                    <div className="flex-1">
+                                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                                        <h4 className="font-bold text-base text-slate-900 uppercase">
+                                          {displayClientLabel(rating.clientData.fullName)}
+                                        </h4>
+
+                                        {rating.clientData.document ? (
+                                          <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">
+                                            {maskDoc(rating.clientData.document)}
+                                          </span>
+                                        ) : null}
+
+                                        {rating.platform ? (
+                                          <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">
+                                            {rating.platform}
+                                          </span>
+                                        ) : null}
+                                      </div>
+
+                                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mb-3">
+                                        {rating.clientData.email ? <span>{maskEmail(rating.clientData.email)}</span> : null}
+                                        {rating.clientData.phone ? <span>{maskPhone(rating.clientData.phone)}</span> : null}
+                                        {rating.clientData.nationality ? <span>{rating.clientData.nationality}</span> : null}
+                                      </div>
+
+                                      {hasControlled ? (
+                                        <div className="rounded-2xl bg-white border border-slate-200 p-3">
+                                          <div className="flex items-center gap-2 mb-2">
+                                            <ShieldCheck className="w-4 h-4 text-slate-500" />
+                                            <div className="text-xs font-semibold text-slate-700">
+                                              Resumen estructurado
+                                            </div>
+                                          </div>
+
+                                          <div className="flex flex-wrap gap-2">
+                                            {reasons.slice(0, 6).map((r) => (
+                                              <span
+                                                key={r}
+                                                className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-700"
+                                              >
+                                                {r}
+                                              </span>
+                                            ))}
+                                            {reasons.length > 6 ? (
+                                              <span className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-500">
+                                                +{reasons.length - 6}
+                                              </span>
+                                            ) : null}
+                                          </div>
+
+                                          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                                            {severity ? (
+                                              <span className="rounded-full border px-3 py-1 bg-white text-slate-700">
+                                                Severidad: <span className="font-semibold">{severity}</span>
+                                              </span>
+                                            ) : null}
+                                            {evidence ? (
+                                              <span className="rounded-full border px-3 py-1 bg-white text-slate-700">
+                                                Evidencia: <span className="font-semibold">{evidence}</span>
+                                              </span>
+                                            ) : null}
+                                          </div>
+
+                                          {notes ? (
+                                            <div className="mt-3 text-xs text-slate-600">
+                                              <span className="font-semibold text-slate-700">Observación:</span> {notes}
+                                            </div>
+                                          ) : null}
+
+                                          {ssHasAny ? (
+                                            <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                                              <div className="text-[11px] text-slate-600 space-y-1">
+                                                {ss?.dominantSignal ? (
+                                                  <div>
+                                                    Señal dominante:{" "}
+                                                    <span className="font-semibold text-slate-800">
+                                                      {labelDominantSignal(ss.dominantSignal)}
+                                                    </span>
+                                                  </div>
+                                                ) : null}
+
+                                                {ss?.pattern ? (
+                                                  <div>
+                                                    Patrón:{" "}
+                                                    <span className="font-semibold text-slate-800">
+                                                      {labelPattern(ss.pattern)}
+                                                    </span>
+                                                  </div>
+                                                ) : null}
+
+                                                {ss?.timeWindow || ss?.lastSeenLabel ? (
+                                                  <div>
+                                                    Ventana:{" "}
+                                                    <span className="font-semibold text-slate-800">
+                                                      {ss?.timeWindow ?? "-"}
+                                                    </span>
+                                                    {" · "}
+                                                    Última:{" "}
+                                                    <span className="font-semibold text-slate-800">
+                                                      {ss?.lastSeenLabel ?? "-"}
+                                                    </span>
+                                                  </div>
+                                                ) : null}
+
+                                                {typeof ss?.hasEvidence === "boolean" ? (
+                                                  <div>
+                                                    Evidencia (Edge):{" "}
+                                                    <span className="font-semibold text-slate-800">
+                                                      {ss.hasEvidence ? "Sí" : "No"}
+                                                    </span>
+                                                  </div>
+                                                ) : null}
+                                              </div>
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      ) : (
+                                        <div className="rounded-2xl bg-white border border-amber-200 p-3 text-xs text-amber-900">
+                                          Comentario antiguo sin estructura. Recomienda migrar a registro guiado.
+                                        </div>
+                                      )}
+
+                                      <div className="mt-3 flex items-center gap-6 text-xs text-slate-500">
+                                        <div className="flex items-center gap-1">
+                                          <span>Por: {getMaskedAuthor(rating.authorName, rating.authorId)}</span>
+                                        </div>
+                                        <div className="flex items-center gap-1">
+                                          <Calendar className="w-3 h-3" />
+                                          <span>{new Date(rating.createdAt).toLocaleDateString()}</span>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    <div className="flex flex-col items-end min-w-[130px]">
+                                      <div className="mb-2">
+                                        <StarRating rating={rating.value} size="lg" />
+                                      </div>
+                                      <span
+                                        className={`text-xs font-semibold px-3 py-1 rounded-full ${
+                                          rating.value >= 4
+                                            ? "bg-green-100 text-green-700"
+                                            : rating.value >= 3
+                                            ? "bg-amber-100 text-amber-800"
+                                            : "bg-red-100 text-red-700"
+                                        }`}
+                                      >
+                                        {rating.value >= 4
+                                          ? "Bajo riesgo"
+                                          : rating.value >= 3
+                                          ? "Riesgo medio"
+                                          : "Riesgo alto"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </>
+                        ) : (
+                          <div className="bg-blue-50 border border-blue-100 rounded-2xl p-6 text-center mt-2">
+                            <ShieldAlert className="w-12 h-12 text-blue-400 mx-auto mb-3" />
+                            <h4 className="text-blue-900 font-semibold">Sin registros propios</h4>
+                            <p className="text-blue-700 text-sm mt-1">
+                              No hay registros creados por tu establecimiento para este criterio.
+                            </p>
                           </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="bg-blue-50 border border-blue-100 rounded-2xl p-6 text-center mt-2">
-                      <ShieldAlert className="w-12 h-12 text-blue-400 mx-auto mb-3" />
-                      <h4 className="text-blue-900 font-semibold">Sin resultado</h4>
-                      <p className="text-blue-700 text-sm mt-1">No hay señales para este criterio o no es concluyente.</p>
-                    </div>
-                  )}
+                        )}
+                      </>
+                    );
+                  })()}
                 </>
               )}
 
-              {/* MODO MINE */}
-              {mode === "MINE" &&
-                searched &&
-                myResults.map((rating) => {
-                  const cc = parseControlledComment(rating.comment);
-                  const reasons = (cc["reasons"] || "").split(",").map((x) => x.trim()).filter(Boolean);
-                  const severity = cc["severity"] || "";
-                  const evidence = cc["evidence"] || "";
-                  const notes = cc["notes"] || "";
-                  const hasControlled = !!cc["reasons"] || !!cc["severity"] || !!cc["evidence"];
-
-                  return (
-                    <div
-                      key={rating.id}
-                      className="rounded-2xl border border-slate-200 bg-slate-50 p-4 hover:border-slate-300 transition-colors"
-                    >
-                      <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
-                        <div className="flex-1">
-                          <div className="flex flex-wrap items-center gap-2 mb-2">
-                           <h4 className="font-bold text-base text-slate-900 uppercase">
-                                {maskFullName(rating.clientData.fullName)}
-                              </h4>
-
-
-                            {rating.clientData.document ? (
-                              <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">
-                                {maskDoc(rating.clientData.document)}
-                              </span>
-                            ) : null}
-
-                            {rating.platform ? (
-                              <span className="px-2 py-0.5 bg-white text-slate-600 text-xs rounded-full border border-slate-200">
-                                {rating.platform}
-                              </span>
-                            ) : null}
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mb-3">
-                            {rating.clientData.email ? <span>{maskEmail(rating.clientData.email)}</span> : null}
-                            {rating.clientData.phone ? <span>{maskPhone(rating.clientData.phone)}</span> : null}
-                            {rating.clientData.nationality ? <span>{rating.clientData.nationality}</span> : null}
-                          </div>
-
-                          {hasControlled ? (
-                            <div className="rounded-2xl bg-white border border-slate-200 p-3">
-                              <div className="flex items-center gap-2 mb-2">
-                                <ShieldCheck className="w-4 h-4 text-slate-500" />
-                                <div className="text-xs font-semibold text-slate-700">Resumen estructurado</div>
-                              </div>
-
-                              <div className="flex flex-wrap gap-2">
-                                {reasons.slice(0, 6).map((r) => (
-                                  <span key={r} className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-700">
-                                    {r}
-                                  </span>
-                                ))}
-                                {reasons.length > 6 ? (
-                                  <span className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-500">
-                                    +{reasons.length - 6}
-                                  </span>
-                                ) : null}
-                              </div>
-
-                              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                                {severity ? (
-                                  <span className="rounded-full border px-3 py-1 bg-white text-slate-700">
-                                    Severidad: <span className="font-semibold">{severity}</span>
-                                  </span>
-                                ) : null}
-                                {evidence ? (
-                                  <span className="rounded-full border px-3 py-1 bg-white text-slate-700">
-                                    Evidencia: <span className="font-semibold">{evidence}</span>
-                                  </span>
-                                ) : null}
-                              </div>
-
-                              {notes ? (
-                                <div className="mt-3 text-xs text-slate-600">
-                                  <span className="font-semibold text-slate-700">Observación:</span> {notes}
-                                </div>
-                              ) : null}
-                            </div>
-                          ) : (
-                            <div className="rounded-2xl bg-white border border-amber-200 p-3 text-xs text-amber-900">
-                              Comentario antiguo sin estructura. Recomienda migrar a registro guiado.
-                            </div>
-                          )}
-
-                          <div className="mt-3 flex items-center gap-6 text-xs text-slate-500">
-                            <div className="flex items-center gap-1">
-                              <UserIcon className="w-3 h-3" />
-                              <span>Por: {getMaskedAuthor(rating.authorName, rating.authorId)}</span>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <Calendar className="w-3 h-3" />
-                              <span>{new Date(rating.createdAt).toLocaleDateString()}</span>
-                            </div>
-                          </div>
+              {/* =========================
+                  MODO: GLOBAL
+                 ========================= */}
+              {mode === "GLOBAL" && searched && (
+                <>
+                  {(() => {
+                    if (!globalSignals) {
+                      return (
+                        <div className="bg-blue-50 border border-blue-100 rounded-2xl p-6 text-center mt-2">
+                          <ShieldAlert className="w-12 h-12 text-blue-400 mx-auto mb-3" />
+                          <h4 className="text-blue-900 font-semibold">Sin resultado</h4>
+                          <p className="text-blue-700 text-sm mt-1">
+                            No hay señales para este criterio o no es concluyente.
+                          </p>
                         </div>
+                      );
+                    }
 
-                        <div className="flex flex-col items-end min-w-[130px]">
-                          <div className="mb-2">
-                            <StarRating rating={rating.value} size="lg" />
+                    const hasMatches = Boolean((globalSignals as any).has_matches);
+                    const bucketNotZero = ((globalSignals as any).count_bucket ?? "0") !== "0";
+
+                    const grossLabel = (globalSignals as any).economic_gross_label ?? null;
+                    const netLabel = (globalSignals as any).economic_net_label ?? null;
+
+                    const impactRange = globalRanges.impact;
+                    const lossRange = globalRanges.loss;
+
+                    const hasEconomicRanges = !!impactRange || !!lossRange;
+                    const labelNotZero =
+                      (grossLabel && String(grossLabel).trim() !== "0 €") ||
+                      (netLabel && String(netLabel).trim() !== "0 €");
+
+                    const showGlobalEconomics = hasMatches && bucketNotZero && labelNotZero && hasEconomicRanges;
+
+                    const risk = ((globalSignals as any).risk_level ?? "NO_CONCLUYENTE") as RiskLevel;
+                    const avgStars = (globalSignals as any).avg_stars as number | null;
+                    const matchStrength = ((globalSignals as any).match_strength ?? "MEDIUM") as MatchStrength;
+                    const countBucket = ((globalSignals as any).count_bucket ?? "0") as CountBucket;
+                    const msg = String((globalSignals as any).message ?? "");
+
+                    return (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-2">
+                              <Shield className="w-4 h-4 text-slate-600" />
+                              <h4 className="font-bold text-sm text-slate-900">
+                                Señales agregadas (no identificables)
+                              </h4>
+                            </div>
+
+                            {showGlobalEconomics ? (
+                              <div className="rounded-2xl bg-white border border-slate-200 p-4 mb-3">
+                                <div className="text-xs text-slate-700 font-semibold mb-2">
+                                  Impacto económico estimado (agregado):{" "}
+                                  <span className="font-bold">{formatMoneyRangeEUR(globalRanges.impact)}</span>
+                                </div>
+                                <div className="text-xs text-slate-700 font-semibold mb-2">
+                                  Pérdida neta estimada:{" "}
+                                  <span className="font-bold">{formatMoneyRangeEUR(globalRanges.loss)}</span>
+                                </div>
+                                <div className="text-[11px] text-slate-500">
+                                  Estimación basada en señales agregadas de múltiples fuentes, ajustadas por categoría
+                                  del establecimiento. Resultado no identificable, uso exclusivamente operativo.
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="rounded-2xl bg-white border border-slate-200 p-4 mb-3">
+                                <div className="text-xs text-slate-700 font-semibold">
+                                  Sin base económica suficiente para estimar impacto.
+                                </div>
+                                <div className="text-[11px] text-slate-500 mt-1">
+                                  Hay señales agregadas, pero no hay datos cuantificables para mostrar un rango económico fiable.
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="text-xs text-slate-600 mb-3">
+                              {msg.trim()
+                                ? msg
+                                : "El resultado no confirma identidades ni muestra datos personales. Está asociado a la solicitud consultada."}
+                            </div>
+
+                            <div className="flex flex-wrap gap-2 text-xs">
+                              <span className="rounded-full border bg-white px-3 py-1 text-slate-700">
+                                Coincidencias:{" "}
+                                <span className="font-semibold">{hasMatches ? "Sí" : "No"}</span>
+                              </span>
+
+                              <span className="rounded-full border bg-white px-3 py-1 text-slate-700">
+                                Nº registros:{" "}
+                                <span className="font-semibold">{bucketLabel(countBucket)}</span>
+                              </span>
+
+                              <span className={`rounded-full px-3 py-1 font-semibold ${riskBadgeClasses(risk)}`}>
+                                {risk ?? "NO_CONCLUYENTE"}
+                              </span>
+                            </div>
+
+                            <div className="mt-4 rounded-2xl bg-white border border-slate-200 p-4">
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                <div>
+                                  <div className="text-xs font-semibold text-slate-700 mb-1">
+                                    Valoración media agregada
+                                  </div>
+                                  {safeStars(avgStars) !== null ? (
+                                    <StarRating rating={safeStars(avgStars) as number} size="lg" />
+                                  ) : (
+                                    <div className="text-xs text-slate-500">Información no disponible</div>
+                                  )}
+                                </div>
+
+                                <div className="text-xs text-slate-500">
+                                  Coincidencia técnica:{" "}
+                                  <span className="font-semibold text-slate-700">
+                                    {matchStrength === "STRONG"
+                                      ? "Fuerte"
+                                      : matchStrength === "MEDIUM"
+                                      ? "Media"
+                                      : "Débil"}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="mt-3">
+                                <div className="text-xs font-semibold text-slate-700 mb-2">Tipologías agregadas</div>
+                                <div className="flex flex-wrap gap-2">
+                                  {((globalSignals as any).top_typologies ?? []).length ? (
+                                    ((globalSignals as any).top_typologies ?? []).slice(0, 10).map((t: string) => (
+                                      <span
+                                        key={t}
+                                        className="text-xs rounded-full border bg-slate-50 px-3 py-1 text-slate-700"
+                                      >
+                                        {t}
+                                      </span>
+                                    ))
+                                  ) : (
+                                    <span className="text-xs text-slate-500">Sin tipologías destacadas.</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="mt-4 text-[11px] text-slate-500">
+                              Estimación orientada a decisión operativa. No identifica ni confirma identidades.
+                            </div>
                           </div>
-                          <span
-                            className={`text-xs font-semibold px-3 py-1 rounded-full ${
-                              rating.value >= 4
-                                ? "bg-green-100 text-green-700"
-                                : rating.value >= 3
-                                  ? "bg-amber-100 text-amber-800"
-                                  : "bg-red-100 text-red-700"
-                            }`}
-                          >
-                            {rating.value >= 4 ? "Bajo riesgo" : rating.value >= 3 ? "Riesgo medio" : "Riesgo alto"}
-                          </span>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-
-              {mode === "MINE" && searched && myResults.length === 0 && !loading && (
-                <div className="bg-blue-50 border border-blue-100 rounded-2xl p-6 text-center mt-2">
-                  <ShieldAlert className="w-12 h-12 text-blue-400 mx-auto mb-3" />
-                  <h4 className="text-blue-900 font-semibold">Sin registros propios</h4>
-                  <p className="text-blue-700 text-sm mt-1">
-                    No hay registros creados por tu establecimiento para este criterio.
-                  </p>
-                </div>
+                    );
+                  })()}
+                </>
               )}
             </div>
           </div>
@@ -943,7 +1369,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
               </div>
             )}
 
-            {/* ✅ INDICADOR DE RIESGO (solo porcentajes, riesgo real existente) */}
+            {/* INDICADOR DE RIESGO */}
             <div className="mt-6 border-t border-slate-100 pt-4">
               <div
                 className="text-xs font-semibold text-slate-700 uppercase"
@@ -973,11 +1399,11 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({ currentUser }) => 
                   </div>
 
                   {[
-                    { label: "5★", pct: riskSnap.pct5 },
-                    { label: "4★", pct: riskSnap.pct4 },
-                    { label: "3★", pct: riskSnap.pct3 },
-                    { label: "2★", pct: riskSnap.pct2 },
-                    { label: "1★", pct: riskSnap.pct1 },
+                    { label: "5★", pct: riskSnap.pct_5 },
+                    { label: "4★", pct: riskSnap.pct_4 },
+                    { label: "3★", pct: riskSnap.pct_3 },
+                    { label: "2★", pct: riskSnap.pct_2 },
+                    { label: "1★", pct: riskSnap.pct_1 },
                   ].map((row) => (
                     <div key={row.label} className="flex items-center gap-2 py-1">
                       <div className="w-8 text-xs text-slate-600">{row.label}</div>
