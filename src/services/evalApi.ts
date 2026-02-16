@@ -28,26 +28,48 @@ export class EvalApiError extends Error {
   }
 }
 
-export async function evalLogin(username: string, password: string) {
-  const res = await fetch(fnUrl("debacu-eval-login"), {
+export function normalizeEmailOrThrow(v: string) {
+  const email = String(v ?? "").trim().toLowerCase();
+  if (!email || !email.includes("@")) {
+    throw new EvalApiError("Introduce un email válido.", {
+      status: 400,
+      error_obj: { code: "INVALID_EMAIL" },
+    });
+  }
+  return email;
+}
+
+export async function evalPostLogin(accessToken: string) {
+  const res = await fetch(fnUrl("debacu_eval_auth_postlogin"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       apikey: ANON_KEY,
-      Authorization: `Bearer ${ANON_KEY}`,
+      Authorization: `Bearer ${accessToken}`,
     },
-    body: JSON.stringify({ username, password, appCode: APP_CODE }),
+    body: JSON.stringify({ appCode: APP_CODE }),
   });
 
   const { json, text } = await readJsonSafe(res);
 
-  if (!res.ok) {
-    console.error("LOGIN ERROR BODY:", text);
+  if (!res.ok || !json?.ok) {
+    console.error("POSTLOGIN ERROR BODY:", text);
     throw new EvalApiError(
-      json?.error || json?.detail || text || "Login error",
-      { error_obj: json?.error_obj, status: res.status }
+      json?.error_obj?.message || json?.error || json?.detail || text || "PostLogin error",
+      { error_obj: json?.error_obj, status: res.status },
     );
   }
 
-  return json as { authEmail: string; session_token: string; user: any };
+  return json.data as {
+    user: { id: string; email: string | null };
+    customer?: { id: string; email?: string | null };
+    membership: { org_id: string; role: string; status: string };
+    entitlement: {
+      customer_id: string;
+      plan_code: string;
+      subscription_status: string;
+      seats_used: number;
+      max_users: number;
+    };
+  };
 }

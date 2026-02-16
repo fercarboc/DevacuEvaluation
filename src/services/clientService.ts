@@ -4,6 +4,8 @@ import type { Rating } from "@/types/types";
 import type { Database } from "@/types/database";
 import { callEvalFn } from "./callEvalFn";
 
+import { getSupabaseAccessToken } from "@/services/evalAuthToken";
+
 /** =========================================================
  *  Tipos DB
  * ========================================================= */
@@ -11,7 +13,7 @@ export type EvaluationRow = Database["public"]["Tables"]["debacu_evaluations"]["
 export type EvaluationInsert = Database["public"]["Tables"]["debacu_evaluations"]["Insert"];
 
 /** =========================================================
- *  Helpers Edge (JWT real + x-session-token)
+ *  Helpers Edge (Supabase JWT)
  * ========================================================= */
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
 const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
@@ -33,17 +35,30 @@ function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function getSessionTokenOrThrow() {
-  const t = localStorage.getItem("debacu_eval_session_token") || "";
-  if (!t) throw new Error("missing_session_token");
-  return t;
+/**
+ * ⚠️ Toggle: si AÚN tienes edge legacy que exige "x-session-token"
+ * - Recomendado: false (modo Supabase puro)
+ * - Solo ponlo en true si tienes funciones que todavía lo revisan.
+ */
+const SEND_LEGACY_X_SESSION_TOKEN = false;
+
+export async function getSessionTokenOrThrow(): Promise<string> {
+  // ✅ nuevo: JWT de Supabase
+  const jwt = await getSupabaseAccessToken();
+  if (jwt) return jwt;
+
+  // (opcional) fallback legacy si aún existe en algunos flujos
+  const legacy = localStorage.getItem("debacu_eval_session_token");
+  if (legacy) return legacy;
+
+  throw new Error("missing_session_token");
 }
 
 /**
- * Call Edge Function usando tu esquema:
- * - Authorization: Bearer <supabase jwt real>
+ * Call Edge Function:
+ * - Authorization: Bearer <supabase jwt>
  * - apikey: ANON
- * - x-session-token: tu token de sesión propio
+ * - (opcional legacy) x-session-token: <token>
  *
  * Acepta respuestas:
  * - { ok: true, data: ... }
@@ -51,20 +66,24 @@ function getSessionTokenOrThrow() {
  * - o devuelve directo el objeto
  */
 export async function callEdge<T>(name: string, body: any): Promise<T> {
-  const session_token = getSessionTokenOrThrow();
+  // ✅ aquí el token YA es el JWT (o legacy fallback)
+  const token = await getSessionTokenOrThrow();
 
-  const { data } = await supabase.auth.getSession();
-  const jwt = data.session?.access_token || "";
-  if (!jwt) throw new Error("missing_supabase_jwt");
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    apikey: ANON_KEY,
+    Authorization: `Bearer ${token}`,
+  };
+
+  // ⚠️ Legacy (solo si lo necesitas realmente)
+  if (SEND_LEGACY_X_SESSION_TOKEN) {
+    const legacy = localStorage.getItem("debacu_eval_session_token");
+    if (legacy) headers["x-session-token"] = legacy;
+  }
 
   const res = await fetch(fnUrl(name), {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      apikey: ANON_KEY,
-      Authorization: `Bearer ${jwt}`,
-      "x-session-token": session_token,
-    },
+    headers,
     body: JSON.stringify(body ?? {}),
   });
 
@@ -477,7 +496,11 @@ export async function searchMyRatingsInSupabase(q: string, limit = 50): Promise<
         avg_stars: s?.avg_stars ?? s?.avgStars ?? null,
         risk_level: (s?.risk_level ?? s?.risk ?? s?.riskLevel ?? "NO_CONCLUYENTE") as RiskLevel,
         time_window: "MINE",
-        top_typologies: Array.isArray(s?.top_typologies) ? s.top_typologies : Array.isArray(s?.topTypologies) ? s.topTypologies : [],
+        top_typologies: Array.isArray(s?.top_typologies)
+          ? s.top_typologies
+          : Array.isArray(s?.topTypologies)
+          ? s.topTypologies
+          : [],
         economic_gross_label: s?.economic_gross_label ?? s?.economicGrossLabel ?? null,
         economic_net_label: s?.economic_net_label ?? s?.economicNetLabel ?? null,
         economic_time_window: "MINE",
@@ -635,7 +658,13 @@ export type AuditHistoryItem = {
   audit_id: string;
   created_at: string;
 
+  // técnico
   event_type: string | null;
+
+  // ✅ UI-friendly
+  type: string | null;
+  label: string | null;
+  type_label: string | null;
 
   risk_level: string | null;
   avg_stars: number | null;
@@ -669,53 +698,87 @@ function normalize_audit_item(row: any): AuditHistoryItem {
   const audit_id = String(row?.audit_id ?? row?.id ?? "");
   const created_at = String(row?.created_at ?? "");
 
-  const event_type = (row?.event_type ?? null) as string | null;
+  const event_type = (row?.event_type ?? meta?.event_type ?? null) as string | null;
 
-  const risk_level = (row?.risk_level ?? row?.risk ?? meta?.risk ?? null) as string | null;
+  const type = (row?.type ?? meta?.type ?? null) as string | null;
+  const label = (row?.label ?? meta?.label ?? null) as string | null;
+
+  const type_label =
+    label ??
+    type ??
+    (event_type ? (String(event_type).toUpperCase() === "CHECK_SIGNALS" ? "Consulta" : event_type) : null);
+
+  const risk_level =
+    (row?.risk_level ?? row?.risk ?? meta?.risk_level ?? meta?.risk ?? null) as string | null;
 
   const avg_stars =
     typeof row?.avg_stars === "number"
       ? row.avg_stars
+      : typeof row?.rating === "number"
+      ? row.rating
       : typeof meta?.avg_stars === "number"
       ? meta.avg_stars
-      : row?.avg_stars ?? meta?.avg_stars ?? null;
+      : typeof meta?.rating === "number"
+      ? meta.rating
+      : row?.avg_stars ?? row?.rating ?? meta?.avg_stars ?? meta?.rating ?? null;
 
   const match_strength =
-    (row?.match_strength ?? meta?.match_strength ?? row?.matchStrength ?? meta?.matchStrength ?? null) as string | null;
+    (row?.match_strength ?? row?.matchStrength ?? meta?.match_strength ?? meta?.matchStrength ?? null) as
+      | string
+      | null;
 
-  const count_bucket = (row?.count_bucket ?? meta?.count_bucket ?? row?.countBucket ?? meta?.countBucket ?? null) as string | null;
+  const count_bucket =
+    (row?.count_bucket ?? row?.countBucket ?? meta?.count_bucket ?? meta?.countBucket ?? null) as string | null;
 
   const count_exact =
     typeof row?.count_exact === "number"
       ? row.count_exact
+      : typeof row?.countExact === "number"
+      ? row.countExact
       : typeof meta?.count_exact === "number"
       ? meta.count_exact
-      : row?.count_exact ?? meta?.count_exact ?? row?.countExact ?? meta?.countExact ?? null;
+      : typeof meta?.countExact === "number"
+      ? meta.countExact
+      : row?.count_exact ?? row?.countExact ?? meta?.count_exact ?? meta?.countExact ?? null;
 
   const time_window =
-    (row?.time_window ??
-      row?.window ??
-      meta?.time_window ??
-      meta?.window ??
-      meta?.months_received ??
-      null) as string | null;
+    (row?.time_window ?? row?.timeWindow ?? meta?.time_window ?? meta?.timeWindow ?? meta?.months_received ?? null) as
+      | string
+      | null;
 
-  const input_kind = (row?.input_kind ?? meta?.input_kind ?? row?.search_kind ?? null) as string | null;
+  const input_kind =
+    (row?.input_kind ?? row?.search_kind ?? meta?.input_kind ?? meta?.search_kind ?? null) as string | null;
 
-  const search_value_masked = (row?.search_value_masked ?? row?.search_value_masked ?? null) as string | null;
+  const search_value_masked =
+    (row?.search_value_masked ?? row?.contact ?? meta?.search_value_masked ?? meta?.contact ?? null) as
+      | string
+      | null;
 
   const result_count =
-    typeof row?.result_count === "number" ? row.result_count : row?.result_count ?? row?.resultCount ?? null;
+    typeof row?.result_count === "number"
+      ? row.result_count
+      : typeof row?.resultCount === "number"
+      ? row.resultCount
+      : typeof meta?.result_count === "number"
+      ? meta.result_count
+      : typeof meta?.resultCount === "number"
+      ? meta.resultCount
+      : row?.result_count ?? row?.resultCount ?? meta?.result_count ?? meta?.resultCount ?? null;
 
-  const actor_user_id = (row?.actor_user_id ?? row?.actor_user_id ?? null) as string | null;
-
-  const actor_role = (row?.actor_role ?? row?.userRole ?? null) as string | null;
-  const actor_email = (row?.actor_email ?? row?.requested_by_email ?? null) as string | null;
+  const actor_user_id = (row?.actor_user_id ?? meta?.actor_user_id ?? null) as string | null;
+  const actor_role = (row?.actor_role ?? row?.userRole ?? meta?.actor_role ?? meta?.userRole ?? null) as string | null;
+  const actor_email =
+    (row?.actor_email ?? row?.requested_by_email ?? meta?.actor_email ?? meta?.requested_by_email ?? null) as
+      | string
+      | null;
 
   return {
     audit_id,
     created_at,
     event_type,
+    type,
+    label,
+    type_label,
     risk_level,
     avg_stars,
     match_strength,
@@ -792,12 +855,11 @@ export async function issue_audit_pdf(params: { source_audit_id: string; templat
   } as IssueAuditPdfResp;
 }
 
-
 export async function audit_export_generate(payload: {
   export_type: "PDF" | "CSV";
   export_scope: string;
   period_from: string; // YYYY-MM-DD
-  period_to: string;   // YYYY-MM-DD
+  period_to: string; // YYYY-MM-DD
   filters?: Record<string, unknown>;
   source_audit_id?: string | null;
 }) {
@@ -806,4 +868,36 @@ export async function audit_export_generate(payload: {
 
 export async function audit_export_download(export_id: string) {
   return callEvalFn("client_audit_export_download", { export_id });
+}
+
+export async function audit_history_view(payload: { source_audit_id: string }) {
+  return callEvalFn("client_audit_history_view", payload);
+}
+
+export type PeriodField = "evaluation_date" | "created_at";
+
+export type WeeklySeriesRow = {
+  day: string;
+  incidents: number;
+  risk_high: number;
+  risk_medium: number;
+  risk_low: number;
+  gross: number;
+  recovered: number;
+  net: number;
+};
+
+export async function getWeeklySeries7d(args: {
+  period_from: string;
+  period_to: string;
+  period_field: PeriodField;
+}): Promise<WeeklySeriesRow[]> {
+  const resp: any = await callEvalFn("customer_operational_weekly_series_get", {
+    period_from: args.period_from,
+    period_to: args.period_to,
+    period_field: args.period_field,
+  });
+
+  if (!resp?.ok) throw new Error(resp?.error || resp?.detail || "fetch_failed");
+  return (resp.series ?? []) as WeeklySeriesRow[];
 }

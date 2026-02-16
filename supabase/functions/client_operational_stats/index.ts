@@ -1,3 +1,4 @@
+// supabase/functions/debacu_eval_stats_operativas_get/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { serve } from "https://deno.land/std@0.177.1/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
@@ -11,23 +12,22 @@ const ALLOWED_ORIGINS = new Set([
 
 const DEFAULT_APP_ID = "DEBACU_EVAL";
 
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("Origin") ?? "";
+  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
   return {
     "Access-Control-Allow-Origin": allowOrigin,
     "Vary": "Origin",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Max-Age": "86400",
   };
 }
 
-function json(origin: string | null, status: number, body: unknown) {
+function json(req: Request, status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...corsHeaders(origin) },
+    headers: { "Content-Type": "application/json; charset=utf-8", ...corsHeaders(req) },
   });
 }
 
@@ -97,24 +97,98 @@ type HourlyPoint = {
   lowRisk: number;
 };
 
+/* ======================================================
+ * JWT + tenant resolution (org -> customer)
+ * ====================================================== */
+function userClient(req: Request, supabaseUrl: string, anonKey: string) {
+  const auth = req.headers.get("Authorization") ?? "";
+  return createClient(supabaseUrl, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: auth } },
+  });
+}
+
+function adminClient(supabaseUrl: string, serviceKey: string) {
+  return createClient(supabaseUrl, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+async function requireJwtUser(req: Request, supabaseUrl: string, anonKey: string) {
+  const sb = userClient(req, supabaseUrl, anonKey);
+  const { data, error } = await sb.auth.getUser();
+  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
+  return data.user;
+}
+
+async function requireOrgMemberAndCustomerId(admin: ReturnType<typeof createClient>, user_id: string) {
+  const { data: mem, error: memErr } = await admin
+    .from("debacu_eval_org_members")
+    .select("org_id, role, created_at")
+    .eq("user_id", user_id)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
+  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+
+  const org_id = String(mem.org_id);
+
+  // 1) entitlements view si existe
+  let customer_id: string | null = null;
+  try {
+    const { data: ent, error: entErr } = await admin
+      .from("debacu_eval_org_entitlements_v")
+      .select("customer_id")
+      .eq("org_id", org_id)
+      .maybeSingle();
+
+    if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
+  } catch {
+    // ignore
+  }
+
+  // 2) fallback organizations
+  if (!customer_id) {
+    const { data: org, error: orgErr } = await admin
+      .from("debacu_eval_organizations")
+      .select("customer_id")
+      .eq("id", org_id)
+      .maybeSingle();
+
+    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
+    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+    customer_id = String(org.customer_id);
+  }
+
+  return { org_id, customer_id };
+}
+
+/* ======================================================
+ * Main
+ * ====================================================== */
 serve(async (req) => {
-  const origin = req.headers.get("Origin");
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders(req) });
+  }
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "method_not_allowed" });
+  }
 
   try {
-    if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(origin) });
-    if (req.method !== "POST") return json(origin, 405, { error: "Method not allowed" });
-
     const SUPABASE_URL = mustEnv("SUPABASE_URL");
     const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+    const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
 
-    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
+    // 1) JWT obligatorio
+    const user = await requireJwtUser(req, SUPABASE_URL, ANON_KEY);
 
-    const sessionToken = req.headers.get("x-session-token") || "";
-    if (!sessionToken) return json(origin, 401, { error: "Missing x-session-token" });
+    // 2) tenant: org -> customer
+    const admin = adminClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+    const { org_id, customer_id } = await requireOrgMemberAndCustomerId(admin, user.id);
 
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => ({} as any));
 
     // Compat: aceptamos period_from/period_to (nuevo) o from/to (viejo)
     const periodFrom = String(body?.period_from ?? body?.from ?? "");
@@ -122,61 +196,46 @@ serve(async (req) => {
     const appId = String(body?.app_id ?? DEFAULT_APP_ID);
 
     if (!periodFrom || !periodTo) {
-      return json(origin, 400, { error: "Missing period_from/period_to" });
+      return json(req, 400, { ok: false, error: "missing_period_from_to" });
     }
 
     // Validación simple formato YYYY-MM-DD
     if (!/^\d{4}-\d{2}-\d{2}$/.test(periodFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(periodTo)) {
-      return json(origin, 400, { error: "Invalid date format. Use YYYY-MM-DD." });
+      return json(req, 400, { ok: false, error: "invalid_date_format", detail: "Use YYYY-MM-DD" });
     }
-
-    // 1) Validar sesión Debacu propia
-    const { data: session, error: sessErr } = await supabase
-      .from("debacu_eval_sessions")
-      .select("customer_id, expires_at, revoked_at")
-      .eq("token", sessionToken)
-      .maybeSingle();
-
-    if (sessErr || !session) return json(origin, 401, { error: "Invalid session" });
-    if (session.revoked_at) return json(origin, 401, { error: "Session revoked" });
-    if (session.expires_at && new Date(session.expires_at).getTime() < Date.now()) {
-      return json(origin, 401, { error: "Session expired" });
-    }
-
-    const customerId = String(session.customer_id ?? "");
-    if (!customerId) return json(origin, 500, { error: "Session missing customer_id" });
 
     const isSingleDay = periodFrom === periodTo;
     const { startISO, endExclusiveISO } = rangeUTC(periodFrom, periodTo);
 
-    // 2) Cargar consultas CHECK_SIGNALS del rango (audit_log)
-    //    Nota: si el rango es grande y el volumen crece, habrá que paginar o pre-agregar.
-    const { data: auditRows, error: aErr } = await supabase
+    // 3) Cargar consultas CHECK_SIGNALS del rango (audit_log)
+    const { data: auditRows, error: aErr } = await admin
       .from("debacu_eval_audit_log")
       .select("created_at, event_type, action, meta, customer_id, app_id")
-      .eq("customer_id", customerId)
+      .eq("customer_id", customer_id)
       .eq("app_id", appId)
       .eq("event_type", "CHECK_SIGNALS")
       .gte("created_at", startISO)
       .lt("created_at", endExclusiveISO);
 
     if (aErr) {
-      return json(origin, 500, { error: "Failed to load audit rows", detail: aErr.message });
+      return json(req, 500, { ok: false, error: "failed_load_audit_rows", detail: aErr.message });
     }
 
-    // 3) Cargar registros creados por el hotel en el rango (evaluations)
-    const { data: evalRows, error: eErr } = await supabase
+    // 4) Cargar registros creados por el hotel en el rango (evaluations)
+    // ⚠️ Si tu tabla real es "debacu_eval_evaluations", cambia aquí.
+    const { data: evalRows, error: eErr } = await admin
       .from("debacu_evaluations")
+      // .from("debacu_eval_evaluations")
       .select("created_at")
-      .eq("creator_customer_uuid", customerId)
+      .eq("creator_customer_uuid", customer_id)
       .gte("created_at", startISO)
       .lt("created_at", endExclusiveISO);
 
     if (eErr) {
-      return json(origin, 500, { error: "Failed to load evaluation rows", detail: eErr.message });
+      return json(req, 500, { ok: false, error: "failed_load_evaluation_rows", detail: eErr.message });
     }
 
-    // 4) Construir “daily” con días completos aunque no haya datos
+    // 5) Construir daily con días completos aunque no haya datos
     const dailyMap = new Map<string, DailyPoint>();
 
     const fromStart = new Date(dayRangeUTC(periodFrom).startISO);
@@ -194,7 +253,7 @@ serve(async (req) => {
       });
     }
 
-    // 5) Agregar consultas por día + riesgo
+    // 6) Agregar consultas por día + riesgo
     let totalConsultas = 0;
     let totalHigh = 0;
     let totalMed = 0;
@@ -231,7 +290,7 @@ serve(async (req) => {
       dailyMap.set(dayKey, p);
     }
 
-    // 6) Agregar registros creados por día
+    // 7) Agregar registros creados por día
     let totalRegistros = 0;
 
     for (const row of evalRows ?? []) {
@@ -257,7 +316,7 @@ serve(async (req) => {
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([, v]) => v);
 
-    // 7) HOURLY si es un solo día
+    // 8) HOURLY si es un solo día
     let hourly: HourlyPoint[] | null = null;
 
     if (isSingleDay) {
@@ -285,13 +344,16 @@ serve(async (req) => {
       hourly = Array.from(hMap.values()).sort((a, b) => a.hour - b.hour);
     }
 
-    return json(origin, 200, {
+    return json(req, 200, {
       ok: true,
-      app_id: appId,
-      customer_id: customerId,
-      period_from: periodFrom,
-      period_to: periodTo,
-      mode: isSingleDay ? "HOURLY" : "DAILY",
+      meta: {
+        app_id: appId,
+        org_id,
+        customer_id,
+        period_from: periodFrom,
+        period_to: periodTo,
+        mode: isSingleDay ? "HOURLY" : "DAILY",
+      },
       totals: {
         consultas: totalConsultas,
         registros: totalRegistros,
@@ -305,10 +367,16 @@ serve(async (req) => {
       daily,
       hourly, // null si no aplica
     });
-  } catch (e) {
-    return json(origin, 500, {
-      error: "Unexpected error",
-      detail: String((e as any)?.message ?? e),
-    });
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    const status =
+      msg === "UNAUTHENTICATED"
+        ? 401
+        : msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED")
+          ? 403
+          : 500;
+
+    console.error("debacu_eval_stats_operativas_get ERROR", e);
+    return json(req, status, { ok: false, error: "request_failed", detail: msg });
   }
 });

@@ -19,14 +19,18 @@ function pickErrorMessage(json: any, fallbackText: string, status: number) {
   );
 }
 
+/**
+ * callEvalFn — JWT-only (Supabase Auth)
+ * - NO usa debacu_eval_session_token (legacy)
+ * - Authorization: Bearer <jwt>
+ * - apikey: ANON_KEY (ok mantenerlo)
+ */
 export async function callEvalFn<T = any>(fnName: string, body: unknown = {}): Promise<T> {
-  const debacuSessionToken = localStorage.getItem("debacu_eval_session_token") || "";
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw new Error(`Supabase getSession error: ${error.message}`);
 
-  const { data } = await supabase.auth.getSession();
-  const jwt = data.session?.access_token || "";
-
+  const jwt = data?.session?.access_token || "";
   if (!jwt) throw new Error("No hay sesión de Supabase (haz login).");
-  if (!debacuSessionToken) throw new Error("No hay session_token Debacu (evalLogin).");
 
   const res = await fetch(fnUrl(fnName), {
     method: "POST",
@@ -34,7 +38,7 @@ export async function callEvalFn<T = any>(fnName: string, body: unknown = {}): P
       "content-type": "application/json",
       apikey: ANON_KEY,
       authorization: `Bearer ${jwt}`,
-      "x-session-token": debacuSessionToken,
+      // ✅ eliminado: "x-session-token"
     },
     body: JSON.stringify(body ?? {}),
   });
@@ -49,9 +53,17 @@ export async function callEvalFn<T = any>(fnName: string, body: unknown = {}): P
 
   // 1) Error HTTP (4xx/5xx)
   if (!res.ok) {
-    const msg = pickErrorMessage(json, text, res.status);
-    throw new Error(msg);
-  }
+  console.error("[callEvalFn] HTTP ERROR", {
+    fnName,
+    status: res.status,
+    bodySent: body ?? {},
+    responseText: text,
+    responseJson: json,
+  });
+  const msg = pickErrorMessage(json, text, res.status);
+  throw new Error(msg);
+}
+
 
   // 2) Error lógico (Edge devuelve 200 con {ok:false,...})
   if (json && typeof json === "object" && "ok" in json && json.ok === false) {

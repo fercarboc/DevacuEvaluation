@@ -11,29 +11,26 @@ const ALLOWED_ORIGINS = new Set([
   "https://www.debacu.com",
 ]);
 
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
+function corsHeaders(req: Request) {
+  const origin = req.headers.get("Origin") ?? "";
+  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
   return {
     "Access-Control-Allow-Origin": allowOrigin,
     "Vary": "Origin",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
+    // ✅ JWT-only, sin x-session-token
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Max-Age": "86400",
   };
 }
 
-function json(origin: string | null, status: number, body: unknown) {
+function json(req: Request, status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
+    headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8" },
   });
 }
 
-/** ======================================================
- *  Utils
- *  ====================================================== */
 function mustEnv(name: string) {
   const v = Deno.env.get(name);
   if (!v) throw new Error(`Missing env var ${name}`);
@@ -47,60 +44,74 @@ function safeStr(v: any) {
 /** ======================================================
  *  Clients
  *  ====================================================== */
-function userClient(req: Request, supabaseUrl: string, anonKey: string) {
+const SUPABASE_URL = mustEnv("SUPABASE_URL");
+const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
+const SERVICE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+function userClient(req: Request) {
   const auth = req.headers.get("Authorization") ?? "";
-  return createClient(supabaseUrl, anonKey, {
+  return createClient(SUPABASE_URL, ANON_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { headers: { Authorization: auth } },
   });
 }
 
-function adminClient(supabaseUrl: string, serviceKey: string) {
-  return createClient(supabaseUrl, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
+const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
 
-/** ======================================================
- *  Auth
- *  ====================================================== */
-async function requireJwtUser(sbUser: ReturnType<typeof createClient>) {
-  const { data, error } = await sbUser.auth.getUser();
+async function requireJwtUser(req: Request) {
+  const sb = userClient(req);
+  const { data, error } = await sb.auth.getUser();
   if (error || !data?.user) throw new Error("UNAUTHENTICATED");
   return data.user;
 }
 
-async function requireEvalSession(params: {
-  admin: ReturnType<typeof createClient>;
-  token: string;
-  app_code?: string;
-}) {
-  const { admin, token, app_code } = params;
-  const now = Date.now();
-
-  const { data, error } = await admin
-    .from("debacu_eval_sessions")
-    .select("customer_id, app_code, revoked_at, expires_at")
-    .eq("token", token)
+/** ======================================================
+ *  AuthZ: org membership -> customer_id (entitlements view -> org fallback)
+ *  ====================================================== */
+async function requireOrgMemberAndCustomerId(user_id: string) {
+  const { data: mem, error: memErr } = await admin
+    .from("debacu_eval_org_members")
+    .select("org_id, role, created_at")
+    .eq("user_id", user_id)
+    .order("created_at", { ascending: true })
+    .limit(1)
     .maybeSingle();
 
-  if (error) throw new Error(`SESSION_CHECK_FAILED:${error.message}`);
-  if (!data) throw new Error("SESSION_INVALID");
-  if (data.revoked_at) throw new Error("SESSION_REVOKED");
+  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
+  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
 
-  if (app_code && String(data.app_code ?? "") !== String(app_code)) {
-    throw new Error("SESSION_APP_MISMATCH");
+  const org_id = String(mem.org_id);
+
+  let customer_id: string | null = null;
+
+  // view (si existe)
+  try {
+    const { data: ent, error: entErr } = await admin
+      .from("debacu_eval_org_entitlements_v")
+      .select("customer_id")
+      .eq("org_id", org_id)
+      .maybeSingle();
+
+    if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
+  } catch {
+    // ignore
   }
 
-  if (data.expires_at) {
-    const exp = new Date(String(data.expires_at)).getTime();
-    if (!Number.isFinite(exp) || exp < now) throw new Error("SESSION_EXPIRED");
+  if (!customer_id) {
+    const { data: org, error: orgErr } = await admin
+      .from("debacu_eval_organizations")
+      .select("customer_id")
+      .eq("id", org_id)
+      .maybeSingle();
+
+    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
+    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+    customer_id = String(org.customer_id);
   }
 
-  const customerId = String(data.customer_id ?? "");
-  if (!customerId) throw new Error("SESSION_NO_CUSTOMER");
-
-  return { customerId };
+  return { org_id, customer_id, role: mem.role ?? null };
 }
 
 /** ======================================================
@@ -112,7 +123,6 @@ function computeAudit(params: {
   country: string | null;
   province: string | null;
   city: string | null;
-
   property_type: string | null;
   hotel_category: number | null;
   currency: string | null;
@@ -148,47 +158,22 @@ function computeAudit(params: {
 /** ======================================================
  *  Handler
  *  ====================================================== */
-Deno.serve(async (req) => {
-  const origin = req.headers.get("origin");
-
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(origin) });
-  }
-
-  if (req.method !== "POST") {
-    return json(origin, 405, { ok: false, error: "Method not allowed" });
-  }
+export default Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
   try {
-    const SUPABASE_URL = mustEnv("SUPABASE_URL");
-    const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
-    const SERVICE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-
     const authHeader = req.headers.get("authorization") || "";
     if (!authHeader.toLowerCase().startsWith("bearer ")) {
-      return json(origin, 401, { ok: false, error: "Missing Authorization Bearer token" });
-    }
-
-    const sessionToken = safeStr(req.headers.get("x-session-token"));
-    if (!sessionToken) {
-      return json(origin, 401, { ok: false, error: "Missing x-session-token" });
+      return json(req, 401, { ok: false, error: "Missing Authorization Bearer token" });
     }
 
     const body = await req.json().catch(() => ({}));
     const appId = String(body?.app_id ?? body?.appId ?? "DEBACU_EVAL");
 
-    const admin = adminClient(SUPABASE_URL, SERVICE_KEY);
-    const sbUser = userClient(req, SUPABASE_URL, ANON_KEY);
+    const user = await requireJwtUser(req);
+    const { customer_id: customerId } = await requireOrgMemberAndCustomerId(user.id);
 
-    await requireJwtUser(sbUser);
-
-    const { customerId } = await requireEvalSession({
-      admin,
-      token: sessionToken,
-      app_code: appId,
-    });
-
-    // ✅ TODO desde debacu_eval_hotel_profile (sin customers)
     const { data: profile, error: pErr } = await admin
       .from("debacu_eval_hotel_profile")
       .select("*")
@@ -202,7 +187,6 @@ Deno.serve(async (req) => {
       country: (profile as any)?.country ?? null,
       province: (profile as any)?.province ?? null,
       city: (profile as any)?.city ?? null,
-
       property_type: (profile as any)?.property_type ?? null,
       hotel_category: (profile as any)?.hotel_category ?? null,
       currency: (profile as any)?.currency ?? null,
@@ -210,25 +194,25 @@ Deno.serve(async (req) => {
       rooms_count: (profile as any)?.rooms_count ?? null,
     });
 
-    return json(origin, 200, {
+    return json(req, 200, {
       ok: true,
       meta: { customer_id: customerId, app_id: appId },
       profile: profile ?? null,
       audit_ok: audit.audit_ok,
       missing_fields: audit.missing_fields,
     });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-
-    const status =
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    const code =
       msg === "UNAUTHENTICATED"
         ? 401
-        : msg.startsWith("SESSION_")
-        ? 401
+        : msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED")
+        ? 403
         : msg.startsWith("DB_")
         ? 500
         : 500;
 
-    return json(origin, status, { ok: false, error: "Request failed", detail: msg });
+    console.error("debacu_eval_hotel_profile_get error:", e);
+    return json(req, code, { ok: false, error: "request_failed", detail: msg });
   }
 });

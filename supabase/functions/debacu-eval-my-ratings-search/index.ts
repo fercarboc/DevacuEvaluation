@@ -3,6 +3,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const ALLOWED_ORIGINS = new Set([
@@ -19,8 +20,8 @@ function corsHeaders(req: Request) {
     "Access-Control-Allow-Origin": allowOrigin,
     "Vary": "Origin",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token",
+    // ✅ JWT-only
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Max-Age": "86400",
   };
 }
@@ -28,7 +29,7 @@ function corsHeaders(req: Request) {
 function json(req: Request, status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders(req), "Content-Type": "application/json" },
+    headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8" },
   });
 }
 
@@ -150,23 +151,70 @@ function riskFromAvgStars(avg: number | null): RiskLevel {
   return "ALTO";
 }
 
-async function resolveSessionCustomer(sb: ReturnType<typeof createClient>, token: string) {
-  const { data, error } = await sb
-    .from("debacu_eval_sessions")
-    .select("id, customer_id, customer_name, app_code, revoked_at, expires_at")
-    .eq("token", token)
+/* ======================================================
+ * JWT + tenant resolution
+ * ====================================================== */
+function userClient(req: Request) {
+  const auth = req.headers.get("Authorization") ?? "";
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: auth } },
+  });
+}
+
+async function requireJwtUser(req: Request) {
+  const sb = userClient(req);
+  const { data, error } = await sb.auth.getUser();
+  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
+  return data.user;
+}
+
+const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+
+async function requireOrgMemberAndCustomerId(user_id: string) {
+  const { data: mem, error: memErr } = await admin
+    .from("debacu_eval_org_members")
+    .select("org_id, role, created_at")
+    .eq("user_id", user_id)
+    .order("created_at", { ascending: true })
+    .limit(1)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("invalid_session_token");
-  if (data.revoked_at) throw new Error("session_revoked");
-  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) throw new Error("session_expired");
+  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
+  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
 
-  return {
-    customer_id: String(data.customer_id),
-    customer_name: String(data.customer_name ?? ""),
-    app_code: String(data.app_code ?? "DEBACU_EVAL"),
-  };
+  const org_id = mem.org_id as string;
+
+  // customer_id: entitlements view -> organizations fallback
+  let customer_id: string | null = null;
+
+  try {
+    const { data: ent, error: entErr } = await admin
+      .from("debacu_eval_org_entitlements_v")
+      .select("customer_id")
+      .eq("org_id", org_id)
+      .maybeSingle();
+    if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
+  } catch {
+    // ignore
+  }
+
+  if (!customer_id) {
+    const { data: org, error: orgErr } = await admin
+      .from("debacu_eval_organizations")
+      .select("customer_id")
+      .eq("id", org_id)
+      .maybeSingle();
+
+    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
+    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+
+    customer_id = String(org.customer_id);
+  }
+
+  return { org_id, customer_id };
 }
 
 export default Deno.serve(async (req: Request) => {
@@ -174,8 +222,11 @@ export default Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
   try {
-    const sessionToken = req.headers.get("x-session-token") ?? "";
-    if (!sessionToken) return json(req, 401, { ok: false, error: "missing_session_token" });
+    // 1) JWT obligatorio
+    const user = await requireJwtUser(req);
+
+    // 2) tenant (customerId) por membership
+    const { customer_id: customerId } = await requireOrgMemberAndCustomerId(user.id);
 
     let body: any = {};
     try {
@@ -191,13 +242,9 @@ export default Deno.serve(async (req: Request) => {
       return json(req, 200, { ok: true, rows: [], signals: null });
     }
 
-    const sb = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
-
-    // ✅ FIX CLAVE: el authorId se deriva SIEMPRE del x-session-token
-    const sess = await resolveSessionCustomer(sb, sessionToken);
-    const creatorUuid = sess.customer_id;
-
-    const { data, error } = await sb
+    // ✅ filtro “Mis registros” por hotel (customer_id)
+    // Si quieres “solo lo creado por ESTE usuario”, añade .eq("created_by_user_id", user.id)
+    const { data, error } = await admin
       .from("debacu_evaluations")
       .select(
         [
@@ -209,6 +256,7 @@ export default Deno.serve(async (req: Request) => {
           "email",
           "rating",
           "comment",
+          // ojo: campos legacy (si los sigues guardando, ok; si no, elimínalos)
           "creator_customer_id",
           "creator_customer_name",
           "creator_customer_uuid",
@@ -223,16 +271,16 @@ export default Deno.serve(async (req: Request) => {
           "season_applied",
           "adr_reference",
           "adr_real_snapshot",
-        ].join(",")
+        ].join(","),
       )
-      .eq("creator_customer_uuid", creatorUuid)
+      .eq("customer_id", customerId)
       .or(
         [
           `document.ilike.%${query}%`,
           `phone.ilike.%${query}%`,
           `email.ilike.%${query}%`,
           `full_name.ilike.%${query}%`,
-        ].join(",")
+        ].join(","),
       )
       .order("evaluation_date", { ascending: false })
       .order("created_at", { ascending: false })
@@ -244,8 +292,7 @@ export default Deno.serve(async (req: Request) => {
       const cc = parseControlledComment(r?.comment);
 
       const evidenceRaw = (cc["evidence"] || "").toLowerCase();
-      const hasEvidence =
-        evidenceRaw === "yes" || evidenceRaw === "si" || evidenceRaw === "sí" || evidenceRaw === "true";
+      const hasEvidence = evidenceRaw === "yes" || evidenceRaw === "si" || evidenceRaw === "sí" || evidenceRaw === "true";
 
       const dStr = r?.evaluation_date || r?.created_at;
       const d = dStr ? new Date(dStr) : new Date();
@@ -279,7 +326,7 @@ export default Deno.serve(async (req: Request) => {
         ? outRows.reduce((acc: number, x: any) => acc + (Number(x?.rating ?? 0) || 0), 0) / countExact
         : null;
 
-    // Econ: suma gross y net (net_loss ya viene guardado si lo calculas en alta; si no, derivamos)
+    // Econ: suma gross y net
     let grossSum = 0;
     let netSum = 0;
 
@@ -294,8 +341,7 @@ export default Deno.serve(async (req: Request) => {
 
       const gross = Number.isFinite(g) ? Math.max(0, g) : 0;
       const recovered = Number.isFinite(rec) ? Math.max(0, rec) : 0;
-      const net =
-        Number.isFinite(netSaved) ? Math.max(0, netSaved) : Math.max(0, gross - recovered);
+      const net = Number.isFinite(netSaved) ? Math.max(0, netSaved) : Math.max(0, gross - recovered);
 
       grossSum += gross;
       netSum += net;
@@ -322,7 +368,6 @@ export default Deno.serve(async (req: Request) => {
       timeWindow: "MINE",
       topTypologies,
 
-      // ✅ aquí es donde CUADRA con global: labels por bucket
       economicGrossLabel: econLabelFor(grossSum),
       economicNetLabel: econLabelFor(netSum),
       economicTimeWindow: "MINE",
@@ -332,6 +377,15 @@ export default Deno.serve(async (req: Request) => {
 
     return json(req, 200, { ok: true, rows: outRows, signals });
   } catch (e: any) {
-    return json(req, 500, { ok: false, error: String(e?.message ?? e) });
+    const msg = String(e?.message ?? e);
+    const code =
+      msg === "UNAUTHENTICATED"
+        ? 401
+        : msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED")
+        ? 403
+        : 500;
+
+    console.error("debacu-eval-my-ratings-search error:", e);
+    return json(req, code, { ok: false, error: "request_failed", detail: msg });
   }
 });

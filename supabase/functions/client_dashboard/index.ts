@@ -8,7 +8,9 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") || "";
 
-const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" }) : null;
+const stripe = STRIPE_SECRET_KEY
+  ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" })
+  : null;
 
 const ALLOWED_ORIGINS = new Set([
   "http://localhost:3000",
@@ -24,8 +26,8 @@ function corsHeaders(origin: string | null) {
     "Access-Control-Allow-Origin": allowOrigin,
     "Vary": "Origin",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token",
+    // ✅ ya NO pedimos x-session-token
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Max-Age": "86400",
   };
 }
@@ -66,14 +68,9 @@ function prettyDetail(entity?: string | null) {
 }
 
 const APP_ID = "DEBACU_EVAL"; // subscriptions.app_id
-const APP_CODE = "DEBACU_EVAL"; // sessions.app_code
-
-function readSessionToken(req: Request) {
-  return (req.headers.get("x-session-token") ?? "").trim();
-}
 
 /** ======================================================
- *  Auth (JWT real) + session + org member
+ *  Auth (JWT real) + org member -> customer_id
  *  ====================================================== */
 function userClient(req: Request) {
   const auth = req.headers.get("Authorization") ?? "";
@@ -94,44 +91,52 @@ const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-async function requireEvalSession(token: string) {
-  const { data: session, error } = await admin
-    .from("debacu_eval_sessions")
-    .select("customer_id, app_code, expires_at, revoked_at")
-    .eq("token", token)
-    .maybeSingle();
-
-  if (error || !session) throw new Error("SESSION_INVALID");
-  if (session.app_code !== APP_CODE) throw new Error("SESSION_INVALID_APP");
-  if (session.revoked_at) throw new Error("SESSION_REVOKED");
-  if (session.expires_at && new Date(session.expires_at).getTime() < Date.now()) throw new Error("SESSION_EXPIRED");
-
-  return session.customer_id as string;
-}
-
-async function requireOrgMember(customer_id: string, user_id: string) {
-  const { data: org, error: orgErr } = await admin
-    .from("debacu_eval_organizations")
-    .select("id")
-    .eq("customer_id", customer_id)
+async function requireOrgMemberAndCustomerId(user_id: string) {
+  // 1) membership
+  const { data: mem, error: memErr } = await admin
+    .from("debacu_eval_org_members")
+    .select("org_id, role, created_at")
+    .eq("user_id", user_id)
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
-  if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-  if (!org?.id) throw new Error("FORBIDDEN_NO_ORG");
-
-  const { data: mem, error: memErr } = await admin
-    .from("debacu_eval_org_members")
-    .select("id, role")
-    .eq("org_id", org.id)
-    .eq("user_id", user_id)
-    .maybeSingle();
-
   if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.id) throw new Error("FORBIDDEN");
+  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
 
-  return { org_id: org.id, role: mem.role ?? null };
+  const org_id = mem.org_id as string;
+  const role = mem.role ?? null;
+
+  // 2) customer_id (primero intento view entitlements si existe)
+  //    Esto evita inconsistencias si cambiaste el source-of-truth a entitlements view.
+  let customer_id: string | null = null;
+
+  try {
+    const { data: ent, error: entErr } = await admin
+      .from("debacu_eval_org_entitlements_v")
+      .select("customer_id")
+      .eq("org_id", org_id)
+      .maybeSingle();
+
+    if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
+  } catch {
+    // si la view no existe o falla, seguimos con organizations
+  }
+
+  if (!customer_id) {
+    const { data: org, error: orgErr } = await admin
+      .from("debacu_eval_organizations")
+      .select("customer_id")
+      .eq("id", org_id)
+      .maybeSingle();
+
+    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
+    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+
+    customer_id = String(org.customer_id);
+  }
+
+  return { org_id, role, customer_id };
 }
 
 /** ======================================================
@@ -225,18 +230,12 @@ export default Deno.serve(async (req: Request) => {
     // 1) JWT obligatorio
     const user = await requireJwtUser(req);
 
-    // 2) session token obligatorio
-    const sessionToken = readSessionToken(req);
-    if (!sessionToken) return json(origin, 401, { ok: false, error: "missing_session_token" });
-
-    const customerId = await requireEvalSession(sessionToken);
-
-    // 3) org membership
-    await requireOrgMember(customerId, user.id);
+    // 2) org + customerId por membership (sin session legacy)
+    const { customer_id: customerId } = await requireOrgMemberAndCustomerId(user.id);
 
     const monthStart = monthStartISO();
 
-    // 4) Best subscription + plan
+    // 3) Best subscription + plan
     const sub = await getBestSubscription(customerId);
     const plan = sub?.plan_id ? await getPlan(sub.plan_id) : null;
 
@@ -252,7 +251,7 @@ export default Deno.serve(async (req: Request) => {
     if (sub && plan) {
       let nextBilling: string | null = sub?.next_billing_date ?? null;
 
-      // 🔧 fallback Stripe si falta fecha (sin exigir ACTIVE; en estados intermedios Stripe la tiene)
+      // 🔧 fallback Stripe si falta fecha
       if (!nextBilling) {
         nextBilling = await fallbackNextBillingFromStripe(sub);
       }
@@ -269,7 +268,6 @@ export default Deno.serve(async (req: Request) => {
         limit: Number.isFinite(limit) ? limit : null,
       };
     } else if (sub && !plan) {
-      // si no hay plan por plan_id, al menos devolvemos status y frecuencia para UI
       let nextBilling: string | null = sub?.next_billing_date ?? null;
       if (!nextBilling) {
         nextBilling = await fallbackNextBillingFromStripe(sub);
@@ -287,50 +285,75 @@ export default Deno.serve(async (req: Request) => {
       planCard = null;
     }
 
-    // 5) queryCount
-    const { count: queryCount } = await admin
-      .from("debacu_eval_audit_log")
-      .select("id", { count: "exact", head: true })
-      .eq("customer_id", customerId)
-      .eq("event_type", "CHECK_SIGNALS")
-      .gte("created_at", monthStart);
+    // 4) queryCount (best-effort)
+    let queryCount = 0;
+    try {
+      const { count } = await admin
+        .from("debacu_eval_audit_log")
+        .select("id", { count: "exact", head: true })
+        .eq("customer_id", customerId)
+        .eq("event_type", "CHECK_SIGNALS")
+        .gte("created_at", monthStart);
+      queryCount = count ?? 0;
+    } catch {
+      queryCount = 0;
+    }
 
-    // 6) createdThisMonth
-    const { count: createdThisMonth } = await admin
-      .from("debacu_evaluations")
-      .select("id", { count: "exact", head: true })
-      .eq("creator_customer_id", customerId)
-      .gte("created_at", monthStart);
+    // 5) createdThisMonth (best-effort, mantengo TU tabla/campos tal cual; si falla, 0)
+    let createdThisMonth = 0;
+    try {
+      const { count } = await admin
+        .from("debacu_evaluations")
+        .select("id", { count: "exact", head: true })
+        .eq("creator_customer_id", customerId)
+        .gte("created_at", monthStart);
+      createdThisMonth = count ?? 0;
+    } catch {
+      createdThisMonth = 0;
+    }
 
-    // 7) activity
-    const { data: audits } = await admin
-      .from("debacu_eval_audit_log")
-      .select("id, created_at, action, event_type, entity, meta, search_value_masked")
-      .eq("customer_id", customerId)
-      .order("created_at", { ascending: false })
-      .limit(12);
+    // 6) activity (best-effort)
+    let activity: Array<{
+      id: string;
+      date: string;
+      type: string;
+      label: string;
+      contact: string;
+      rating: number | null;
+    }> = [];
 
-    const activity = (audits ?? []).map((r: any) => {
-      let avg: number | null = null;
-      const meta = r?.meta;
-      if (meta) {
-        try {
-          const m = typeof meta === "string" ? JSON.parse(meta) : meta;
-          if (m?.avg_stars != null && !Number.isNaN(Number(m.avg_stars))) avg = Number(m.avg_stars);
-        } catch {
-          // ignore
+    try {
+      const { data: audits } = await admin
+        .from("debacu_eval_audit_log")
+        .select("id, created_at, action, event_type, entity, meta, search_value_masked")
+        .eq("customer_id", customerId)
+        .order("created_at", { ascending: false })
+        .limit(12);
+
+      activity = (audits ?? []).map((r: any) => {
+        let avg: number | null = null;
+        const meta = r?.meta;
+        if (meta) {
+          try {
+            const m = typeof meta === "string" ? JSON.parse(meta) : meta;
+            if (m?.avg_stars != null && !Number.isNaN(Number(m.avg_stars))) avg = Number(m.avg_stars);
+          } catch {
+            // ignore
+          }
         }
-      }
 
-      return {
-        id: r.id,
-        date: new Date(r.created_at).toLocaleString(),
-        type: prettyEvent(r.event_type, r.action),
-        label: prettyDetail(r.entity),
-        contact: r.search_value_masked ?? "-",
-        rating: avg,
-      };
-    });
+        return {
+          id: r.id,
+          date: new Date(r.created_at).toLocaleString(),
+          type: prettyEvent(r.event_type, r.action),
+          label: prettyDetail(r.entity),
+          contact: r.search_value_masked ?? "-",
+          rating: avg,
+        };
+      });
+    } catch {
+      activity = [];
+    }
 
     return json(origin, 200, {
       ok: true,
@@ -338,8 +361,8 @@ export default Deno.serve(async (req: Request) => {
         customerId,
         monthStart,
         planCard,
-        queryCount: queryCount ?? 0,
-        createdThisMonth: createdThisMonth ?? 0,
+        queryCount,
+        createdThisMonth,
         activity,
       },
     });
@@ -348,9 +371,9 @@ export default Deno.serve(async (req: Request) => {
     const code =
       msg === "UNAUTHENTICATED"
         ? 401
-        : msg.startsWith("SESSION_")
-        ? 401
         : msg.startsWith("FORBIDDEN")
+        ? 403
+        : msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED")
         ? 403
         : 500;
 

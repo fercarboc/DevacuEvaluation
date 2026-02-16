@@ -12,6 +12,8 @@ import {
   User,
   Download,
   Info,
+  Calendar,
+  Table,
 } from "lucide-react";
 
 import EmptyState from "@/components/ui/EmptyState";
@@ -21,10 +23,12 @@ import {
   get_audit_history_detail,
   audit_export_generate,
   audit_export_download,
+  audit_history_view,
   type AuditHistoryItem,
 } from "@/services/clientService";
 
 type RiskUi = "Alto" | "Medio" | "Bajo" | "No concluyente";
+type ExportType = "PDF" | "CSV";
 
 function toUiRisk(riskRaw?: string | null): RiskUi {
   const r = (riskRaw ?? "").toUpperCase();
@@ -44,10 +48,14 @@ function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-/**
- * UI state para el modal
- * (snake_case también, como estás haciendo en toda la UI).
- */
+function addDaysISO(baseISO: string, deltaDays: number): string {
+  const d = new Date(`${baseISO}T00:00:00`);
+  d.setDate(d.getDate() + deltaDays);
+  return d.toISOString().slice(0, 10);
+}
+
+type RangePreset = "LAST_7" | "LAST_30" | "CUSTOM";
+
 type SelectedFicha = {
   audit_id: string;
   created_at: string;
@@ -84,12 +92,29 @@ const HistoryViewAuditor: React.FC = () => {
 
   const [selected, setSelected] = useState<SelectedFicha | null>(null);
   const [selectedLoading, setSelectedLoading] = useState(false);
-  const [pdfLoading, setPdfLoading] = useState(false);
 
-  const totalPages = useMemo(
-    () => Math.max(1, Math.ceil(total / page_size)),
-    [total, page_size],
-  );
+  const [exportLoading, setExportLoading] = useState<ExportType | null>(null);
+  const [pdfFichaLoading, setPdfFichaLoading] = useState(false);
+
+  // filtros de rango
+  const [rangePreset, setRangePreset] = useState<RangePreset>("LAST_7");
+  const [dateFrom, setDateFrom] = useState<string>(() => addDaysISO(todayISO(), -7));
+  const [dateTo, setDateTo] = useState<string>(() => todayISO());
+
+  // si cambia preset, ajusta fechas
+  useEffect(() => {
+    const t = todayISO();
+    if (rangePreset === "LAST_7") {
+      setDateFrom(addDaysISO(t, -7));
+      setDateTo(t);
+    }
+    if (rangePreset === "LAST_30") {
+      setDateFrom(addDaysISO(t, -30));
+      setDateTo(t);
+    }
+  }, [rangePreset]);
+
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(total / page_size)), [total, page_size]);
 
   const load = async () => {
     setLoading(true);
@@ -101,6 +126,8 @@ const HistoryViewAuditor: React.FC = () => {
         page_size,
         q: q.trim(),
         event_type: "CHECK_SIGNALS",
+        date_from: dateFrom || null,
+        date_to: dateTo || null,
       });
 
       setItems(res.items ?? []);
@@ -115,12 +142,13 @@ const HistoryViewAuditor: React.FC = () => {
     }
   };
 
+  // paginación
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page]);
+  }, [page, dateFrom, dateTo]);
 
-  // búsqueda: al cambiar q, vuelve a página 1 y recarga
+  // búsqueda: debounce
   useEffect(() => {
     const t = setTimeout(() => {
       setPage(1);
@@ -133,14 +161,21 @@ const HistoryViewAuditor: React.FC = () => {
   const openFicha = async (row: AuditHistoryItem) => {
     setSelectedLoading(true);
 
+    // ✅ registra VIEW (no bloquea UI)
+    void audit_history_view({ source_audit_id: row.audit_id }).catch((e) =>
+      console.warn("audit_history_view failed:", e),
+    );
+
     try {
-      // ✅ tu API usa audit_id
       const detail = await get_audit_history_detail(row.audit_id);
 
       const risk_ui = toUiRisk(detail.risk_level);
 
-      // ✅ “tipo” lo sacamos del event_type (y si no existe, fallback)
-      const type_label = detail.event_type ?? "—";
+      // tipo: fallback si viene vacío
+      const type_label =
+        (row.type_label && row.type_label !== "—" ? row.type_label : null) ??
+        (row.event_type && String(row.event_type).toUpperCase() === "CHECK_SIGNALS" ? "Consulta" : null) ??
+        "—";
 
       setSelected({
         audit_id: detail.audit_id,
@@ -167,9 +202,11 @@ const HistoryViewAuditor: React.FC = () => {
     } catch (e) {
       console.error(e);
 
-      // fallback SOLO con row
       const risk_ui = toUiRisk(row.risk_level);
-      const type_label = row.event_type ?? "—";
+      const type_label =
+        (row.type_label && row.type_label !== "—" ? row.type_label : null) ??
+        (row.event_type && String(row.event_type).toUpperCase() === "CHECK_SIGNALS" ? "Consulta" : null) ??
+        "—";
 
       setSelected({
         audit_id: row.audit_id,
@@ -200,71 +237,165 @@ const HistoryViewAuditor: React.FC = () => {
 
   const closeFicha = () => setSelected(null);
 
-  /**
-   * ✅ PDF REAL:
-   * Genera export (customer_audit_exports + storage) y luego registra descarga y devuelve signed url.
-   */
-  const onPdf = async () => {
-    if (!selected) return;
-
-    try {
-      setPdfLoading(true);
-
-      const iso = todayISO();
-
-      const gen: any = await audit_export_generate({
-        export_type: "PDF",
-        export_scope: "AUDIT_LOG",
-        period_from: iso,
-        period_to: iso,
-        filters: {
-          event_type: "CHECK_SIGNALS",
-          q: q.trim() || null,
-        },
-        // útil: trazabilidad vincular export al audit_id seleccionado
-        source_audit_id: selected.audit_id,
-      });
-
-      const export_id = gen?.export_id;
-      if (!export_id) throw new Error("missing_export_id");
-
-      const dl: any = await audit_export_download(export_id);
-      const url = dl?.download_url;
-      if (!url) throw new Error("missing_download_url");
-
-      window.open(url, "_blank", "noopener,noreferrer");
-    } catch (e: any) {
-      console.error(e);
-      alert("No se pudo generar/descargar el PDF.");
-    } finally {
-      setPdfLoading(false);
-    }
+  const downloadExport = async (export_id: string) => {
+    const dl: any = await audit_export_download(export_id);
+    const url = dl?.download_url;
+    if (!url) throw new Error("missing_download_url");
+    window.open(url, "_blank", "noopener,noreferrer");
   };
+
+  // ✅ Export masivo (filtrado)
+ const exportFiltered = async (type: ExportType) => {
+  try {
+    setExportLoading(type);
+
+    const gen: any = await audit_export_generate({
+      export_type: type,
+      export_scope: "AUDIT_LOG",
+      period_from: dateFrom,
+      period_to: dateTo,
+      filters: {
+        event_type: "CHECK_SIGNALS",
+        q: q.trim() || null,
+      },
+      source_audit_id: null,
+    });
+
+    if (!gen?.ok) throw new Error(gen?.detail || gen?.error || "export_generate_failed");
+
+    const url = gen?.signed_url;
+    if (!url) throw new Error("missing_signed_url");
+
+    window.open(url, "_blank", "noopener,noreferrer");
+  } catch (e: any) {
+    console.error(e);
+    alert("No se pudo generar/descargar el export.");
+  } finally {
+    setExportLoading(null);
+  }
+};
+
+  // ✅ PDF desde ficha (audit seleccionado)
+ const exportFicha = async (type: ExportType) => {
+  if (!selected) return;
+
+  try {
+    if (type === "PDF") setPdfFichaLoading(true);
+
+    const gen: any = await audit_export_generate({
+      export_type: type,
+      export_scope: "AUDIT_LOG",
+      period_from: dateFrom,
+      period_to: dateTo,
+      filters: {
+        event_type: "CHECK_SIGNALS",
+        q: q.trim() || null,
+      },
+      source_audit_id: selected.audit_id,
+    });
+
+    if (!gen?.ok) throw new Error(gen?.detail || gen?.error || "export_generate_failed");
+
+    const url = gen?.signed_url; // <- viene del generate
+    if (!url) throw new Error("missing_signed_url");
+
+    window.open(url, "_blank", "noopener,noreferrer");
+  } catch (e) {
+    console.error(e);
+    alert("No se pudo generar/descargar el export.");
+  } finally {
+    setPdfFichaLoading(false);
+  }
+};
+
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">
-            Histórico de Consultas
-          </h2>
-          <p className="text-slate-500">
-            Trazabilidad operativa y auditoría interna.
-          </p>
+          <h2 className="text-2xl font-bold text-slate-800">Histórico de Consultas</h2>
+          <p className="text-slate-500">Trazabilidad operativa y auditoría interna.</p>
         </div>
 
-        <div className="relative w-full md:w-72 shadow-sm">
-          <Search
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-            size={18}
-          />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            type="text"
-            placeholder="ID / Contacto..."
-            className="w-full bg-white border border-slate-200 rounded-lg pl-10 pr-4 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
-          />
+        {/* Controls */}
+        <div className="flex flex-col md:flex-row gap-3 w-full lg:w-auto">
+          {/* Search */}
+          <div className="relative w-full md:w-80 shadow-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              type="text"
+              placeholder="ID / Contacto..."
+              className="w-full bg-white border border-slate-200 rounded-lg pl-10 pr-4 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+            />
+          </div>
+
+          {/* Range preset */}
+          <div className="flex gap-2">
+            <div className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 flex items-center gap-2">
+              <Calendar size={16} className="text-slate-400" />
+              <select
+                value={rangePreset}
+                onChange={(e) => setRangePreset(e.target.value as RangePreset)}
+                className="outline-none bg-transparent text-sm font-semibold"
+              >
+                <option value="LAST_7">Últimos 7 días</option>
+                <option value="LAST_30">Últimos 30 días</option>
+                <option value="CUSTOM">Rango</option>
+              </select>
+            </div>
+
+            {rangePreset === "CUSTOM" ? (
+              <div className="flex gap-2">
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => {
+                    setPage(1);
+                    setDateFrom(e.target.value);
+                  }}
+                  className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => {
+                    setPage(1);
+                    setDateTo(e.target.value);
+                  }}
+                  className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            ) : (
+              <div className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 flex items-center gap-2">
+                <span className="text-slate-500">{dateFrom}</span>
+                <span className="text-slate-300">→</span>
+                <span className="text-slate-500">{dateTo}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Export buttons */}
+          <div className="flex gap-2">
+            <button
+              disabled={!!exportLoading}
+              onClick={() => void exportFiltered("CSV")}
+              className="px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-700 font-black text-xs uppercase tracking-wider hover:bg-slate-50 transition-all flex items-center gap-2 disabled:opacity-60"
+            >
+              <Table size={16} />
+              {exportLoading === "CSV" ? "Generando…" : "CSV"}
+            </button>
+
+            <button
+              disabled={!!exportLoading}
+              onClick={() => void exportFiltered("PDF")}
+              className="px-4 py-2 rounded-lg bg-indigo-600 text-white font-black text-xs uppercase tracking-wider hover:bg-indigo-700 transition-all flex items-center gap-2 shadow-lg shadow-indigo-100 disabled:opacity-60"
+            >
+              <Download size={16} />
+              {exportLoading === "PDF" ? "Generando…" : "PDF"}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -275,10 +406,7 @@ const HistoryViewAuditor: React.FC = () => {
           <div className="p-6 text-sm text-red-600">{error}</div>
         ) : items.length === 0 ? (
           <div className="p-6">
-            <EmptyState
-              title="Sin resultados"
-              description="No hay consultas registradas para este filtro."
-            />
+            <EmptyState title="Sin resultados" description="No hay consultas registradas para este filtro." />
           </div>
         ) : (
           <>
@@ -297,21 +425,21 @@ const HistoryViewAuditor: React.FC = () => {
                 <tbody className="divide-y divide-slate-100">
                   {items.map((row) => {
                     const risk_ui = toUiRisk(row.risk_level);
-                    const type_label = row.event_type ?? "—";
+
+                    const type_label =
+                      (row.type_label && row.type_label !== "—" ? row.type_label : null) ??
+                      (row.event_type && String(row.event_type).toUpperCase() === "CHECK_SIGNALS" ? "Consulta" : null) ??
+                      "—";
+
                     const auditor = row.actor_role ?? "—";
 
                     return (
-                      <tr
-                        key={row.audit_id}
-                        className="hover:bg-slate-50 transition-colors group"
-                      >
+                      <tr key={row.audit_id} className="hover:bg-slate-50 transition-colors group">
                         <td className="px-6 py-4 text-sm text-slate-600 whitespace-nowrap font-medium">
                           {formatDateTime(row.created_at)}
                         </td>
 
-                        <td className="px-6 py-4 text-sm font-bold text-slate-800">
-                          {type_label}
-                        </td>
+                        <td className="px-6 py-4 text-sm font-bold text-slate-800">{type_label}</td>
 
                         <td className="px-6 py-4">
                           <span
@@ -329,14 +457,12 @@ const HistoryViewAuditor: React.FC = () => {
                           </span>
                         </td>
 
-                        <td className="px-6 py-4 text-sm text-slate-500 font-medium italic">
-                          {auditor}
-                        </td>
+                        <td className="px-6 py-4 text-sm text-slate-500 font-medium italic">{auditor}</td>
 
                         <td className="px-6 py-4 text-right">
                           <button
                             onClick={() => void openFicha(row)}
-                            className="text-indigo-600 hover:text-indigo-800 flex items-center gap-1 text-[11px] font-bold uppercase ml-auto transition-all group-hover:translate-x-[-4px]"
+                            className="text-indigo-600 hover:text-indigo-800 flex items-center gap-1 text-[11px] font-black uppercase ml-auto transition-all group-hover:translate-x-[-4px]"
                           >
                             <FileText size={14} />
                             Ver ficha
@@ -363,7 +489,7 @@ const HistoryViewAuditor: React.FC = () => {
                   <ChevronLeft size={18} />
                 </button>
 
-                <div className="flex items-center gap-2 text-xs font-bold text-slate-600">
+                <div className="flex items-center gap-2 text-xs font-black text-slate-600">
                   <span>{page}</span>
                   <span className="text-slate-400">/</span>
                   <span>{totalPages}</span>
@@ -385,7 +511,7 @@ const HistoryViewAuditor: React.FC = () => {
       <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-center gap-2">
         <Info size={14} className="text-slate-400" />
         <p className="text-[11px] text-slate-500 font-medium">
-          Se muestran eventos sin PII. La descarga masiva depende del plan.
+          Se muestran eventos sin PII. La descarga queda registrada (exports + downloads + views).
         </p>
       </div>
 
@@ -402,18 +528,11 @@ const HistoryViewAuditor: React.FC = () => {
                   <FileText size={20} />
                 </div>
                 <div>
-                  <h3 className="font-bold text-slate-900 text-lg">
-                    Ficha Técnica
-                  </h3>
-                  <p className="text-xs text-slate-400 font-bold uppercase tracking-widest">
-                    Auditoría Evaluation360
-                  </p>
+                  <h3 className="font-black text-slate-900 text-lg">Ficha Técnica</h3>
+                  <p className="text-xs text-slate-400 font-black uppercase tracking-widest">Auditoría Evaluation360</p>
                 </div>
               </div>
-              <button
-                onClick={closeFicha}
-                className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-all"
-              >
+              <button onClick={closeFicha} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-all">
                 <X size={20} />
               </button>
             </div>
@@ -430,99 +549,57 @@ const HistoryViewAuditor: React.FC = () => {
                     : "bg-slate-50 border-slate-200 text-slate-800"
                 }`}
               >
-                {selected.risk_ui === "Alto" ? (
-                  <AlertCircle size={28} className="shrink-0" />
-                ) : (
-                  <ShieldCheck size={28} className="shrink-0" />
-                )}
+                {selected.risk_ui === "Alto" ? <AlertCircle size={28} className="shrink-0" /> : <ShieldCheck size={28} className="shrink-0" />}
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-wider opacity-60">
-                    Evaluación de Riesgo
-                  </p>
-                  <p className="text-xl font-black">
-                    NIVEL {selected.risk_ui.toUpperCase()}
-                  </p>
+                  <p className="text-[10px] font-black uppercase tracking-wider opacity-60">Evaluación de Riesgo</p>
+                  <p className="text-xl font-black">NIVEL {selected.risk_ui.toUpperCase()}</p>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-y-6 gap-x-12">
                 <div className="space-y-1">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                    AUDIT ID
-                  </p>
-                  <p className="text-sm font-mono font-bold text-slate-800">
-                    {selected.audit_id}
-                  </p>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">AUDIT ID</p>
+                  <p className="text-sm font-mono font-black text-slate-800">{selected.audit_id}</p>
                 </div>
 
                 <div className="space-y-1 text-right">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                    Timestamp
-                  </p>
-                  <div className="flex items-center justify-end gap-1.5 text-sm font-bold text-slate-800">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Timestamp</p>
+                  <div className="flex items-center justify-end gap-1.5 text-sm font-black text-slate-800">
                     <Clock size={14} className="text-slate-400" />
                     <span>{formatDateTime(selected.created_at)}</span>
                   </div>
                 </div>
 
                 <div className="space-y-1">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                    Tipo
-                  </p>
-                  <p className="text-sm font-bold text-slate-800">
-                    {selected.type_label}
-                  </p>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tipo</p>
+                  <p className="text-sm font-black text-slate-800">{selected.type_label}</p>
                 </div>
 
                 <div className="space-y-1 text-right">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                    Auditor
-                  </p>
-                  <div className="flex items-center justify-end gap-1.5 text-sm font-bold text-slate-800">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Auditor</p>
+                  <div className="flex items-center justify-end gap-1.5 text-sm font-black text-slate-800">
                     <User size={14} className="text-slate-400" />
                     <span>{selected.actor_role || "—"}</span>
                   </div>
-                  {selected.actor_email ? (
-                    <p className="text-[11px] text-slate-400 font-mono">
-                      {selected.actor_email}
-                    </p>
-                  ) : null}
+                  {selected.actor_email ? <p className="text-[11px] text-slate-400 font-mono">{selected.actor_email}</p> : null}
                 </div>
               </div>
 
               <div className="space-y-3 pt-6 border-t border-slate-100">
-                <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">
-                  Resumen
-                </h4>
+                <h4 className="text-[11px] font-black text-slate-400 uppercase tracking-widest">Resumen</h4>
                 <div className="bg-slate-50 p-5 rounded-2xl text-sm text-slate-600 leading-relaxed italic border border-slate-200/50 shadow-inner">
                   “Consulta sobre{" "}
-                  <span className="text-indigo-700 font-bold">
-                    {selected.contact_masked ?? "—"}
-                  </span>
-                  . Coincidencia:{" "}
-                  <span className="font-bold">
-                    {selected.match_strength ?? "—"}
-                  </span>
-                  . Registros:{" "}
-                  <span className="font-bold">
-                    {selected.result_count ?? "—"}
-                  </span>
-                  . Media:{" "}
-                  <span className="font-bold">
-                    {selected.avg_stars ?? "—"}
-                  </span>
-                  .”
+                  <span className="text-indigo-700 font-black">{selected.contact_masked ?? "—"}</span>. Coincidencia:{" "}
+                  <span className="font-black">{selected.match_strength ?? "—"}</span>. Registros:{" "}
+                  <span className="font-black">{selected.result_count ?? "—"}</span>. Media:{" "}
+                  <span className="font-black">{selected.avg_stars ?? "—"}</span>.”
                 </div>
               </div>
 
               <div className="flex items-center justify-between pt-6 border-t border-slate-100">
                 <div className="flex flex-col">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                    Trazabilidad
-                  </span>
-                  <span className="text-[10px] font-mono text-slate-400 uppercase">
-                    Audit ID: {selected.audit_id}
-                  </span>
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Trazabilidad</span>
+                  <span className="text-[10px] font-mono text-slate-400 uppercase">Audit ID: {selected.audit_id}</span>
                 </div>
 
                 <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full text-[10px] font-black uppercase border border-emerald-100">
@@ -534,24 +611,31 @@ const HistoryViewAuditor: React.FC = () => {
 
             <div className="bg-slate-50 border-t border-slate-200 px-8 py-5 flex items-center justify-between">
               <p className="text-[10px] text-slate-400 max-w-[240px] leading-tight font-medium">
-                La generación y descarga del PDF quedan registradas (exports + downloads).
+                Exportación registrada: exports + downloads + views.
               </p>
 
-              <div className="flex gap-4">
-                <button
-                  onClick={closeFicha}
-                  className="px-5 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition-all"
-                >
+              <div className="flex gap-3">
+                <button onClick={closeFicha} className="px-5 py-2.5 text-xs font-black text-slate-600 hover:bg-slate-200 rounded-xl transition-all">
                   Cerrar
                 </button>
 
                 <button
-                  disabled={selectedLoading || pdfLoading}
-                  onClick={() => void onPdf()}
+                  disabled={selectedLoading || pdfFichaLoading}
+                  onClick={() => void exportFicha("CSV")}
+                  className="px-4 py-2.5 bg-white border border-slate-200 text-slate-700 text-xs font-black rounded-xl hover:bg-slate-50 flex items-center gap-2 transition-all disabled:opacity-60"
+                  title="Export CSV (filtrado) enlazado a esta ficha"
+                >
+                  <Table size={16} />
+                  CSV
+                </button>
+
+                <button
+                  disabled={selectedLoading || pdfFichaLoading}
+                  onClick={() => void exportFicha("PDF")}
                   className="px-5 py-2.5 bg-indigo-600 text-white text-xs font-black rounded-xl hover:bg-indigo-700 shadow-lg shadow-indigo-100 flex items-center gap-2 transition-all transform hover:scale-105 active:scale-95 disabled:opacity-60"
                 >
                   <Download size={16} />
-                  {pdfLoading ? "Generando…" : "PDF"}
+                  {pdfFichaLoading ? "Generando…" : "PDF"}
                 </button>
               </div>
             </div>

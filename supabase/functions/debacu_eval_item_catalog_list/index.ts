@@ -1,6 +1,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
+/* ======================================================
+ * ENV + CONST
+ * ====================================================== */
+const APP_ID = "DEBACU_EVAL";
+
 const ALLOWED_ORIGINS = new Set([
   "http://localhost:3000",
   "http://localhost:5173",
@@ -8,14 +13,16 @@ const ALLOWED_ORIGINS = new Set([
   "https://www.debacu.com",
 ]);
 
+/* ======================================================
+ * CORS + RESP
+ * ====================================================== */
 function corsHeaders(origin: string | null) {
   const o = origin ?? "";
   const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
   return {
     "Access-Control-Allow-Origin": allowOrigin,
-    Vary: "Origin",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token",
+    "Vary": "Origin",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Max-Age": "86400",
   };
@@ -24,46 +31,111 @@ function corsHeaders(origin: string | null) {
 function json(origin: string | null, status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
+    headers: { ...corsHeaders(origin), "Content-Type": "application/json; charset=utf-8" },
   });
 }
 
+/* ======================================================
+ * Utils
+ * ====================================================== */
 function mustEnv(name: string) {
   const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env var ${name}`);
+  if (!v) throw new Error(`MISSING_ENV:${name}`);
   return v;
 }
 
-const SUPABASE_URL = mustEnv("SUPABASE_URL");
-const SERVICE_ROLE = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-async function assertEvalSession(
-  supabase: ReturnType<typeof createClient>,
-  sessionToken: string,
-  customerIdFromBody?: string | null,
-) {
-  const { data, error } = await supabase
-    .from("debacu_eval_sessions")
-    .select("customer_id, expires_at, revoked_at")
-    .eq("token", sessionToken)
-    .maybeSingle();
-
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Invalid session token");
-  if (data.revoked_at) throw new Error("Session revoked");
-  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) {
-    throw new Error("Session expired");
-  }
-
-  const tokenCustomerId = String(data.customer_id);
-
-  if (customerIdFromBody && String(customerIdFromBody) !== tokenCustomerId) {
-    throw new Error("customerId mismatch vs session token");
-  }
-
-  return { customerId: tokenCustomerId };
+function normCode(x: unknown) {
+  return String(x ?? "").trim().toUpperCase();
 }
 
+function logLine(payload: Record<string, unknown>) {
+  console.log(JSON.stringify(payload));
+}
+
+/* ======================================================
+ * Auth (JWT-only)
+ * ====================================================== */
+function userClient(req: Request, supabaseUrl: string, anonKey: string) {
+  const auth = req.headers.get("Authorization") ?? "";
+  return createClient(supabaseUrl, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: auth } },
+  });
+}
+
+async function requireJwtUser(req: Request, supabaseUrl: string, anonKey: string) {
+  const sbUser = userClient(req, supabaseUrl, anonKey);
+  const { data, error } = await sbUser.auth.getUser();
+  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
+  return data.user;
+}
+
+function adminClient(supabaseUrl: string, serviceRole: string) {
+  return createClient(supabaseUrl, serviceRole, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+/**
+ * Resuelve tenant context:
+ * - org_members: user_id -> org_id
+ * - entitlements view (si existe): org_id -> customer_id
+ * - fallback: organizations: org_id -> customer_id
+ */
+async function requireOrgMemberAndCustomerId(
+  admin: ReturnType<typeof createClient>,
+  userId: string,
+) {
+  const { data: mem, error: memErr } = await admin
+    .from("debacu_eval_org_members")
+    .select("org_id, role")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (memErr) throw new Error(`ORG_MEMBER_LOOKUP_FAILED:${memErr.message}`);
+  if (!mem?.org_id) throw new Error("NO_ORG_MEMBERSHIP");
+
+  const org_id = String(mem.org_id);
+
+  // 1) intentar entitlements view
+  const { data: ent, error: entErr } = await admin
+    .from("debacu_eval_org_entitlements_v")
+    .select("org_id, customer_id")
+    .eq("org_id", org_id)
+    .maybeSingle();
+
+  if (!entErr && ent?.customer_id) {
+    return {
+      org_id,
+      org_role: mem.role ?? null,
+      customer_id: String(ent.customer_id),
+      app_id: APP_ID,
+    };
+  }
+
+  // 2) fallback: organizations
+  const { data: org, error: orgErr } = await admin
+    .from("debacu_eval_organizations")
+    .select("id, customer_id")
+    .eq("id", org_id)
+    .maybeSingle();
+
+  if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
+  if (!org?.customer_id) throw new Error("ORG_WITHOUT_CUSTOMER");
+
+  return {
+    org_id,
+    org_role: mem.role ?? null,
+    customer_id: String(org.customer_id),
+    app_id: APP_ID,
+  };
+}
+
+/* ======================================================
+ * Types
+ * ====================================================== */
 type GlobalItem = {
   item_code: string;
   title: string | null;
@@ -82,68 +154,69 @@ type HotelItem = {
   unit_price: number | null;
   currency: string | null;
   description: string | null;
-  is_active: boolean | null; // por si tu tabla permite null
+  is_active: boolean | null; // allow null
   updated_at: string | null;
 };
 
-function normCode(x: unknown) {
-  return String(x ?? "").trim().toUpperCase();
-}
-
-Deno.serve(async (req) => {
+/* ======================================================
+ * Handler
+ * ====================================================== */
+export default Deno.serve(async (req: Request) => {
   const origin = req.headers.get("origin");
+  const FN = "debacu_eval_item_catalog_list";
 
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders(origin) });
   }
-
   if (req.method !== "POST") {
-    return json(origin, 405, { ok: false, error: "Method not allowed" });
+    return json(origin, 405, { ok: false, error: "method_not_allowed" });
   }
 
   try {
-    const sessionToken = req.headers.get("x-session-token") || "";
-    if (!sessionToken) {
-      return json(origin, 401, { ok: false, error: "Missing x-session-token" });
-    }
+    const SUPABASE_URL = mustEnv("SUPABASE_URL");
+    const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
+    const SERVICE_ROLE = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-    // Body opcional
-    let body: any = {};
-    try {
-      body = await req.json();
-    } catch {
-      body = {};
-    }
+    // 1) JWT obligatorio
+    const user = await requireJwtUser(req, SUPABASE_URL, ANON_KEY);
 
-    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
-      auth: { persistSession: false },
+    // 2) tenant context (org_id + customer_id)
+    const admin = adminClient(SUPABASE_URL, SERVICE_ROLE);
+    const ctx = await requireOrgMemberAndCustomerId(admin, user.id);
+
+    logLine({
+      fn: FN,
+      stage: "start",
+      user_id: user.id,
+      org_id: ctx.org_id,
+      customer_id: ctx.customer_id,
+      app_id: ctx.app_id,
     });
 
-    const { customerId } = await assertEvalSession(
-      supabase,
-      sessionToken,
-      body?.customerId ?? null,
-    );
-
-    // 1) Global activos
-    const { data: globalItems, error: e1 } = await supabase
+    // 3) Global activos
+    const { data: globalItems, error: e1 } = await admin
       .from("debacu_item_catalog")
       .select("item_code,title,category,unit_price,currency,description,is_active,updated_at")
       .eq("is_active", true);
 
-    if (e1) return json(origin, 500, { ok: false, error: e1.message });
+    if (e1) {
+      logLine({ fn: FN, stage: "db_global_failed", error: e1.message });
+      return json(origin, 500, { ok: false, error: "db_global_items_failed", detail: e1.message });
+    }
 
-    // 2) Hotel items (NO filtrar is_active, porque si el hotel lo pone false
-    // necesitamos leerlo para desactivar un item global)
-    const { data: hotelItems, error: e2 } = await supabase
+    // 4) Hotel items (todos, incluidos desactivados)
+    const { data: hotelItems, error: e2 } = await admin
       .from("debacu_hotel_item_catalog")
       .select("item_code,title,category,unit_price,currency,description,is_active,updated_at")
-      .eq("customer_id", customerId);
+      .eq("customer_id", ctx.customer_id);
 
-    if (e2) return json(origin, 500, { ok: false, error: e2.message });
+    if (e2) {
+      logLine({ fn: FN, stage: "db_hotel_failed", error: e2.message });
+      return json(origin, 500, { ok: false, error: "db_hotel_items_failed", detail: e2.message });
+    }
 
-    const globals = (globalItems ?? []) as any as GlobalItem[];
-    const hotels = (hotelItems ?? []) as any as HotelItem[];
+    const globals = (globalItems ?? []) as GlobalItem[];
+    const hotels = (hotelItems ?? []) as HotelItem[];
 
     const gMap = new Map<string, GlobalItem>();
     for (const g of globals) {
@@ -159,13 +232,14 @@ Deno.serve(async (req) => {
       hMap.set(code, { ...h, item_code: code });
     }
 
-    // 3) Merge effective
+    // 5) Merge effective
     const out: any[] = [];
 
-    // a) todo lo global (aplicando override si existe)
+    // a) todo lo global (override si existe)
     for (const [code, g] of gMap.entries()) {
       const h = hMap.get(code) ?? null;
 
+      // si hotel lo desactiva -> fuera
       const effectiveActive = h ? (h.is_active ?? true) : true;
       if (!effectiveActive) continue;
 
@@ -200,20 +274,42 @@ Deno.serve(async (req) => {
       });
     }
 
-    // 4) Orden estable (técnico) -> UI ya ordenará si quiere por title
     out.sort((a, b) => String(a.item_code).localeCompare(String(b.item_code)));
 
-    return json(origin, 200, { ok: true, customerId, items: out });
+    logLine({
+      fn: FN,
+      stage: "ok",
+      user_id: user.id,
+      org_id: ctx.org_id,
+      customer_id: ctx.customer_id,
+      app_id: ctx.app_id,
+      status: 200,
+      rows: out.length,
+    });
+
+    return json(origin, 200, {
+      ok: true,
+      org_id: ctx.org_id,
+      customerId: ctx.customer_id,
+      app_id: ctx.app_id,
+      items: out,
+    });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
 
-    const isAuthOrClient =
-      msg.includes("Missing") ||
-      msg.includes("Invalid session") ||
-      msg.includes("Session revoked") ||
-      msg.includes("Session expired") ||
-      msg.includes("mismatch");
+    const status =
+      msg === "UNAUTHENTICATED"
+        ? 401
+        : msg.startsWith("MISSING_ENV:")
+        ? 500
+        : msg === "NO_ORG_MEMBERSHIP"
+        ? 403
+        : msg.startsWith("ORG_")
+        ? 500
+        : 500;
 
-    return json(origin, isAuthOrClient ? 400 : 500, { ok: false, error: msg });
+    logLine({ fn: "debacu_eval_item_catalog_list", stage: "error", status, detail: msg });
+
+    return json(origin, status, { ok: false, error: "request_failed", detail: msg });
   }
 });

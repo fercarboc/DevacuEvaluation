@@ -5,6 +5,8 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+const APP_ID = "DEBACU_EVAL";
+
 const ALLOWED_ORIGINS = new Set([
   "http://localhost:3000",
   "http://localhost:5173",
@@ -19,8 +21,8 @@ function corsHeaders(origin: string | null) {
     "Access-Control-Allow-Origin": allowOrigin,
     "Vary": "Origin",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token",
+    // ✅ JWT-only
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Max-Age": "86400",
   };
 }
@@ -47,68 +49,66 @@ async function requireJwtUser(req: Request) {
   return data.user;
 }
 
-const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
-
-const APP_ID = "DEBACU_EVAL";
-const APP_CODE = "DEBACU_EVAL";
-
-function readSessionToken(req: Request) {
-  return (req.headers.get("x-session-token") ?? "").trim();
+function adminClient() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 }
 
-async function requireEvalSession(token: string) {
-  const { data: session, error } = await admin
-    .from("debacu_eval_sessions")
-    .select("customer_id, app_code, expires_at, revoked_at")
-    .eq("token", token)
-    .maybeSingle();
-
-  if (error || !session) throw new Error("SESSION_INVALID");
-  if (session.app_code !== APP_CODE) throw new Error("SESSION_INVALID_APP");
-  if (session.revoked_at) throw new Error("SESSION_REVOKED");
-  if (session.expires_at && new Date(session.expires_at).getTime() < Date.now()) throw new Error("SESSION_EXPIRED");
-
-  return session.customer_id as string;
-}
-
-async function requireOrgMember(customer_id: string, user_id: string) {
-  const { data: org, error: orgErr } = await admin
-    .from("debacu_eval_organizations")
-    .select("id")
-    .eq("customer_id", customer_id)
+/** ======================================================
+ * ORG + (opcional) ENTITLEMENTS
+ * ====================================================== */
+async function resolveOrgIdForUserOrThrow(admin: ReturnType<typeof adminClient>, userId: string) {
+  const { data, error } = await admin
+    .from("debacu_eval_org_members")
+    .select("org_id, created_at")
+    .eq("user_id", userId)
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
-  if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-  if (!org?.id) throw new Error("FORBIDDEN_NO_ORG");
-
-  const { data: mem, error: memErr } = await admin
-    .from("debacu_eval_org_members")
-    .select("id, role")
-    .eq("org_id", org.id)
-    .eq("user_id", user_id)
-    .maybeSingle();
-
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.id) throw new Error("FORBIDDEN");
-
-  return { org_id: org.id, role: mem.role ?? null };
+  if (error) throw new Error(`MEMBERSHIP_LOOKUP_FAILED:${error.message}`);
+  if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+  return String(data.org_id);
 }
 
+type EntitlementsRow = {
+  org_id: string;
+  subscription_status: string | null; // hoy: ACTIVE o null
+  plan_code: string | null;
+};
+
+async function loadEntitlementsOrThrow(admin: ReturnType<typeof adminClient>, orgId: string) {
+  const { data, error } = await admin
+    .from("debacu_eval_org_entitlements_v")
+    .select("org_id, subscription_status, plan_code")
+    .eq("org_id", orgId)
+    .maybeSingle();
+
+  if (error) throw new Error(`ENTITLEMENTS_FAILED:${error.message}`);
+  if (!data) throw new Error("FORBIDDEN_NO_ENTITLEMENTS");
+  return data as EntitlementsRow;
+}
+
+function assertOrgActiveOrThrow(ent: EntitlementsRow) {
+  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+}
+
+/** ======================================================
+ * INPUT
+ * ====================================================== */
 type ReqBody = {
-  limit?: number;   // default 25
-  offset?: number;  // default 0
+  limit?: number; // default 25
+  offset?: number; // default 0
   status?: "ALL" | "PENDING" | "READY" | "FAILED" | "EXPIRED";
   export_type?: "ALL" | "PDF" | "CSV";
   from?: string; // yyyy-mm-dd
-  to?: string;   // yyyy-mm-dd
+  to?: string; // yyyy-mm-dd
 };
 
 export default Deno.serve(async (req: Request) => {
   const origin = req.headers.get("origin");
+  const admin = adminClient();
 
   if (req.method === "OPTIONS") return new Response("ok", { status: 200, headers: corsHeaders(origin) });
   if (req.method !== "POST") return json(origin, 405, { ok: false, error: "method_not_allowed" });
@@ -116,11 +116,13 @@ export default Deno.serve(async (req: Request) => {
   try {
     const user = await requireJwtUser(req);
 
-    const sessionToken = readSessionToken(req);
-    if (!sessionToken) return json(origin, 401, { ok: false, error: "missing_session_token" });
+    // ✅ JWT-only: org por user.id
+    const org_id = await resolveOrgIdForUserOrThrow(admin, user.id);
 
-    const customer_id = await requireEvalSession(sessionToken);
-    const { org_id } = await requireOrgMember(customer_id, user.id);
+    // ✅ opcional pero recomendable: no listamos si plan no está activo
+    // (si quieres permitir ver histórico aunque esté EXPIRED, quita esta línea)
+    const ent = await loadEntitlementsOrThrow(admin, org_id);
+    assertOrgActiveOrThrow(ent);
 
     const body = (await req.json().catch(() => ({}))) as ReqBody;
 
@@ -142,7 +144,6 @@ export default Deno.serve(async (req: Request) => {
     if (body.to) q = q.lte("period_to", body.to);
 
     const { data: rows, error, count } = await q;
-
     if (error) throw new Error(`LIST_FAILED:${error.message}`);
 
     return json(origin, 200, {
@@ -157,10 +158,10 @@ export default Deno.serve(async (req: Request) => {
     const code =
       msg === "UNAUTHENTICATED"
         ? 401
-        : msg.startsWith("SESSION_")
-        ? 401
         : msg.startsWith("FORBIDDEN")
         ? 403
+        : msg.startsWith("PLAN_NOT_ACTIVE")
+        ? 402
         : 500;
 
     console.error("customer_audit_exports_list error:", e);

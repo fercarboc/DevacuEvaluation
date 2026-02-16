@@ -1,21 +1,42 @@
-// src/routes/RequireAdmin.tsx
 import React, { useEffect, useState } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 import { useEvalAuth } from "@/context/EvalAuthContext";
 import { admin_whoami } from "@/services/adminService";
 
-export function RequireAdmin({ children }: { children: React.ReactNode }) {
+interface RequireAdminProps {
+  children: React.ReactNode;
+  redirectNonAdminTo?: string;
+}
+
+export function RequireAdmin({
+  children,
+  redirectNonAdminTo = "/app",
+}: RequireAdminProps) {
   const { user, loading } = useEvalAuth();
+  const location = useLocation();
+
   const [checking, setChecking] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
     async function run() {
       try {
-        const cacheKey = "debacu_eval_is_admin";
+        // Si no hay usuario autenticado
+        if (!user) {
+          if (!cancelled) {
+            setIsAdmin(false);
+            setChecking(false);
+          }
+          return;
+        }
+
+        // ✅ cache POR USUARIO (evita heredar admin entre cuentas)
+        const cacheKey = `debacu_eval_is_admin:${user.id}`;
         const cached = sessionStorage.getItem(cacheKey);
+
+        // Cache positivo
         if (cached === "true") {
           if (!cancelled) {
             setIsAdmin(true);
@@ -23,6 +44,8 @@ export function RequireAdmin({ children }: { children: React.ReactNode }) {
           }
           return;
         }
+
+        // Cache negativo
         if (cached === "false") {
           if (!cancelled) {
             setIsAdmin(false);
@@ -31,6 +54,7 @@ export function RequireAdmin({ children }: { children: React.ReactNode }) {
           return;
         }
 
+        // Llamada real a backend
         const me = await admin_whoami();
         const ok = !!me?.is_admin;
 
@@ -41,7 +65,10 @@ export function RequireAdmin({ children }: { children: React.ReactNode }) {
           setChecking(false);
         }
       } catch {
-        sessionStorage.setItem("debacu_eval_is_admin", "false");
+        if (user) {
+          sessionStorage.setItem(`debacu_eval_is_admin:${user.id}`, "false");
+        }
+
         if (!cancelled) {
           setIsAdmin(false);
           setChecking(false);
@@ -49,18 +76,28 @@ export function RequireAdmin({ children }: { children: React.ReactNode }) {
       }
     }
 
-    if (!loading && user) void run();
-    if (!loading && !user) setChecking(false);
+    if (!loading) {
+      void run();
+    }
 
     return () => {
       cancelled = true;
     };
-  }, [loading, user]);
+  }, [loading, user?.id]);
 
+  // Mientras carga auth o check admin
   if (loading || checking) return null;
-  if (!user) return <Navigate to="/login" replace />;
 
-  if (!isAdmin) return <Navigate to="/solicitar-acceso" replace />;
+  // No autenticado
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
 
+  // Autenticado pero no admin
+  if (!isAdmin) {
+    return <Navigate to={redirectNonAdminTo} replace />;
+  }
+
+  // Admin autorizado
   return <>{children}</>;
 }

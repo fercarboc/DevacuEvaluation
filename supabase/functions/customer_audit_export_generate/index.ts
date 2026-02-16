@@ -6,6 +6,8 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+const APP_ID = "DEBACU_EVAL";
+
 const ALLOWED_ORIGINS = new Set([
   "http://localhost:3000",
   "http://localhost:5173",
@@ -20,8 +22,8 @@ function corsHeaders(origin: string | null) {
     "Access-Control-Allow-Origin": allowOrigin,
     Vary: "Origin",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token",
+    // ✅ JWT-only
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Max-Age": "86400",
   };
 }
@@ -48,64 +50,66 @@ async function requireJwtUser(req: Request) {
   return data.user;
 }
 
-const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
-
-const APP_ID = "DEBACU_EVAL";
-const APP_CODE = "DEBACU_EVAL";
-
-function readSessionToken(req: Request) {
-  return (req.headers.get("x-session-token") ?? "").trim();
+function adminClient() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 }
 
-async function requireEvalSession(token: string) {
-  const { data: session, error } = await admin
-    .from("debacu_eval_sessions")
-    .select("customer_id, app_code, expires_at, revoked_at")
-    .eq("token", token)
-    .maybeSingle();
-
-  if (error || !session) throw new Error("SESSION_INVALID");
-  if (session.app_code !== APP_CODE) throw new Error("SESSION_INVALID_APP");
-  if (session.revoked_at) throw new Error("SESSION_REVOKED");
-  if (session.expires_at && new Date(session.expires_at).getTime() < Date.now()) throw new Error("SESSION_EXPIRED");
-
-  return session.customer_id as string;
-}
-
-async function requireOrgMember(customer_id: string, user_id: string) {
-  const { data: org, error: orgErr } = await admin
-    .from("debacu_eval_organizations")
-    .select("id")
-    .eq("customer_id", customer_id)
+/** ======================================================
+ * ORG + ENTITLEMENTS (JWT-only)
+ * ====================================================== */
+async function resolveOrgIdForUserOrThrow(admin: ReturnType<typeof adminClient>, userId: string) {
+  const { data, error } = await admin
+    .from("debacu_eval_org_members")
+    .select("org_id, role, created_at")
+    .eq("user_id", userId)
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
-  if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-  if (!org?.id) throw new Error("FORBIDDEN_NO_ORG");
+  if (error) throw new Error(`MEMBERSHIP_LOOKUP_FAILED:${error.message}`);
+  if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
 
-  const { data: mem, error: memErr } = await admin
-    .from("debacu_eval_org_members")
-    .select("id, role")
-    .eq("org_id", org.id)
-    .eq("user_id", user_id)
-    .maybeSingle();
-
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.id) throw new Error("FORBIDDEN");
-
-  return { org_id: org.id, role: mem.role ?? null };
+  return { org_id: String(data.org_id), role: (data.role ?? null) as string | null };
 }
 
+type EntitlementsRow = {
+  org_id: string;
+  customer_id: string | null;
+  subscription_status: string | null; // hoy: ACTIVE o null
+  plan_code: string | null;
+  max_users: number | null;
+  seats_used: number;
+};
+
+async function loadEntitlementsOrThrow(admin: ReturnType<typeof adminClient>, orgId: string) {
+  const { data, error } = await admin
+    .from("debacu_eval_org_entitlements_v")
+    .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used")
+    .eq("org_id", orgId)
+    .maybeSingle();
+
+  if (error) throw new Error(`ENTITLEMENTS_FAILED:${error.message}`);
+  if (!data) throw new Error("FORBIDDEN_NO_ENTITLEMENTS");
+  return data as EntitlementsRow;
+}
+
+function assertOrgActiveOrThrow(ent: EntitlementsRow) {
+  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+  if (!ent.customer_id) throw new Error("NO_CUSTOMER_ON_ORG");
+}
+
+/** ======================================================
+ * Types + utils
+ * ====================================================== */
 type ReqBody = {
   export_type: "PDF" | "CSV";
   export_scope: string;
   period_from: string; // yyyy-mm-dd
   period_to: string; // yyyy-mm-dd
   filters?: any;
-  storage_bucket?: string; // opcional: si el FE lo manda, lo aceptamos pero no confiamos a ciegas
+  storage_bucket?: string; // lo ignoramos (no confiar)
 };
 
 function assertDate(s: string, name: string) {
@@ -113,10 +117,8 @@ function assertDate(s: string, name: string) {
 }
 
 function normalizeFilters(v: unknown): Record<string, unknown> {
-  // ✅ NUNCA null: la columna filters es NOT NULL (y debe ser jsonb)
   if (!v) return {};
   if (typeof v === "object") return v as Record<string, unknown>;
-  // si viene string JSON, intentamos parsear
   if (typeof v === "string") {
     try {
       const parsed = JSON.parse(v);
@@ -129,28 +131,30 @@ function normalizeFilters(v: unknown): Record<string, unknown> {
 }
 
 function safeScope(scope: string) {
-  // Si quieres, limita a scopes permitidos:
-  // return allowed.has(scope) ? scope : null;
-  // Por ahora, solo normalizamos.
   return String(scope).trim();
 }
 
 export default Deno.serve(async (req: Request) => {
   const origin = req.headers.get("origin");
+  const admin = adminClient();
 
   if (req.method === "OPTIONS") return new Response("ok", { status: 200, headers: corsHeaders(origin) });
   if (req.method !== "POST") return json(origin, 405, { ok: false, error: "method_not_allowed" });
 
   try {
+    // 1) JWT user
     const user = await requireJwtUser(req);
 
-    const sessionToken = readSessionToken(req);
-    if (!sessionToken) return json(origin, 401, { ok: false, error: "missing_session_token" });
+    // 2) org + entitlements (JWT-only)
+    const { org_id, role } = await resolveOrgIdForUserOrThrow(admin, user.id);
+    const ent = await loadEntitlementsOrThrow(admin, org_id);
+    assertOrgActiveOrThrow(ent);
 
-    const customer_id = await requireEvalSession(sessionToken);
-    const { org_id, role } = await requireOrgMember(customer_id, user.id);
+    // (ahora mismo no lo usas aquí, pero lo dejo por coherencia)
+    const customer_id = String(ent.customer_id);
 
-    const body = (await req.json()) as ReqBody;
+    // 3) body
+    const body = (await req.json().catch(() => ({}))) as ReqBody;
 
     if (!body?.export_type || !body?.export_scope) throw new Error("BAD_REQUEST");
     assertDate(body.period_from, "period_from");
@@ -160,13 +164,13 @@ export default Deno.serve(async (req: Request) => {
     const export_type = body.export_type;
     const export_scope = safeScope(body.export_scope);
 
-    // ✅ FIX CLAVE: filters SIEMPRE {}
+    // ✅ filters SIEMPRE {}
     const filters = normalizeFilters(body.filters);
 
-    // storage_bucket: puedes aceptar el del FE, pero yo lo forzaría a uno permitido.
+    // ✅ no confiar en FE; bucket fijo permitido
     const storage_bucket = "customer-exports";
 
-    // 1) crea registro PENDING
+    // 4) crea registro PENDING
     const { data: created, error: insErr } = await admin
       .from("customer_audit_exports")
       .insert({
@@ -182,11 +186,14 @@ export default Deno.serve(async (req: Request) => {
         period_from: body.period_from,
         period_to: body.period_to,
 
-        filters, // ✅ nunca null
+        filters,
         status: "PENDING",
 
         storage_bucket,
-        storage_path: "", // se rellena al generar el fichero real
+        storage_path: "",
+
+        // opcional: si tienes columna customer_id en la tabla, es buena idea rellenarla:
+        // customer_id,
       })
       .select("id")
       .single();
@@ -195,18 +202,17 @@ export default Deno.serve(async (req: Request) => {
 
     const export_id = created.id as string;
 
-    // 2) aquí iría tu pipeline real de generación (CSV/PDF + upload a Storage + update COMPLETED)
-    //    Por ahora devolvemos PENDING.
+    // Aquí irá tu pipeline real (generate + upload + update READY/FAILED).
     return json(origin, 200, { ok: true, export_id, status: "PENDING" });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
     const code =
       msg === "UNAUTHENTICATED"
         ? 401
-        : msg.startsWith("SESSION_")
-        ? 401
         : msg.startsWith("FORBIDDEN")
         ? 403
+        : msg.startsWith("PLAN_NOT_ACTIVE")
+        ? 402
         : msg.startsWith("BAD_") || msg === "BAD_REQUEST"
         ? 400
         : 500;

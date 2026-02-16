@@ -7,6 +7,8 @@ import { SolicitudEnviadaPage } from "@/pages/public/SolicitudEnviadaPage";
 import SolicitarAccesoPage from "@/pages/public/SolicitarAccesoPage";
 
 import LoginPage from "@/pages/auth/LoginPage";
+import ResetPasswordPage from "@/pages/auth/ResetPasswordPage";
+
 import AuthedApp from "@/pages/app/AuthedApp";
 
 import AdminLayout from "@/pages/admin/AdminLayout";
@@ -20,17 +22,12 @@ import AdminAuditPage from "@/pages/admin/AdminAuditPage";
 import AdminExportsPage from "@/pages/admin/AdminExportsPage";
 import AdminChangesPage from "@/pages/admin/AdminChangesPage";
 import AdminSettingsPage from "@/pages/admin/AdminSettingsPage";
-import AdminChangesSaasPage from "@/pages/admin/AdminChangesSaasPage"; // ✅ NUEVO
+import AdminChangesSaasPage from "@/pages/admin/AdminChangesSaasPage";
 
 import { AdminSolicitudesAccesoPage } from "@/pages/admin/AdminSolicitudesAccesoPage";
 import { RequireAuth } from "@/components/auth/RequiereAuth";
 import { RequireAdmin } from "@/components/auth/RequireAdmin";
 
-/**
- * IMPORTANTE:
- * - /app ahora SIEMPRE pasa por RequireAuth
- * - /app/admin/... se protege adicionalmente con RequireAdmin
- */
 export function AppRoutes() {
   return (
     <Routes>
@@ -39,6 +36,7 @@ export function AppRoutes() {
 
       {/* públicas */}
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/solicitar-acceso" element={<SolicitarAccesoPage />} />
       <Route path="/solicitud-enviada" element={<SolicitudEnviadaPage />} />
 
@@ -57,7 +55,7 @@ export function AppRoutes() {
         path="/app/admin/*"
         element={
           <RequireAuth>
-            <RequireAdmin>
+            <RequireAdmin redirectNonAdminTo="/app">
               <AdminLayout />
             </RequireAdmin>
           </RequireAuth>
@@ -72,13 +70,8 @@ export function AppRoutes() {
         <Route path="estadisticas" element={<AdminStatsPage />} />
         <Route path="auditoria" element={<AdminAuditPage />} />
         <Route path="exportaciones" element={<AdminExportsPage />} />
-
-        {/* existente: cambios (auditoría uso/abuso) */}
         <Route path="cambios" element={<AdminChangesPage />} />
-
-        {/* ✅ NUEVO: cambios SaaS (settings audit log) */}
         <Route path="cambios-saas" element={<AdminChangesSaasPage />} />
-
         <Route path="configuracion" element={<AdminSettingsPage />} />
         <Route path="*" element={<Navigate to="/app/admin/dashboard" replace />} />
       </Route>

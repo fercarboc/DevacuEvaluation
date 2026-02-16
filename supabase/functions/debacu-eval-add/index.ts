@@ -1,18 +1,12 @@
-// supabase/functions/debacu-eval-add/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 /* ======================================================
- * ENV
+ * CONST
  * ====================================================== */
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const DEFAULT_APP_CODE = "DEBACU_EVAL";
+const APP_ID = "DEBACU_EVAL";
 
-/* ======================================================
- * CORS (whitelist + preflight 204)
- * ====================================================== */
 const ALLOWED_ORIGINS = new Set([
   "http://localhost:3000",
   "http://localhost:5173",
@@ -20,14 +14,16 @@ const ALLOWED_ORIGINS = new Set([
   "https://www.debacu.com",
 ]);
 
+/* ======================================================
+ * CORS + RESP
+ * ====================================================== */
 function corsHeaders(origin: string | null) {
   const o = origin ?? "";
   const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
   return {
     "Access-Control-Allow-Origin": allowOrigin,
-    Vary: "Origin",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token",
+    "Vary": "Origin",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Max-Age": "86400",
   };
@@ -36,16 +32,101 @@ function corsHeaders(origin: string | null) {
 function json(origin: string | null, status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
+    headers: { ...corsHeaders(origin), "Content-Type": "application/json; charset=utf-8" },
   });
 }
 
-const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-  auth: { autoRefreshToken: false, persistSession: false },
-});
+function mustEnv(name: string) {
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`MISSING_ENV:${name}`);
+  return v;
+}
+
+function logLine(payload: Record<string, unknown>) {
+  console.log(JSON.stringify(payload));
+}
 
 /* ======================================================
- * Helpers
+ * Clients
+ * ====================================================== */
+function userClient(req: Request, supabaseUrl: string, anonKey: string) {
+  const auth = req.headers.get("Authorization") ?? "";
+  return createClient(supabaseUrl, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: auth } },
+  });
+}
+
+function adminClient(supabaseUrl: string, serviceRole: string) {
+  return createClient(supabaseUrl, serviceRole, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+/* ======================================================
+ * AuthN (JWT)
+ * ====================================================== */
+async function requireJwtUser(sbUser: ReturnType<typeof createClient>) {
+  const { data, error } = await sbUser.auth.getUser();
+  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
+  return data.user;
+}
+
+/* ======================================================
+ * AuthZ (tenant context)
+ * ====================================================== */
+async function requireOrgMemberAndCustomerId(admin: ReturnType<typeof createClient>, userId: string) {
+  // 1) membership
+  const { data: mem, error: memErr } = await admin
+    .from("debacu_eval_org_members")
+    .select("org_id, role, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
+  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+
+  const org_id = String(mem.org_id);
+  const role = mem.role ?? null;
+
+  // 2) customer_id: entitlements view (si existe)
+  let customer_id: string | null = null;
+  try {
+    const { data: ent, error: entErr } = await admin
+      .from("debacu_eval_org_entitlements_v")
+      .select("customer_id")
+      .eq("org_id", org_id)
+      .maybeSingle();
+
+    if (entErr) {
+      logLine({ fn: "debacu-eval-add", stage: "entitlements_err", org_id, detail: entErr.message });
+    } else if (ent?.customer_id) {
+      customer_id = String(ent.customer_id);
+    }
+  } catch {
+    // ignore (view may not exist)
+  }
+
+  // 3) fallback organizations
+  if (!customer_id) {
+    const { data: org, error: orgErr } = await admin
+      .from("debacu_eval_organizations")
+      .select("customer_id")
+      .eq("id", org_id)
+      .maybeSingle();
+
+    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
+    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+    customer_id = String(org.customer_id);
+  }
+
+  return { org_id, role, customer_id, app_id: APP_ID };
+}
+
+/* ======================================================
+ * Helpers (tu lógica)
  * ====================================================== */
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -76,29 +157,10 @@ function seasonMultiplier(season: string | null, profile: any) {
 }
 
 /* ======================================================
- * Session (UUID real)
+ * Data fetchers
  * ====================================================== */
-async function requireSession(token: string, app_code: string) {
-  const now = new Date().toISOString();
-
-  const { data, error } = await supabase
-    .from("debacu_eval_sessions")
-    .select("customer_id, customer_name, app_code, expires_at, revoked_at")
-    .eq("token", token)
-    .eq("app_code", app_code)
-    .is("revoked_at", null)
-    .gt("expires_at", now)
-    .maybeSingle();
-
-  if (error || !data || !data.customer_id) return null;
-  return data;
-}
-
-/* ======================================================
- * Data fetchers (alineados a tu BD REAL)
- * ====================================================== */
-async function getHotelProfile(customer_id: string) {
-  const { data, error } = await supabase
+async function getHotelProfile(admin: ReturnType<typeof createClient>, customer_id: string) {
+  const { data, error } = await admin
     .from("debacu_hotel_profile")
     .select("customer_id, hotel_category, adr_real, season_mult_high, season_mult_low")
     .eq("customer_id", customer_id)
@@ -108,8 +170,8 @@ async function getHotelProfile(customer_id: string) {
   return data ?? null;
 }
 
-async function getAdrReference(hotel_category: number) {
-  const { data, error } = await supabase
+async function getAdrReference(admin: ReturnType<typeof createClient>, hotel_category: number) {
+  const { data, error } = await admin
     .from("debacu_adr_reference_by_category")
     .select("adr_reference")
     .eq("hotel_category", hotel_category)
@@ -119,12 +181,11 @@ async function getAdrReference(hotel_category: number) {
   return num(data?.adr_reference);
 }
 
-// ✅ Tu tabla REAL: debacu_incident_catalog (NO tiene "code"; usa incident_type)
-async function getIncidentCatalog(incident_type: string) {
-  const { data, error } = await supabase
+async function getIncidentCatalog(admin: ReturnType<typeof createClient>, incident_type: string) {
+  const { data, error } = await admin
     .from("debacu_incident_catalog")
     .select(
-      "incident_type, is_active, severity, default_gross_min, default_gross_max, default_recovery_pct, title, description, suggested_actions"
+      "incident_type, is_active, severity, default_gross_min, default_gross_max, default_recovery_pct, title, description, suggested_actions",
     )
     .eq("incident_type", incident_type)
     .maybeSingle();
@@ -135,12 +196,15 @@ async function getIncidentCatalog(incident_type: string) {
   return data;
 }
 
-// ✅ Tu tabla REAL: debacu_hotel_incident_overrides
-async function getIncidentOverride(customer_id: string, incident_type: string) {
-  const { data, error } = await supabase
+async function getIncidentOverride(
+  admin: ReturnType<typeof createClient>,
+  customer_id: string,
+  incident_type: string,
+) {
+  const { data, error } = await admin
     .from("debacu_hotel_incident_overrides")
     .select(
-      "incident_type, is_active, severity_override, default_gross_min_override, default_gross_max_override, default_recovery_pct_override, title_override, description_override, suggested_actions_override"
+      "incident_type, is_active, severity_override, default_gross_min_override, default_gross_max_override, default_recovery_pct_override, title_override, description_override, suggested_actions_override",
     )
     .eq("customer_id", customer_id)
     .eq("incident_type", incident_type)
@@ -153,11 +217,10 @@ async function getIncidentOverride(customer_id: string, incident_type: string) {
 }
 
 /**
- * ✅ Fuente única de verdad: debacu_hotel_item_catalog
- * (No fallback a debacu_item_catalog, porque ya has materializado items por hotel)
+ * Fuente de precio por hotel: debacu_hotel_item_catalog
  */
-async function getHotelItemUnitPrice(customer_id: string, item_code: string) {
-  const { data, error } = await supabase
+async function getHotelItemUnitPrice(admin: ReturnType<typeof createClient>, customer_id: string, item_code: string) {
+  const { data, error } = await admin
     .from("debacu_hotel_item_catalog")
     .select("unit_price, is_active")
     .eq("customer_id", customer_id)
@@ -175,91 +238,96 @@ async function getHotelItemUnitPrice(customer_id: string, item_code: string) {
  * ====================================================== */
 serve(async (req) => {
   const origin = req.headers.get("origin");
+  const FN = "debacu-eval-add";
 
   // Preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders(origin) });
   }
   if (req.method !== "POST") {
-    return json(origin, 405, { error: "Method not allowed" });
+    return json(origin, 405, { ok: false, error: "method_not_allowed" });
   }
 
   try {
-    const token = str(req.headers.get("x-session-token"));
-    if (!token) return json(origin, 401, { error: "Missing x-session-token" });
+    const SUPABASE_URL = mustEnv("SUPABASE_URL");
+    const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+    const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
 
+    const admin = adminClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+    const sbUser = userClient(req, SUPABASE_URL, ANON_KEY);
+
+    // 1) JWT
+    const user = await requireJwtUser(sbUser);
+
+    // 2) tenant context
+    const ctx = await requireOrgMemberAndCustomerId(admin, user.id);
+
+    // 3) body
     const body = await req.json().catch(() => null);
-    if (!body) return json(origin, 400, { error: "Invalid JSON body" });
+    if (!body) return json(origin, 400, { ok: false, error: "invalid_json_body" });
 
-    const app_code = str(body.app_code ?? body.appCode ?? DEFAULT_APP_CODE) || DEFAULT_APP_CODE;
     const accept_declaration = body.accept_declaration ?? body.acceptDeclaration ?? true;
     const input = body.input;
 
-    if (!input) return json(origin, 400, { error: "Missing input" });
+    if (!input) return json(origin, 400, { ok: false, error: "missing_input" });
     if (accept_declaration !== true) {
-      return json(origin, 400, { error: "Debes aceptar la declaración de veracidad." });
+      return json(origin, 400, { ok: false, error: "must_accept_declaration" });
     }
 
-    const session = await requireSession(token, app_code);
-    if (!session) return json(origin, 401, { error: "Invalid or expired session" });
+    logLine({
+      fn: FN,
+      stage: "start",
+      user_id: user.id,
+      org_id: ctx.org_id,
+      customer_id: ctx.customer_id,
+      app_id: ctx.app_id,
+    });
 
-    // ✅ UUID REAL del hotel (propietario de los datos)
-    const customer_uuid = session.customer_id as string;
-    const customer_name = (session as any).customer_name ?? null;
-
-    /* -------------------------
-     * Perfil
-     * ------------------------- */
-    const profile = await getHotelProfile(customer_uuid);
+    // 4) perfil
+    const profile = await getHotelProfile(admin, ctx.customer_id);
     if (!profile || profile.hotel_category === null || profile.hotel_category === undefined) {
       return json(origin, 409, {
+        ok: false,
         error: "ONBOARDING_REQUIRED",
-        details: "Perfil de hotel incompleto (falta hotel_category o profile).",
+        detail: "Perfil de hotel incompleto (falta hotel_category o profile).",
       });
     }
 
-    /* -------------------------
-     * Campos base
-     * ------------------------- */
+    // 5) campos base
     const document = str(input.document);
     const full_name = str(input.full_name ?? input.fullName);
     const rating = clampInt(input.rating, 1, 5);
 
     if (!document || !full_name) {
-      return json(origin, 400, { error: "document y full_name son obligatorios" });
+      return json(origin, 400, { ok: false, error: "missing_required_fields", detail: "document y full_name" });
     }
 
     const incident_type = str(input.incident_type ?? input.incidentType) || null;
     const season_applied = str(input.season_applied ?? input.seasonApplied) || null;
 
-    // UI: items con { code, qty }. Aceptamos: code | item_code y qty | quantity
     const impact_items_raw = input.impact_items ?? input.impactItems ?? null;
     const impact_items = Array.isArray(impact_items_raw) ? impact_items_raw : [];
 
-    /* -------------------------
-     * Snapshots
-     * ------------------------- */
+    // snapshots
     const hotel_category = Number(profile.hotel_category);
-    const adr_reference = await getAdrReference(hotel_category);
+    const adr_reference = await getAdrReference(admin, hotel_category);
     const adr_real_snapshot = num(profile.adr_real);
 
-    /* -------------------------
-     * Economía
-     * ------------------------- */
+    // economía
     let economic_impact_gross: number | null = null;
     let economic_recovered: number | null = null;
     let economic_net_loss: number | null = null;
 
     if (incident_type) {
-      const cat = await getIncidentCatalog(incident_type);
+      const cat = await getIncidentCatalog(admin, incident_type);
       if (!cat) {
-        return json(origin, 400, { error: "INCIDENT_INVALID", details: incident_type });
+        return json(origin, 400, { ok: false, error: "INCIDENT_INVALID", detail: incident_type });
       }
 
-      const ovr = await getIncidentOverride(customer_uuid, incident_type);
+      const ovr = await getIncidentOverride(admin, ctx.customer_id, incident_type);
       const mult = seasonMultiplier(season_applied, profile);
 
-      // 1) gross desde items (si hay items)
+      // 1) gross desde items
       let gross_items = 0;
 
       for (const it of impact_items) {
@@ -269,15 +337,14 @@ serve(async (req) => {
 
         if (!code) continue;
 
-        const unit = await getHotelItemUnitPrice(customer_uuid, code);
-        if (unit === null) continue; // item no activo / no existe -> se ignora
+        const unit = await getHotelItemUnitPrice(admin, ctx.customer_id, code);
+        if (unit === null) continue;
 
         gross_items += unit * qty;
       }
 
-      // 2) fallback: rango por defecto
-      const gross_min =
-        num(ovr?.default_gross_min_override) ?? num(cat.default_gross_min) ?? 0;
+      // 2) fallback: gross_min
+      const gross_min = num(ovr?.default_gross_min_override) ?? num(cat.default_gross_min) ?? 0;
 
       economic_impact_gross =
         gross_items > 0
@@ -289,22 +356,16 @@ serve(async (req) => {
       if (recovered_input !== null) {
         economic_recovered = Math.round(Math.max(0, recovered_input) * 100) / 100;
       } else {
-        const pct =
-          num(ovr?.default_recovery_pct_override) ?? num(cat.default_recovery_pct) ?? 0;
-
+        const pct = num(ovr?.default_recovery_pct_override) ?? num(cat.default_recovery_pct) ?? 0;
         economic_recovered = Math.round((economic_impact_gross * pct / 100) * 100) / 100;
       }
 
       // 4) net loss
-      economic_net_loss = Math.round(
-        (economic_impact_gross - (economic_recovered ?? 0)) * 100
-      ) / 100;
+      economic_net_loss = Math.round((economic_impact_gross - (economic_recovered ?? 0)) * 100) / 100;
       if (economic_net_loss < 0) economic_net_loss = 0;
     }
 
-    /* -------------------------
-     * INSERT
-     * ------------------------- */
+    // 6) INSERT
     const payload: Record<string, unknown> = {
       document,
       full_name,
@@ -313,17 +374,11 @@ serve(async (req) => {
       email: str(input.email).toLowerCase() || null,
       rating,
       comment: str(input.comment).slice(0, 240) || null,
-      platform: str(input.platform) || DEFAULT_APP_CODE,
+      platform: str(input.platform) || APP_ID,
       evaluation_date: str(input.evaluation_date ?? input.evaluationDate) || todayISO(),
 
-      // ✅ CLAVE: tu tabla exige customer_id NOT NULL
-      customer_id: customer_uuid,
-
-      // ✅ autor/propietario (uuid-first)
-      creator_customer_uuid: customer_uuid,
-
-      // opcional: si existe columna creator_customer_name (si no existe, quítalo)
-      ...(customer_name ? { creator_customer_name: customer_name } : {}),
+      // tenant ownership
+      customer_id: ctx.customer_id,
 
       // snapshots
       hotel_category,
@@ -341,30 +396,50 @@ serve(async (req) => {
       economic_net_loss,
     };
 
-    const { data, error } = await supabase
+    const { data, error } = await admin
       .from("debacu_evaluations")
       .insert(payload)
       .select(
-        "id, document, full_name, nationality, phone, email, rating, comment, platform, evaluation_date, " +
-          "customer_id, creator_customer_uuid, hotel_category, incident_type, economic_impact_gross, economic_recovered, economic_net_loss, " +
-          "impact_items, season_applied, adr_reference, adr_real_snapshot, created_at"
+        "id, document, full_name, nationality, phone, email, rating, comment, platform, evaluation_date," +
+          "customer_id, hotel_category, incident_type, economic_impact_gross, economic_recovered, economic_net_loss," +
+          "impact_items, season_applied, adr_reference, adr_real_snapshot, created_at",
       )
       .single();
 
     if (error) {
+      logLine({ fn: FN, stage: "insert_err", detail: error.message, code: (error as any).code });
       return json(origin, 500, {
-        error: "Insert error",
-        details: error.message,
-        hint: (error as any).hint,
-        code: (error as any).code,
+        ok: false,
+        error: "insert_failed",
+        detail: error.message,
       });
     }
 
+    logLine({
+      fn: FN,
+      stage: "ok",
+      user_id: user.id,
+      org_id: ctx.org_id,
+      customer_id: ctx.customer_id,
+      app_id: ctx.app_id,
+      status: 200,
+      evaluation_id: data?.id ?? null,
+    });
+
     return json(origin, 200, { ok: true, row: data });
   } catch (e: any) {
-    return json(origin, 500, {
-      error: "Unexpected error",
-      details: String(e?.message ?? e),
-    });
+    const msg = String(e?.message ?? e);
+
+    const status =
+      msg === "UNAUTHENTICATED"
+        ? 401
+        : msg.startsWith("MISSING_ENV:")
+        ? 500
+        : msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_") || msg.startsWith("FORBIDDEN")
+        ? 403
+        : 500;
+
+    logLine({ fn: "debacu-eval-add", stage: "error", status, detail: msg });
+    return json(origin, status, { ok: false, error: "request_failed", detail: msg });
   }
 });

@@ -1,16 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { PlanTier } from "../../auditor";
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { CalendarRange, Activity, FileText } from "lucide-react";
 import { callEvalFn } from "@/services/callEvalFn";
+import { EconomicImpactDialog } from "@/components/reports/EconomicImpactDialog";
+import { DailyReportDialog } from "@/components/reports/DailyReportDialog";
+import { WeeklyReportDialog } from "@/components/reports/WeeklyReportDialog";
 
 /** ======================================================
  * Tipos (respuesta Edge)
@@ -52,6 +47,31 @@ type OperationalStatsResponse = {
 };
 
 /** ======================================================
+ * Tipos export (Edge customer_audit_export_build)
+ * ====================================================== */
+type ExportType = "PDF" | "CSV";
+type ExportScope =
+  | "INCIDENTS_BY_PLATFORM_MONTHLY"
+  | "INCIDENTS_BY_TYPE_MONTHLY"
+  | "ECONOMIC_IMPACT_MONTHLY"
+  | "DAILY_HOY_AYER_BY_TYPE"
+  | "WEEKLY_7D_DAILY_SERIES";
+
+type BuildExportResponse = {
+  ok: boolean;
+  export_id: string;
+  status: "READY" | "FAILED" | string;
+  row_count: number;
+  sha256: string;
+  file_size_bytes: number;
+  storage_bucket: string;
+  storage_path: string;
+  download_url: string | null;
+  error?: string;
+  detail?: string;
+};
+
+/** ======================================================
  * Helpers
  * ====================================================== */
 function toISODate(d: Date) {
@@ -88,6 +108,17 @@ function hourLabel(h: number) {
   return String(h).padStart(2, "0") + ":00";
 }
 
+function clampDateRange(from: string, to: string) {
+  const a = parseISODateOnly(from);
+  const b = parseISODateOnly(to);
+  if (a > b) return { from: to, to: from };
+  return { from, to };
+}
+
+function triggerDownload(url: string) {
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 /** ======================================================
  * Modal base (simple)
  * ====================================================== */
@@ -106,14 +137,10 @@ function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative w-full max-w-lg rounded-2xl bg-white shadow-xl border border-slate-200">
+      <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl border border-slate-200">
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
           <div className="font-bold text-slate-800">{title}</div>
-          <button
-            className="text-slate-500 hover:text-slate-700"
-            onClick={onClose}
-            aria-label="Cerrar"
-          >
+          <button className="text-slate-500 hover:text-slate-700" onClick={onClose} aria-label="Cerrar">
             ✕
           </button>
         </div>
@@ -126,23 +153,167 @@ function Modal({
 /** ======================================================
  * Fetch real (Edge)
  * ====================================================== */
-async function fetchOperationalStats(params: {
-  from: string; // YYYY-MM-DD
-  to: string;   // YYYY-MM-DD
-}): Promise<OperationalStatsResponse> {
+async function fetchOperationalStats(params: { from: string; to: string }): Promise<OperationalStatsResponse> {
   const res = await callEvalFn("client_operational_stats", {
     period_from: params.from,
     period_to: params.to,
   });
 
-  if (!res || typeof res !== "object") {
-    throw new Error("Respuesta inválida del servidor.");
-  }
-
-  const ok = Boolean((res as any).ok);
-  if (!ok) throw new Error((res as any).error ?? "No se pudo cargar estadísticas.");
+  if (!res || typeof res !== "object") throw new Error("Respuesta inválida del servidor.");
+  if (!Boolean((res as any).ok)) throw new Error((res as any).error ?? "No se pudo cargar estadísticas.");
 
   return res as OperationalStatsResponse;
+}
+
+async function buildAuditExport(params: {
+  export_type: ExportType;
+  export_scope: ExportScope;
+  period_from: string;
+  period_to: string;
+  filters?: { period_field?: "evaluation_date" | "created_at"; use_created_at?: boolean } | null;
+}): Promise<BuildExportResponse> {
+  const res = await callEvalFn("customer_audit_export_build", params);
+  if (!res || typeof res !== "object") throw new Error("Respuesta inválida del servidor (export).");
+  if (!(res as any).ok) throw new Error((res as any).error ?? (res as any).detail ?? "No se pudo generar el export.");
+  return res as BuildExportResponse;
+}
+
+/** ======================================================
+ * ExportDialog (se mantiene para auditoría/mensuales)
+ * ====================================================== */
+function ExportDialog({
+  open,
+  title,
+  description,
+  defaultScope,
+  from,
+  to,
+  periodField,
+  onClose,
+}: {
+  open: boolean;
+  title: string;
+  description: string;
+  defaultScope: ExportScope;
+  from: string;
+  to: string;
+  periodField: "evaluation_date" | "created_at";
+  onClose: () => void;
+}) {
+  const [exportType, setExportType] = useState<ExportType>("PDF");
+  const [scope, setScope] = useState<ExportScope>(defaultScope);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<BuildExportResponse | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setExportType("PDF");
+      setScope(defaultScope);
+      setBusy(false);
+      setErr(null);
+      setResult(null);
+    }
+  }, [open, defaultScope]);
+
+  const onGenerate = async () => {
+    try {
+      setBusy(true);
+      setErr(null);
+      setResult(null);
+
+      const r = await buildAuditExport({
+        export_type: exportType,
+        export_scope: scope,
+        period_from: from,
+        period_to: to,
+        filters: { period_field: periodField },
+      });
+
+      setResult(r);
+      if (r.download_url) triggerDownload(r.download_url);
+    } catch (e: any) {
+      setErr(e?.message ?? "No se pudo generar el informe.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open={open} title={title} onClose={onClose}>
+      <div className="space-y-4">
+        <div className="text-sm text-slate-600">{description}</div>
+
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs font-bold uppercase text-slate-500">Rango</div>
+          <div className="mt-1 text-sm font-semibold text-slate-800">
+            {from} → {to}
+          </div>
+          <div className="mt-1 text-[11px] text-slate-500">Campo: {periodField}</div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="space-y-1">
+            <div className="text-xs font-bold text-slate-500">Formato</div>
+            <select
+              value={exportType}
+              onChange={(e) => setExportType(e.target.value as ExportType)}
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="PDF">PDF</option>
+              <option value="CSV">CSV</option>
+            </select>
+          </label>
+
+          <label className="space-y-1">
+            <div className="text-xs font-bold text-slate-500">Scope</div>
+            <select
+              value={scope}
+              onChange={(e) => setScope(e.target.value as ExportScope)}
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="INCIDENTS_BY_TYPE_MONTHLY">Incidencias por tipo (mensual)</option>
+              <option value="INCIDENTS_BY_PLATFORM_MONTHLY">Incidencias por plataforma (mensual)</option>
+              <option value="ECONOMIC_IMPACT_MONTHLY">Impacto económico (mensual)</option>
+              <option value="WEEKLY_7D_DAILY_SERIES">Informe semanal (7 días)</option>
+            </select>
+          </label>
+        </div>
+
+        {err ? (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{err}</div>
+        ) : null}
+
+        {result ? (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+            Generado: {result.export_id} · filas: {result.row_count} · tamaño: {result.file_size_bytes} bytes
+            {result.download_url ? (
+              <>
+                {" "}
+                ·{" "}
+                <button className="underline font-semibold" onClick={() => result.download_url && triggerDownload(result.download_url)}>
+                  Descargar
+                </button>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="flex items-center justify-end gap-2">
+          <button onClick={onClose} className="rounded-lg border border-slate-200 px-4 py-2 text-sm hover:bg-slate-50" disabled={busy}>
+            Cerrar
+          </button>
+          <button
+            onClick={onGenerate}
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-700 disabled:opacity-60"
+            disabled={busy}
+          >
+            {busy ? "Generando..." : "Generar y descargar"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
 }
 
 /** ======================================================
@@ -161,10 +332,7 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
   const [preset, setPreset] = useState<Preset>("LAST_7");
 
   const [rangeOpen, setRangeOpen] = useState(false);
-  const [from, setFrom] = useState<string>(() => {
-    const d = addDays(startOfToday(), -6);
-    return toISODate(d);
-  });
+  const [from, setFrom] = useState<string>(() => toISODate(addDays(startOfToday(), -6)));
   const [to, setTo] = useState<string>(() => toISODate(startOfToday()));
 
   useEffect(() => {
@@ -189,7 +357,6 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
    * --------------------------- */
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   const [resp, setResp] = useState<OperationalStatsResponse | null>(null);
 
   useEffect(() => {
@@ -230,8 +397,6 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
 
   /** ---------------------------
    * Chart data
-   * - DAILY: asegura días vacíos
-   * - HOURLY: 0..23 siempre
    * --------------------------- */
   const chartData = useMemo(() => {
     if (isSingleDay && hourly) {
@@ -245,9 +410,9 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
     }
 
     const map = new Map<string, any>();
-
     const fromD = parseISODateOnly(from);
     const toD = parseISODateOnly(to);
+
     for (let d = new Date(fromD); d <= toD; d = addDays(d, 1)) {
       const key = toISODate(d);
       map.set(key, { x: mmdd(key), count: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0, records: 0 });
@@ -287,13 +452,25 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
   }, [resp]);
 
   /** ---------------------------
-   * Modales stubs
+   * period_field
+   * --------------------------- */
+  const [periodField, setPeriodField] = useState<"evaluation_date" | "created_at">("evaluation_date");
+
+  /** ---------------------------
+   * Dialogs
    * --------------------------- */
   const [openDailyReport, setOpenDailyReport] = useState(false);
   const [openWeeklyReport, setOpenWeeklyReport] = useState(false);
   const [openAuditReport, setOpenAuditReport] = useState(false);
   const [openAbuseReport, setOpenAbuseReport] = useState(false);
   const [openEconomicReport, setOpenEconomicReport] = useState(false);
+
+  // Rangos por defecto para dialogs diarios/semanales
+  const todayIso = toISODate(startOfToday());
+  const yesterdayIso = toISODate(addDays(startOfToday(), -1));
+  const last7FromIso = toISODate(addDays(startOfToday(), -6));
+
+  const weeklyDialogRange = { from: last7FromIso, to: todayIso };
 
   return (
     <div className="space-y-8">
@@ -302,9 +479,7 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
         <div>
           <h2 className="text-2xl font-bold text-slate-800">Estadísticas Operativas</h2>
           <p className="text-slate-500">
-            {isSingleDay
-              ? "Vista por horas (solo un día seleccionado)."
-              : "Métricas diarias y distribución por riesgo."}
+            {isSingleDay ? "Vista por horas (solo un día seleccionado)." : "Métricas diarias y distribución por riesgo."}
           </p>
           {error ? <div className="mt-2 text-sm text-red-600">{error}</div> : null}
         </div>
@@ -321,6 +496,7 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
           </select>
 
           <button
+            type="button"
             onClick={() => setRangeOpen(true)}
             className="p-2 bg-indigo-600 text-white rounded-lg shadow-md hover:bg-indigo-700 transition-colors"
             title="Rango desde / hasta"
@@ -334,9 +510,7 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 min-w-0 bg-white p-6 rounded-2xl border border-slate-200">
           <div className="flex items-center justify-between mb-8">
-            <h3 className="font-bold text-slate-800">
-              {isSingleDay ? "Consultas por hora" : "Consultas diarias"}
-            </h3>
+            <h3 className="font-bold text-slate-800">{isSingleDay ? "Consultas por hora" : "Consultas diarias"}</h3>
 
             <div className="flex gap-4 flex-wrap justify-end">
               <div className="flex items-center gap-1.5">
@@ -378,28 +552,20 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
                 />
                 <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: "#64748b" }} />
 
-              <Tooltip
-  formatter={(value: any, name: any) => {
-    const map: Record<string, string> = {
-      count: "Total",
-      highRisk: "Alto",
-      mediumRisk: "Medio",
-      lowRisk: "Bajo",
-    };
-    return [value, map[name] ?? name];
-  }}
-  labelFormatter={(label) => label}
-/>
-
-
-                <Area
-                  type="monotone"
-                  dataKey="count"
-                  stroke="#6366f1"
-                  strokeWidth={3}
-                  fillOpacity={1}
-                  fill="url(#colorCount)"
+                <Tooltip
+                  formatter={(value: any, name: any) => {
+                    const map: Record<string, string> = {
+                      count: "Total",
+                      highRisk: "Alto",
+                      mediumRisk: "Medio",
+                      lowRisk: "Bajo",
+                    };
+                    return [value, map[name] ?? name];
+                  }}
+                  labelFormatter={(label) => label}
                 />
+
+                <Area type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={3} fillOpacity={1} fill="url(#colorCount)" />
                 <Area type="monotone" dataKey="highRisk" stroke="#ef4444" strokeWidth={2} fillOpacity={0} />
                 <Area type="monotone" dataKey="mediumRisk" stroke="#f59e0b" strokeWidth={2} fillOpacity={0} />
                 <Area type="monotone" dataKey="lowRisk" stroke="#10b981" strokeWidth={2} fillOpacity={0} />
@@ -422,21 +588,16 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
               <div className="rounded-xl border border-slate-200 p-3">
                 <div className="text-xs font-bold uppercase text-slate-500">Consultas</div>
                 <div className="mt-1 text-2xl font-extrabold text-slate-800">{summary.consultas}</div>
-                <div className="mt-1 text-[11px] text-slate-500">
-                  Rango: {from} → {to}
-                </div>
+                <div className="mt-1 text-[11px] text-slate-500">Rango: {from} → {to}</div>
               </div>
 
               <div className="rounded-xl border border-slate-200 p-3">
                 <div className="text-xs font-bold uppercase text-slate-500">Registros añadidos</div>
                 <div className="mt-1 text-2xl font-extrabold text-slate-800">{summary.registros}</div>
-                <div className="mt-1 text-[11px] text-slate-500">
-                  Rango: {from} → {to}
-                </div>
+                <div className="mt-1 text-[11px] text-slate-500">Rango: {from} → {to}</div>
               </div>
             </div>
 
-            {/* Riesgo agregado útil (ALTO+MEDIO) */}
             <div className="mt-3 rounded-xl border border-slate-200 p-3">
               <div className="text-xs font-bold uppercase text-slate-500">Riesgo (alto+medio)</div>
               <div className="mt-1 text-2xl font-extrabold text-slate-800">{summary.risky}</div>
@@ -457,8 +618,24 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
               </div>
             </div>
 
+            <div className="mt-3 flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-3">
+              <div>
+                <div className="text-xs font-bold uppercase text-slate-500">Campo para informes</div>
+                <div className="text-[11px] text-slate-500">evaluation_date es lo recomendado</div>
+              </div>
+              <select
+                value={periodField}
+                onChange={(e) => setPeriodField(e.target.value as any)}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none"
+              >
+                <option value="evaluation_date">evaluation_date</option>
+                <option value="created_at">created_at</option>
+              </select>
+            </div>
+
             <div className="mt-6 space-y-2">
               <button
+                type="button"
                 onClick={() => setOpenDailyReport(true)}
                 className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
               >
@@ -466,39 +643,28 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
                   <FileText size={16} className="text-indigo-600" />
                   Informe diario (Hoy/Ayer)
                 </span>
-                <span className="text-xs text-slate-500">PDF / CSV</span>
+                <span className="text-xs text-slate-500">Modal</span>
               </button>
 
               <button
+                type="button"
                 onClick={() => setOpenWeeklyReport(true)}
                 className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
               >
                 <span className="text-sm font-semibold text-slate-800">Informe semanal</span>
-                <span className="text-xs text-slate-500">PDF / CSV</span>
+                <span className="text-xs text-slate-500">Modal</span>
               </button>
 
-              <button
-                onClick={() => setOpenAuditReport(true)}
-                className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
-              >
-                <span className="text-sm font-semibold text-slate-800">Informe de auditoría</span>
-                <span className="text-xs text-slate-500">Trazabilidad</span>
-              </button>
+              
+              
 
               <button
-                onClick={() => setOpenAbuseReport(true)}
-                className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
-              >
-                <span className="text-sm font-semibold text-slate-800">Uso y abuso</span>
-                <span className="text-xs text-slate-500">Alertas</span>
-              </button>
-
-              <button
+                type="button"
                 onClick={() => setOpenEconomicReport(true)}
                 className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
               >
                 <span className="text-sm font-semibold text-slate-800">Impacto económico</span>
-                <span className="text-xs text-slate-500">ROI</span>
+                <span className="text-xs text-slate-500">Modal</span>
               </button>
             </div>
           </div>
@@ -530,14 +696,16 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
           </div>
 
           <div className="flex items-center justify-end gap-2">
-            <button
-              onClick={() => setRangeOpen(false)}
-              className="rounded-lg border border-slate-200 px-4 py-2 text-sm hover:bg-slate-50"
-            >
+            <button onClick={() => setRangeOpen(false)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm hover:bg-slate-50">
               Cancelar
             </button>
             <button
-              onClick={() => setRangeOpen(false)}
+              onClick={() => {
+                const fixed = clampDateRange(from, to);
+                setFrom(fixed.from);
+                setTo(fixed.to);
+                setRangeOpen(false);
+              }}
               className="rounded-lg bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-700"
             >
               Aplicar
@@ -546,26 +714,23 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
         </div>
       </Modal>
 
-      {/* Stubs */}
-      <Modal open={openDailyReport} title="Informe diario" onClose={() => setOpenDailyReport(false)}>
-        <div className="text-sm text-slate-700">Aquí irá el modal independiente de “Informe diario”.</div>
-      </Modal>
+      {/* ✅ DailyReportDialog (MUI) */}
+      <DailyReportDialog open={openDailyReport} onClose={() => setOpenDailyReport(false)} />
 
-      <Modal open={openWeeklyReport} title="Informe semanal" onClose={() => setOpenWeeklyReport(false)}>
-        <div className="text-sm text-slate-700">Aquí irá el modal independiente de “Informe semanal”.</div>
-      </Modal>
+      {/* ✅ WeeklyReportDialog (MUI + Recharts) */}
+      <WeeklyReportDialog
+        open={openWeeklyReport}
+        onClose={() => setOpenWeeklyReport(false)}
+        defaultFrom={weeklyDialogRange.from}
+        defaultTo={weeklyDialogRange.to}
+        periodField={periodField}
+      />
 
-      <Modal open={openAuditReport} title="Informe de auditoría" onClose={() => setOpenAuditReport(false)}>
-        <div className="text-sm text-slate-700">Aquí irá el modal independiente de auditoría.</div>
-      </Modal>
+      
 
-      <Modal open={openAbuseReport} title="Uso y abuso" onClose={() => setOpenAbuseReport(false)}>
-        <div className="text-sm text-slate-700">Aquí irá el modal de uso/abuso.</div>
-      </Modal>
-
-      <Modal open={openEconomicReport} title="Impacto económico" onClose={() => setOpenEconomicReport(false)}>
-        <div className="text-sm text-slate-700">Aquí irá el modal de impacto económico.</div>
-      </Modal>
+       
+      {/* ✅ EconomicImpactDialog (MUI) */}
+      <EconomicImpactDialog open={openEconomicReport} onClose={() => setOpenEconomicReport(false)} />
     </div>
   );
 };

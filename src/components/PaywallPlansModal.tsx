@@ -18,14 +18,10 @@ export default function PaywallPlansModal({
   open,
   onClose,
   reason,
-  username,
-  password,
 }: {
   open: boolean;
   onClose: () => void;
   reason: "EXPIRED" | "NONE" | null;
-  username: string;
-  password: string;
 }) {
   const [loading, setLoading] = useState<PlanCode | null>(null);
   const [err, setErr] = useState("");
@@ -76,7 +72,7 @@ export default function PaywallPlansModal({
         badge: { text: "Top", tone: "neutral" },
       },
     ],
-    []
+    [],
   );
 
   if (!open) return null;
@@ -85,7 +81,11 @@ export default function PaywallPlansModal({
     try {
       setErr("");
       setLoading(plan);
-      const { url } = await createCheckoutForPlan({ username, password, plan_code: plan });
+
+      // ✅ JWT-only: la service obtiene access_token y llama a Edge Function
+      const { url } = await createCheckoutForPlan({ plan_code: plan });
+
+      // Redirige a Stripe Checkout
       window.location.href = url;
     } catch (e: any) {
       console.error(e);
@@ -95,8 +95,7 @@ export default function PaywallPlansModal({
     }
   }
 
-  const title =
-    reason === "EXPIRED" ? "Reactivar cuenta" : "Activar acceso";
+  const title = reason === "EXPIRED" ? "Reactivar cuenta" : "Activar acceso";
   const subtitle =
     reason === "EXPIRED"
       ? "Tu periodo de prueba ha finalizado. Elige un plan para continuar."
@@ -205,7 +204,6 @@ export default function PaywallPlansModal({
                       {isThisLoading ? "Abriendo pago..." : "Contratar"}
                     </button>
 
-                    {/* microcopy */}
                     <div className="mt-3 text-[12px] text-slate-500">
                       Se abrirá Stripe Checkout en una ventana segura.
                     </div>
@@ -228,9 +226,7 @@ export default function PaywallPlansModal({
                 ¿Necesitas condiciones Enterprise o integración PMS?{" "}
                 <span className="font-semibold text-slate-800">Solicítalo</span> desde “Solicitar acceso”.
               </div>
-              <div className="text-slate-500">
-                Soporte · Auditoría · RGPD/LOPDGDD
-              </div>
+              <div className="text-slate-500">Soporte · Auditoría · RGPD/LOPDGDD</div>
             </div>
           </div>
         </div>

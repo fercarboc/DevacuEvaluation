@@ -3,30 +3,36 @@ import { Navigate, useNavigate } from "react-router-dom";
 
 import { SearchRatings } from "@/components/SearchRatings";
 import { RatingForm } from "@/components/RatingForm";
- 
+
 import { MiCuenta } from "@/components/account/MiCuenta";
 import AppShell, { type AuthedView, type NavItem } from "@/components/layout/AppShell";
 import DashboardHome from "@/pages/DashboardHome";
 import { useEvalAuth } from "@/context/EvalAuthContext";
 
-// Auditoría
-import SummaryViewAuditor from "@/views/SummaryViewAuditor";
-import RiskAuditViewAuditor from "@/views/RiskAuditViewAuditor";
+// ✅ Revenue Intelligence
+import ChannelAnalysis from "@/views/ChannelAnalysis";
+import RiskAnalysis from "@/views/RiskAnalysis";
+import Leaks from "@/views/Leaks";
+
+// ✅ Demo/PAYWALL Revenue
+import RevenueLockedDemo from "@/components/revenue/RevenueLockedDemo";
+
+// ✅ Auditoría
 import StatsViewAuditor from "@/views/StatsViewAuditor";
 import HistoryViewAuditor from "@/views/HistoryViewAuditor";
 import ExportsViewAuditor from "@/views/ExportsViewAuditor";
-import ConfigViewAuditor from "@/views/ConfigViewAuditor";
 
 import {
   LayoutDashboard,
   Search,
   PlusCircle,
-  ClipboardList,
-  ShieldAlert,
   BarChart3,
-  History,
+  ShieldAlert,
+  TrendingDown,
+  Activity,
+  Clock,
   Download,
-  Settings,
+  CreditCard,
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
@@ -55,13 +61,32 @@ function toPlanTier(planLike: any): PlanTier {
   }
 }
 
+function toPlanCode(plan: PlanTier): "FREE" | "BASIC" | "MEDIUM" | "PREMIUM" {
+  switch (plan) {
+    case PlanTier.FREE:
+      return "FREE";
+    case PlanTier.BASIC:
+      return "BASIC";
+    case PlanTier.MEDIUM:
+      return "MEDIUM";
+    case PlanTier.PREMIUM:
+      return "PREMIUM";
+    default:
+      return "BASIC";
+  }
+}
+
+function isRevenueView(v: AuthedView) {
+  return v === "rev_channels" || v === "rev_risk" || v === "rev_leakage";
+}
+
 /* ---------------- component ---------------- */
 
 export default function AuthedApp() {
   const { user, loading, signOut } = useEvalAuth();
   const navigate = useNavigate();
 
-  // ✅ OJO: ahora account es la vista de “Mi cuenta”
+  // ✅ Vistas controladas por AppShell
   const [currentView, setCurrentView] = React.useState<AuthedView>("dashboard");
 
   const handleLogout = async () => {
@@ -72,17 +97,24 @@ export default function AuthedApp() {
   if (loading) return null;
   if (!user) return <Navigate to="/login" replace />;
 
-  /* ---------- admin shortcut ---------- */
-  const isAdmin =
-    !!(user as any).isAdmin ||
-    String((user as any).email ?? "").toLowerCase() === "admin@debacu.com" ||
-    String((user as any).username ?? "").toLowerCase() === "admin";
+  /* =========================================================
+   * PLATFORM ADMIN vs HOTEL OWNER/STAFF (NO MEZCLAR)
+   * =========================================================
+   * - Platform Admin => /app/admin/*
+   * - Owner/Staff del hotel => /app/*
+   *
+   * No uses user.isAdmin aquí, porque puede venir como string
+   * o confundirse con role OWNER (org), provocando bucles.
+   */
+  const email = String((user as any).email ?? "").toLowerCase();
 
-  React.useEffect(() => {
-    if (isAdmin) navigate("/app/admin/solicitudes-acceso", { replace: true });
-  }, [isAdmin, navigate]);
+  // ✅ criterio mínimo y seguro (ajústalo a tu modelo real)
+  const isPlatformAdmin = email === "admin@debacu.com";
 
-  if (isAdmin) return null;
+  // ✅ redirección segura sin useEffect (evita loops)
+  if (isPlatformAdmin) {
+    return <Navigate to="/app/admin/solicitudes-acceso" replace />;
+  }
 
   /* ---------- plan ---------- */
   const planLike =
@@ -92,26 +124,36 @@ export default function AuthedApp() {
     PlanType.BASIC;
 
   const currentPlan = toPlanTier(planLike);
+  const currentPlanCode = toPlanCode(currentPlan);
+  const canAccessRevenue = currentPlan === PlanTier.MEDIUM || currentPlan === PlanTier.PREMIUM;
 
   /* ---------- navegación ---------- */
   const navItems: NavItem[] = React.useMemo(
     () => [
-      { view: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-      { view: "search", label: "Consultar", icon: Search },
-      { view: "add", label: "Registrar incidencia", icon: PlusCircle },
+      // Operativa
+      { view: "dashboard", label: "Dashboard", icon: LayoutDashboard, section: "OPERATIVA" },
+      { view: "search", label: "Consultar", icon: Search, section: "OPERATIVA" },
+      { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
 
-      { view: "aud_summary", label: "Resumen", icon: ClipboardList },
-      { view: "aud_risk", label: "Auditoría de riesgo", icon: ShieldAlert },
-      { view: "aud_stats", label: "Estadísticas operativas", icon: BarChart3 },
-      { view: "aud_history", label: "Histórico de consultas", icon: History },
-      { view: "aud_exports", label: "Exportaciones", icon: Download },
-      { view: "aud_config", label: "Configuración / Avisos", icon: Settings },
+      // Revenue Intelligence
+      { view: "rev_channels", label: "Análisis por Canal", icon: BarChart3, section: "REVENUE" },
+      { view: "rev_risk", label: "Nivel de Riesgo", icon: ShieldAlert, section: "REVENUE" },
+      { view: "rev_leakage", label: "Fugas de Revenue", icon: TrendingDown, section: "REVENUE" },
+
+      // Auditoría
+      { view: "aud_stats", label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
+      { view: "aud_history", label: "Histórico", icon: Clock, section: "AUDITORIA" },
+      { view: "aud_exports", label: "Exportaciones", icon: Download, section: "AUDITORIA" },
+
+      // Cuenta
+      { view: "account", label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
     ],
     []
   );
 
   const title = React.useMemo(() => {
     switch (currentView) {
+      // Operativa
       case "dashboard":
         return "Dashboard";
       case "search":
@@ -121,18 +163,21 @@ export default function AuthedApp() {
       case "account":
         return "Mi cuenta";
 
-      case "aud_summary":
-        return "Resumen";
-      case "aud_risk":
-        return "Auditoría de riesgo";
+      // Revenue
+      case "rev_channels":
+        return "Análisis por Canal";
+      case "rev_risk":
+        return "Análisis por Nivel de Riesgo";
+      case "rev_leakage":
+        return "Fugas de Revenue";
+
+      // Auditoría
       case "aud_stats":
         return "Estadísticas operativas";
       case "aud_history":
-        return "Histórico de consultas";
+        return "Histórico";
       case "aud_exports":
         return "Exportaciones";
-      case "aud_config":
-        return "Configuración / Avisos";
 
       default:
         return "Dashboard";
@@ -141,16 +186,39 @@ export default function AuthedApp() {
 
   const subtitle = React.useMemo(() => {
     switch (currentView) {
+      // Cuenta/Operativa
       case "account":
         return "Planes, perfil del hotel, catálogo, seguridad y datos bancarios.";
       case "search":
         return "Consulta por documento, email, teléfono o nombre.";
       case "add":
         return "Registro estructurado de incidencias.";
+
+      // Revenue
+      case "rev_channels":
+        return "Comparativa por canal/plataforma y su impacto económico (net loss).";
+      case "rev_risk":
+        return "Segmentación del impacto económico real (net loss) y volumen de incidencias por nivel.";
+      case "rev_leakage":
+        return "Ranking de fugas de margen: net loss y cuota sobre el total.";
+
+      // Auditoría
+      case "aud_stats":
+        return "KPIs operativos y métricas agregadas.";
+      case "aud_history":
+        return "Trazabilidad y registro de acciones.";
+      case "aud_exports":
+        return "Exportación de informes y descargas.";
+
       default:
         return "";
     }
   }, [currentView]);
+
+  /* ---------- navegación ---------- */
+  const handleNavigate = React.useCallback((view: AuthedView) => {
+    setCurrentView(view);
+  }, []);
 
   /* ---------------- render ---------------- */
 
@@ -159,15 +227,24 @@ export default function AuthedApp() {
       userEmail={(user as any).email}
       userName={(user as any).fullName}
       activeView={currentView}
-      onNavigate={setCurrentView}   // 🔑 AQUÍ YA FUNCIONA
+      onNavigate={handleNavigate}
       onLogout={handleLogout}
       title={title}
       subtitle={subtitle}
       navItems={navItems}
+      currentPlanCode={currentPlanCode}
     >
       {/* Operativa */}
-      {currentView === "dashboard" && <DashboardHome />}
+      {currentView === "dashboard" && (
+        <DashboardHome
+          onNavigate={(v) => {
+            handleNavigate(v as any);
+          }}
+        />
+      )}
+
       {currentView === "search" && <SearchRatings currentUser={user as any} />}
+
       {currentView === "add" && (
         <RatingForm
           currentCustomerId={(user as any).id}
@@ -175,16 +252,22 @@ export default function AuthedApp() {
         />
       )}
 
-      {/* ✅ MI CUENTA (CONTENEDOR LIMPIO) */}
+      {/* Mi cuenta */}
       {currentView === "account" && <MiCuenta user={user as any} />}
 
+      {/* Revenue Intelligence (bloqueado por plan => DEMO) */}
+      {isRevenueView(currentView) && !canAccessRevenue && (
+        <RevenueLockedDemo currentPlan={currentPlan} onGoPlans={() => setCurrentView("account")} />
+      )}
+
+      {currentView === "rev_channels" && canAccessRevenue && <ChannelAnalysis />}
+      {currentView === "rev_risk" && canAccessRevenue && <RiskAnalysis />}
+      {currentView === "rev_leakage" && canAccessRevenue && <Leaks />}
+
       {/* Auditoría */}
-      {currentView === "aud_summary" && <SummaryViewAuditor currentPlan={currentPlan} />}
-      {currentView === "aud_risk" && <RiskAuditViewAuditor currentPlan={currentPlan} />}
       {currentView === "aud_stats" && <StatsViewAuditor currentPlan={currentPlan} />}
-      {currentView === "aud_history" && <HistoryViewAuditor currentPlan={currentPlan} />}
+      {currentView === "aud_history" && <HistoryViewAuditor />}
       {currentView === "aud_exports" && <ExportsViewAuditor currentPlan={currentPlan} />}
-      {currentView === "aud_config" && <ConfigViewAuditor currentPlan={currentPlan} />}
     </AppShell>
   );
 }

@@ -222,7 +222,7 @@ export const RatingForm: React.FC<RatingFormProps> = ({
   /** =========================================================
    *  Carga perfil + catálogos (Edge)
    * ========================================================= */
- useEffect(() => {
+useEffect(() => {
   (async () => {
     try {
       setProfileError(null);
@@ -230,36 +230,49 @@ export const RatingForm: React.FC<RatingFormProps> = ({
       setProfileLoading(true);
       setCatalogLoading(true);
 
-      // 1) perfil
-      const prof = await callEvalFn<any>("debacu_eval_hotel_profile_get", {}).catch(() => null);
+    // 1) perfil
+const prof = await callEvalFn<any>("debacu_eval_hotel_profile_get", {}).catch(() => null);
 
-      if (prof?.ok && prof?.data) {
-        const data = prof.data as any;
+if (prof?.ok) {
+  const root = prof as any;
+  const pr = root.profile ?? root.data?.profile ?? root.data ?? null;
 
-        // ✅ COMPAT: Edge puede devolver profile_completed o is_complete
-        const isComplete = Boolean(data.profile_completed ?? data.is_complete ?? false);
+  const profileCompleted =
+    pr?.profile_completed === true ||
+    pr?.profile_completed === "true" ||
+    pr?.profileCompleted === true ||
+    pr?.profileCompleted === "true";
 
-        const p: HotelProfile = {
-          is_complete: isComplete,
-          missing: Array.isArray(data.missing) ? data.missing : [],
-          hotel_category: data.hotel_category ?? null,
-          monthly_stays_estimated: data.monthly_stays_estimated ?? null,
-          adr_real: data.adr_real ?? null,
-          season_mult_high: data.season_mult_high ?? null,
-          season_mult_low: data.season_mult_low ?? null,
-        };
+  const missing =
+    Array.isArray(root.missing_fields)
+      ? root.missing_fields
+      : Array.isArray(pr?.missing_fields)
+      ? pr.missing_fields
+      : Array.isArray(root.missing)
+      ? root.missing
+      : Array.isArray(pr?.missing)
+      ? pr.missing
+      : [];
 
-        setProfile(p);
+  const p: HotelProfile = {
+    is_complete: profileCompleted,
+    missing,
+    hotel_category: pr?.hotel_category ?? null,
+    monthly_stays_estimated: pr?.monthly_stays_estimated ?? null,
+    adr_real: pr?.adr_real ?? null,
+    season_mult_high: pr?.season_mult_high ?? null,
+    season_mult_low: pr?.season_mult_low ?? null,
+  };
 
-        // ✅ Si el perfil ya está completo, quita el aviso persistente si lo hubiese
-        if (p.is_complete) {
-          setShowProfileNotice(false);
-          // opcional: si quieres “resetear” el no-mostrar cuando ya está ok:
-          // localStorage.removeItem(LS_KEY_HIDE_PROFILE_NOTICE);
-        } else {
-          const hide = localStorage.getItem(LS_KEY_HIDE_PROFILE_NOTICE) === "1";
-          if (!hide) setShowProfileNotice(true);
-        }
+  setProfile(p);
+
+  if (p.is_complete) {
+    setShowProfileNotice(false);
+    localStorage.removeItem(LS_KEY_HIDE_PROFILE_NOTICE);
+  } else {
+    const hide = localStorage.getItem(LS_KEY_HIDE_PROFILE_NOTICE) === "1";
+    if (!hide) setShowProfileNotice(true);
+  }
       } else {
         setProfile({
           is_complete: false,
@@ -301,6 +314,7 @@ export const RatingForm: React.FC<RatingFormProps> = ({
     }
   })();
 }, []);
+
 
 
   const closeProfileNotice = () => {
