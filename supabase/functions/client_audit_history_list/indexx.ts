@@ -1,115 +1,41 @@
+// supabase/functions/client_audit_history_list/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const APP_ID = "DEBACU_EVAL";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+/**
+ * Ajusta si tu schema usa otra columna/valor para estado de miembro.
+ * Si no tienes estado, quita estas líneas (pero lo ideal es tenerlo).
+ */
+const MEMBERSHIP_STATUS_COLUMN = "status";
+const MEMBERSHIP_ACTIVE_VALUE = "ACTIVE";
 
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    // ✅ JWT-only: fuera x-session-token
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Max-Age": "86400",
-  };
-}
+type ReqBody = {
+  org_id?: string;       // recomendado: UI siempre manda org_id
+  page?: number;         // 1..n
+  pageSize?: number;     // 5..100
+  q?: string;            // search
+  event_type?: string;   // default CHECK_SIGNALS
+};
 
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json; charset=utf-8" },
-  });
-}
-
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
-
-function adminClient() {
+function supabaseServiceClient() {
   return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 }
 
-async function requireJwtUser(req: Request) {
-  const sb = userClient(req);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
+function isUuid(v: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    v,
+  );
 }
-
-/** ======================================================
- * ORG + ENTITLEMENTS (JWT-only)
- * ====================================================== */
-async function resolveOrgIdForUserOrThrow(admin: ReturnType<typeof adminClient>, userId: string) {
-  const { data, error } = await admin
-    .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw new Error(`MEMBERSHIP_LOOKUP_FAILED:${error.message}`);
-  if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
-
-  return { org_id: String(data.org_id), role: (data.role ?? null) as string | null };
-}
-
-type EntitlementsRow = {
-  org_id: string;
-  customer_id: string | null;
-  subscription_status: string | null; // en tu view: ACTIVE o null (hoy)
-  plan_code: string | null;
-  max_users: number | null;
-  seats_used: number;
-};
-
-async function loadEntitlementsOrThrow(admin: ReturnType<typeof adminClient>, orgId: string) {
-  const { data, error } = await admin
-    .from("debacu_eval_org_entitlements_v")
-    .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used")
-    .eq("org_id", orgId)
-    .maybeSingle();
-
-  if (error) throw new Error(`ENTITLEMENTS_FAILED:${error.message}`);
-  if (!data) throw new Error("FORBIDDEN_NO_ENTITLEMENTS");
-
-  return data as EntitlementsRow;
-}
-
-function assertOrgActiveOrThrow(ent: EntitlementsRow) {
-  // Ajusta aquí si tu view evoluciona a TRIAL_ACTIVE, GRACE, etc.
-  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
-  if (!ent.customer_id) throw new Error("NO_CUSTOMER_ON_ORG");
-}
-
-/** ======================================================
- * INPUT
- * ====================================================== */
-type ReqBody = {
-  page?: number;       // 1..n
-  pageSize?: number;   // 5..100
-  q?: string;          // search
-  event_type?: string; // default CHECK_SIGNALS
-};
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -120,27 +46,100 @@ function safeStr(v: unknown) {
 }
 
 /** ======================================================
+ * ORG (multi-org)
+ * ====================================================== */
+async function resolveOrgAndRoleOrThrow(
+  admin: ReturnType<typeof supabaseServiceClient>,
+  userId: string,
+  requestedOrgId?: string | null,
+) {
+  if (requestedOrgId) {
+    const orgId = String(requestedOrgId).trim();
+    if (!isUuid(orgId)) throw new Error("invalid_org_id");
+
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, role")
+      .eq("user_id", userId)
+      .eq("org_id", orgId)
+      .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
+      .maybeSingle();
+
+    if (error) throw new Error(`membership_lookup_failed:${error.message}`);
+    if (!data?.org_id) throw new Error("FORBIDDEN");
+
+    return { org_id: String(data.org_id), role: (data.role ?? null) as string | null };
+  }
+
+  // Fallback determinista: primera membership ACTIVE (por created_at asc)
+  const { data, error } = await admin
+    .from("debacu_eval_org_members")
+    .select("org_id, role, created_at")
+    .eq("user_id", userId)
+    .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`membership_lookup_failed:${error.message}`);
+  if (!data?.org_id) throw new Error("FORBIDDEN");
+
+  return { org_id: String(data.org_id), role: (data.role ?? null) as string | null };
+}
+
+type EntitlementsRow = {
+  org_id: string;
+  customer_id: string | null;
+  subscription_status: string | null; // ACTIVE o null en tu view hoy
+  plan_code: string | null;
+  max_users: number | null;
+  seats_used: number | null;
+};
+
+async function loadEntitlementsOrThrow(
+  admin: ReturnType<typeof supabaseServiceClient>,
+  orgId: string,
+) {
+  const { data, error } = await admin
+    .from("debacu_eval_org_entitlements_v")
+    .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used")
+    .eq("org_id", orgId)
+    .maybeSingle();
+
+  if (error) throw new Error(`entitlements_failed:${error.message}`);
+  if (!data) throw new Error("FORBIDDEN");
+  if (!data.customer_id) throw new Error("FORBIDDEN");
+
+  return data as EntitlementsRow;
+}
+
+function assertPlanActiveOrThrow(ent: EntitlementsRow) {
+  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+}
+
+/** ======================================================
  * MAIN
  * ====================================================== */
 export default Deno.serve(async (req: Request) => {
-  const origin = req.headers.get("origin");
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
-  if (req.method === "OPTIONS") return new Response("ok", { status: 200, headers: corsHeaders(origin) });
-  if (req.method !== "POST") return json(origin, 405, { ok: false, error: "method_not_allowed" });
+  const admin = supabaseServiceClient();
 
   try {
-    const user = await requireJwtUser(req);
-    const admin = adminClient();
-
-    // ✅ JWT-only: org membership por user_id
-    const { org_id, role: currentRole } = await resolveOrgIdForUserOrThrow(admin, user.id);
-
-    // ✅ customer_id + plan gating desde entitlements
-    const ent = await loadEntitlementsOrThrow(admin, org_id);
-    assertOrgActiveOrThrow(ent);
-    const customer_id = String(ent.customer_id);
-
+    const user = await requireUser(req);
     const body = (await req.json().catch(() => ({}))) as ReqBody;
+
+    const { org_id, role: currentRole } = await resolveOrgAndRoleOrThrow(
+      admin,
+      user.id,
+      body?.org_id ?? null,
+    );
+
+    const ent = await loadEntitlementsOrThrow(admin, org_id);
+    assertPlanActiveOrThrow(ent);
+
+    const customer_id = String(ent.customer_id);
 
     const page = clamp(Number(body.page ?? 1) || 1, 1, 10_000);
     const pageSize = clamp(Number(body.pageSize ?? 10) || 10, 5, 100);
@@ -153,8 +152,22 @@ export default Deno.serve(async (req: Request) => {
     let query = admin
       .from("debacu_eval_audit_log")
       .select(
-        "id,created_at,actor_user_id,action,entity,entity_id,meta,customer_id,app_id,event_type,search_kind,search_value_masked,result_count",
-        { count: "exact" }
+        [
+          "id",
+          "created_at",
+          "actor_user_id",
+          "action",
+          "entity",
+          "entity_id",
+          "meta",
+          "customer_id",
+          "app_id",
+          "event_type",
+          "search_kind",
+          "search_value_masked",
+          "result_count",
+        ].join(","),
+        { count: "exact" },
       )
       .eq("customer_id", customer_id)
       .eq("app_id", APP_ID)
@@ -164,13 +177,16 @@ export default Deno.serve(async (req: Request) => {
 
     if (q) {
       const like = `%${q}%`;
+      // Nota: .or() en PostgREST puede ser caro; mantenemos solo campos indexables si existen.
       query = query.or(`id.ilike.${like},search_value_masked.ilike.${like},action.ilike.${like}`);
     }
 
     const { data: rows, error, count } = await query;
-    if (error) throw new Error(`LIST_FAILED:${error.message}`);
+    if (error) throw new Error(`list_failed:${error.message}`);
 
-    const actorIds = Array.from(new Set((rows ?? []).map((r: any) => r.actor_user_id).filter(Boolean))) as string[];
+    const actorIds = Array.from(
+      new Set((rows ?? []).map((r: any) => r.actor_user_id).filter(Boolean)),
+    ) as string[];
 
     let roleByUserId: Record<string, string> = {};
     if (actorIds.length > 0) {
@@ -180,10 +196,10 @@ export default Deno.serve(async (req: Request) => {
         .eq("org_id", org_id)
         .in("user_id", actorIds);
 
-      if (memErr) throw new Error(`MEMBERS_LOOKUP_FAILED:${memErr.message}`);
+      if (memErr) throw new Error(`members_lookup_failed:${memErr.message}`);
 
       roleByUserId = Object.fromEntries(
-        (mems ?? []).map((m: any) => [String(m.user_id), String(m.role ?? "—")])
+        (mems ?? []).map((m: any) => [String(m.user_id), String(m.role ?? "—")]),
       );
     }
 
@@ -193,16 +209,20 @@ export default Deno.serve(async (req: Request) => {
       const avgStars = meta?.avg_stars ?? null;
 
       const typeLabel =
-        r.action === "CHECK_SIGNALS" ? "Consulta" :
-        r.action === "PDF_ISSUED" ? "Exportación PDF" :
-        String(r.action ?? "Evento");
+        r.action === "CHECK_SIGNALS"
+          ? "Consulta"
+          : r.action === "PDF_ISSUED"
+            ? "Exportación PDF"
+            : String(r.action ?? "Evento");
 
       const detailLabel =
-        r.entity === "EVALUATION_SEARCH" ? "Consulta de registro" :
-        String(r.entity ?? "—");
+        r.entity === "EVALUATION_SEARCH"
+          ? "Consulta de registro"
+          : String(r.entity ?? "—");
 
-      const userRole =
-        r.actor_user_id ? (roleByUserId[String(r.actor_user_id)] ?? "—") : (currentRole ?? "—");
+      const userRole = r.actor_user_id
+        ? roleByUserId[String(r.actor_user_id)] ?? "—"
+        : currentRole ?? "—";
 
       return {
         id: r.id,
@@ -218,7 +238,7 @@ export default Deno.serve(async (req: Request) => {
       };
     });
 
-    return json(origin, 200, {
+    return json(req, 200, {
       ok: true,
       page,
       pageSize,
@@ -227,14 +247,29 @@ export default Deno.serve(async (req: Request) => {
     });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
-    const code =
-      msg === "UNAUTHENTICATED" ? 401 :
-      msg.startsWith("FORBIDDEN") ? 403 :
-      msg.startsWith("PLAN_NOT_ACTIVE") ? 402 :
-      msg.startsWith("BAD_") || msg === "BAD_REQUEST" ? 400 :
-      500;
 
-    console.error("client_audit_history_list error:", e);
-    return json(origin, code, { ok: false, error: "request_failed", detail: msg });
+    // 401
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
+      return json(req, 401, { ok: false, error: "UNAUTHENTICATED" });
+    }
+
+    // 402
+    if (msg === "PLAN_NOT_ACTIVE") {
+      return json(req, 402, { ok: false, error: "PLAN_NOT_ACTIVE" });
+    }
+
+    // 400 (validaciones)
+    if (msg.startsWith("missing_") || msg.startsWith("invalid_")) {
+      return json(req, 400, { ok: false, error: msg });
+    }
+
+    // 403
+    if (msg === "FORBIDDEN" || msg.startsWith("forbidden_")) {
+      return json(req, 403, { ok: false, error: "FORBIDDEN" });
+    }
+
+    // 500 limpio
+    console.error("client_audit_history_list error:", msg);
+    return json(req, 500, { ok: false, error: "request_failed", detail: "internal_error" });
   }
 });

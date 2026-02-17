@@ -1,52 +1,18 @@
 // supabase/functions/admin_stats_overview/index.ts
 // deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+import { json, preflight } from "../_shared/cors.ts";
+import { requireAdmin } from "../_shared/auth.ts";
 
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "http://localhost:3000";
-  // Nota: si quieres forzar 100% whitelist, NO devuelvas "*"
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8", ...corsHeaders(req) },
-  });
-}
-
+/* =======================
+ * Helpers
+ * ======================= */
 function requireEnv(name: string) {
   const v = Deno.env.get(name);
   if (!v) throw new Error(`Missing env ${name}`);
   return v;
-}
-
-function getBearer(req: Request) {
-  const h = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m?.[1] ?? null;
-}
-
-function parseAllowedEmails(csv: string | null) {
-  const raw = (csv ?? "").trim();
-  if (!raw) return ["admin@debacu.com"]; // fallback
-  return raw
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
 }
 
 function getISODateNDaysAgo(days: number) {
@@ -63,6 +29,12 @@ function safeErr(e: unknown) {
   } catch {
     return { message: String(e) };
   }
+}
+
+function supabaseServiceClient() {
+  const SUPABASE_URL = requireEnv("SUPABASE_URL");
+  const SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 }
 
 type StatsOverview = {
@@ -104,62 +76,36 @@ type StatsOverview = {
 };
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
+  if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
   try {
-    const SUPABASE_URL = requireEnv("SUPABASE_URL");
-    const ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
-    const SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
-    const ADMIN_EMAILS = Deno.env.get("ADMIN_EMAILS");
+    // ✅ JWT-only + admin gate centralizado
+    await requireAdmin(req);
 
-    const token = getBearer(req);
-    if (!token) return json(req, 401, { ok: false, error: "missing_bearer" });
-
-    // 1) Validar JWT (usuario) + sacar email
-    const userClient = createClient(SUPABASE_URL, ANON_KEY, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-      auth: { persistSession: false },
-    });
-
-    const { data: u, error: uErr } = await userClient.auth.getUser();
-    if (uErr || !u?.user) return json(req, 401, { ok: false, error: "invalid_token" });
-
-    const email = (u.user.email ?? "").toLowerCase();
-    const allowed = parseAllowedEmails(ADMIN_EMAILS);
-    const is_admin = allowed.includes(email);
-    if (!is_admin) return json(req, 403, { ok: false, error: "admin_denied" });
-
-    // 2) Cliente service-role para consultas “admin”
-    const svc = createClient(SUPABASE_URL, SERVICE_KEY, {
-      auth: { persistSession: false },
-    });
+    const svc = supabaseServiceClient();
 
     const since30 = getISODateNDaysAgo(30);
     const since60 = getISODateNDaysAgo(60);
     const since24h = getISODateNDaysAgo(1);
+    const nowIso = new Date().toISOString();
 
-    // -------------------------------------------------------
-    // 1) customers activos
-    // -------------------------------------------------------
+    /* -------------------------------------------------------
+     * 1) customers activos
+     * ----------------------------------------------------- */
     const { count: customers_activos, error: e1 } = await svc
       .from("customers")
       .select("id", { count: "exact", head: true })
       .eq("is_active", true);
-
     if (e1) throw e1;
 
-    // -------------------------------------------------------
-    // 2) activos por plan (sin join PostgREST)
-    //    - leemos customers.plan_id
-    //    - leemos plans(id,name,code)
-    //    - agregamos en memoria
-    // -------------------------------------------------------
+    /* -------------------------------------------------------
+     * 2) activos por plan (sin join)
+     * ----------------------------------------------------- */
     const { data: custPlans, error: e2 } = await svc
       .from("customers")
       .select("plan_id")
       .eq("is_active", true);
-
     if (e2) throw e2;
 
     const planIds = Array.from(
@@ -168,12 +114,8 @@ Deno.serve(async (req) => {
 
     const planMap = new Map<string, { name: string; code: string | null }>();
 
-    if (planIds.length > 0) {
-      const { data: plans, error: e2b } = await svc
-        .from("plans")
-        .select("id, name, code")
-        .in("id", planIds);
-
+    if (planIds.length) {
+      const { data: plans, error: e2b } = await svc.from("plans").select("id, name, code").in("id", planIds);
       if (e2b) throw e2b;
 
       for (const p of plans ?? []) {
@@ -185,39 +127,36 @@ Deno.serve(async (req) => {
     }
 
     const planAgg = new Map<string, { plan_name: string; plan_code: string | null; total: number }>();
-
     for (const r of custPlans ?? []) {
       const pid = r?.plan_id ? String(r.plan_id) : "NO_PLAN";
       const meta = planMap.get(pid);
 
       const plan_name = meta?.name ?? (pid === "NO_PLAN" ? "Sin plan" : "Plan desconocido");
-      const plan_code = meta?.code ?? (pid === "NO_PLAN" ? null : null);
+      const plan_code = meta?.code ?? null;
 
       const cur = planAgg.get(pid) ?? { plan_name, plan_code, total: 0 };
       cur.total += 1;
       planAgg.set(pid, cur);
     }
-
     const activos_por_plan = Array.from(planAgg.values()).sort((a, b) => b.total - a.total);
 
-    // -------------------------------------------------------
-    // 3) nuevos clientes 30d
-    // -------------------------------------------------------
+    /* -------------------------------------------------------
+     * 3) nuevos clientes 30d
+     * ----------------------------------------------------- */
     const { count: nuevos_clientes_30d, error: e3 } = await svc
       .from("customers")
       .select("id", { count: "exact", head: true })
       .gte("created_at", since30);
-
     if (e3) throw e3;
 
-    // -------------------------------------------------------
-    // 4) alertas por severidad 30d
-    // -------------------------------------------------------
+    /* -------------------------------------------------------
+     * 4) alertas por severidad 30d
+     * (sin group by en PostgREST -> mínimo: severity + detected_at)
+     * ----------------------------------------------------- */
     const { data: alerts, error: e4 } = await svc
       .from("debacu_eval_usage_alerts")
-      .select("severity, detected_at")
+      .select("severity")
       .gte("detected_at", since30);
-
     if (e4) throw e4;
 
     const sevAgg = new Map<string, number>();
@@ -225,19 +164,17 @@ Deno.serve(async (req) => {
       const s = String((a as any).severity ?? "UNKNOWN");
       sevAgg.set(s, (sevAgg.get(s) ?? 0) + 1);
     }
-
     const alertas_por_severidad_30d = Array.from(sevAgg.entries())
       .map(([severity, total]) => ({ severity, total }))
       .sort((a, b) => b.total - a.total);
 
-    // -------------------------------------------------------
-    // 5) solicitudes por estado 30d + últimas 24h
-    // -------------------------------------------------------
+    /* -------------------------------------------------------
+     * 5) solicitudes por estado 30d + últimas 24h
+     * ----------------------------------------------------- */
     const { data: reqs30, error: e5 } = await svc
       .from("debacu_eval_access_requests")
       .select("status, created_at")
       .gte("created_at", since30);
-
     if (e5) throw e5;
 
     const statusAgg = new Map<string, number>();
@@ -256,34 +193,29 @@ Deno.serve(async (req) => {
       .map(([status, total]) => ({ status, total }))
       .sort((a, b) => b.total - a.total);
 
-    // -------------------------------------------------------
-    // 6) tokens activos + tokens 30d (debacu_eval_sessions)
-    // -------------------------------------------------------
-    const nowIso = new Date().toISOString();
-
+    /* -------------------------------------------------------
+     * 6) tokens activos + tokens 30d (debacu_eval_sessions)
+     * ----------------------------------------------------- */
     const { count: tokens_activos, error: e6 } = await svc
       .from("debacu_eval_sessions")
       .select("id", { count: "exact", head: true })
       .is("revoked_at", null)
       .gt("expires_at", nowIso);
-
     if (e6) throw e6;
 
     const { count: tokens_30d, error: e7 } = await svc
       .from("debacu_eval_sessions")
       .select("id", { count: "exact", head: true })
       .gte("created_at", since30);
-
     if (e7) throw e7;
 
-    // -------------------------------------------------------
-    // 7) consultas diarias 30d (aprox = sesiones por día)
-    // -------------------------------------------------------
+    /* -------------------------------------------------------
+     * 7) consultas diarias 30d (aprox = sesiones por día)
+     * ----------------------------------------------------- */
     const { data: sess30, error: e8 } = await svc
       .from("debacu_eval_sessions")
       .select("created_at")
       .gte("created_at", since30);
-
     if (e8) throw e8;
 
     const dayAgg = new Map<string, number>();
@@ -294,27 +226,24 @@ Deno.serve(async (req) => {
     }
 
     const consultas_diarias_30d: Array<{ day: string; total: number }> = [];
-    {
-      const start = new Date();
-      start.setUTCDate(start.getUTCDate() - 29);
-      start.setUTCHours(0, 0, 0, 0);
+    const start = new Date();
+    start.setUTCDate(start.getUTCDate() - 29);
+    start.setUTCHours(0, 0, 0, 0);
 
-      for (let i = 0; i < 30; i++) {
-        const d = new Date(start);
-        d.setUTCDate(start.getUTCDate() + i);
-        const key = d.toISOString().slice(0, 10);
-        consultas_diarias_30d.push({ day: key, total: dayAgg.get(key) ?? 0 });
-      }
+    for (let i = 0; i < 30; i++) {
+      const d = new Date(start);
+      d.setUTCDate(start.getUTCDate() + i);
+      const key = d.toISOString().slice(0, 10);
+      consultas_diarias_30d.push({ day: key, total: dayAgg.get(key) ?? 0 });
     }
 
-    // -------------------------------------------------------
-    // 8) tendencia last30 vs prev30 (sessions)
-    // -------------------------------------------------------
+    /* -------------------------------------------------------
+     * 8) tendencia last30 vs prev30 (sessions)
+     * ----------------------------------------------------- */
     const { count: last_30, error: e9 } = await svc
       .from("debacu_eval_sessions")
       .select("id", { count: "exact", head: true })
       .gte("created_at", since30);
-
     if (e9) throw e9;
 
     const { count: prev_30, error: e10 } = await svc
@@ -322,7 +251,6 @@ Deno.serve(async (req) => {
       .select("id", { count: "exact", head: true })
       .gte("created_at", since60)
       .lt("created_at", since30);
-
     if (e10) throw e10;
 
     const last30n = typeof last_30 === "number" ? last_30 : null;
@@ -347,12 +275,17 @@ Deno.serve(async (req) => {
     };
 
     return json(req, 200, { ok: true, data });
-  } catch (e: unknown) {
+  } catch (e: any) {
+    const msg = e?.message ?? String(e);
+
+    if (msg === "UNAUTHORIZED" || msg === "missing_bearer" || msg === "invalid_token") {
+      return json(req, 401, { ok: false, error: "unauthorized" });
+    }
+    if (msg === "FORBIDDEN" || msg === "forbidden_admin_only" || msg === "admin_denied") {
+      return json(req, 403, { ok: false, error: "forbidden" });
+    }
+
     const info = safeErr(e);
-    return json(req, 500, {
-      ok: false,
-      error: info.message || "unexpected",
-      detail: info,
-    });
+    return json(req, 500, { ok: false, error: info.message || "unexpected", detail: info });
   }
 });

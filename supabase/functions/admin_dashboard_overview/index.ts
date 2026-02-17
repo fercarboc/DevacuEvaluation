@@ -1,6 +1,8 @@
 // supabase/functions/admin_dashboard_overview/index.ts
 // deno-lint-ignore-file no-explicit-any
 
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+
 import { json, preflight } from "../_shared/cors.ts";
 import { requireAdmin, supabaseServiceClient } from "../_shared/auth.ts";
 
@@ -49,12 +51,9 @@ function isoDateUTC(d: Date) {
   return `${y}-${m}-${day}`;
 }
 
-function addDaysUTC(d: Date, days: number) {
-  const x = new Date(d.getTime());
-  x.setUTCDate(x.getUTCDate() + days);
-  return x;
-}
-
+/**
+ * defensivo: evita null/undefined
+ */
 function safeString(x: any) {
   if (x === null || x === undefined) return null;
   return String(x);
@@ -63,12 +62,13 @@ function safeString(x: any) {
 Deno.serve(async (req) => {
   // ✅ CORS
   if (req.method === "OPTIONS") return preflight(req);
+
   if (req.method !== "POST") {
-    return json(req, 405, { ok: false, error: "method_not_allowed" });
+    return json(req, 405, { ok: false, error: "request_failed", detail: "method_not_allowed" });
   }
 
   try {
-    // ✅ Admin real (JWT-only; sin RPC; sin email allowlist)
+    // ✅ Admin real (JWT-only)
     await requireAdmin(req);
 
     const sb = supabaseServiceClient();
@@ -101,8 +101,7 @@ Deno.serve(async (req) => {
       .select("id", { count: "exact", head: true })
       .eq("status", "PENDING");
 
-    // Consultas hoy: audit log (hoy local) — heurística estable: search_kind IS NOT NULL
-    // (si tu tabla no tiene search_kind, cambia a search_value_hash/masked).
+    // Consultas hoy: audit log (hoy local) — heurística: search_kind IS NOT NULL
     const consultasHoyQ = sb
       .from("debacu_eval_audit_log")
       .select("id", { count: "exact", head: true })
@@ -123,10 +122,22 @@ Deno.serve(async (req) => {
       { count: activeAlerts, error: e4 },
     ] = await Promise.all([activeCustomersQ, pendingAccessQ, consultasHoyQ, activeAlertsQ]);
 
-    if (e1) return json(req, 500, { ok: false, error: "db_error", detail: `customers: ${e1.message}` });
-    if (e2) return json(req, 500, { ok: false, error: "db_error", detail: `access_requests: ${e2.message}` });
-    if (e3) return json(req, 500, { ok: false, error: "db_error", detail: `audit_log(today): ${e3.message}` });
-    if (e4) return json(req, 500, { ok: false, error: "db_error", detail: `usage_alerts: ${e4.message}` });
+    if (e1) {
+      console.error("admin_dashboard_overview: customers query failed", e1);
+      return json(req, 500, { ok: false, error: "request_failed", detail: "customers_query_failed" });
+    }
+    if (e2) {
+      console.error("admin_dashboard_overview: access_requests query failed", e2);
+      return json(req, 500, { ok: false, error: "request_failed", detail: "access_requests_query_failed" });
+    }
+    if (e3) {
+      console.error("admin_dashboard_overview: audit_log(today) query failed", e3);
+      return json(req, 500, { ok: false, error: "request_failed", detail: "audit_log_today_query_failed" });
+    }
+    if (e4) {
+      console.error("admin_dashboard_overview: usage_alerts(active) query failed", e4);
+      return json(req, 500, { ok: false, error: "request_failed", detail: "usage_alerts_active_query_failed" });
+    }
 
     const metrics = {
       clientes_activos: activeCustomers ?? 0,
@@ -136,9 +147,9 @@ Deno.serve(async (req) => {
     };
 
     /* -----------------------
-       2) SERIES (7d/30d) — conteo por día local (convertido a buckets UTC)
+       2) SERIES (7d/30d) — conteo por día local
        - sin RPC
-       - agregación en JS con dataset acotado
+       - agregación JS con dataset acotado
     ----------------------- */
 
     const days = range === "7d" ? 7 : 30;
@@ -159,19 +170,22 @@ Deno.serve(async (req) => {
       .not("search_kind", "is", null)
       .limit(50000);
 
-    if (e5) return json(req, 500, { ok: false, error: "db_error", detail: `audit_log(range): ${e5.message}` });
+    if (e5) {
+      console.error("admin_dashboard_overview: audit_log(range) query failed", e5);
+      return json(req, 500, { ok: false, error: "request_failed", detail: "audit_log_range_query_failed" });
+    }
 
-    // Inicializa buckets con YYYY-MM-DD (en “día local” representado como UTC-start del bucket)
+    // Inicializa buckets (key = YYYY-MM-DD)
     const countsByDay = new Map<string, number>();
     for (let i = 0; i < days; i++) {
       const bucketStartMs = fromDayStartMs + i * 24 * 60 * 60 * 1000;
       countsByDay.set(isoDateUTC(new Date(bucketStartMs)), 0);
     }
 
-    // Bucketing:
-    // - Convertimos created_at (UTC) a "local ms" sumando offset
-    // - Sacamos la fecha local (Y/M/D) y reconstruimos su "midnight local" en ms
-    // - Volvemos a UTC bucketStartMs restando offset
+    // Bucketing por día local:
+    // - created_at UTC → localMs sumando offset
+    // - obtenemos Y/M/D "local"
+    // - reconstruimos local midnight y lo pasamos a UTC bucket
     for (const r of logsRange ?? []) {
       const createdAt = r?.created_at ? Date.parse(String(r.created_at)) : NaN;
       if (!Number.isFinite(createdAt)) continue;
@@ -201,18 +215,20 @@ Deno.serve(async (req) => {
       .order("detected_at", { ascending: false })
       .limit(8);
 
-    if (e6) return json(req, 500, { ok: false, error: "db_error", detail: `usage_alerts(recent): ${e6.message}` });
+    if (e6) {
+      console.error("admin_dashboard_overview: usage_alerts(recent) query failed", e6);
+      return json(req, 500, { ok: false, error: "request_failed", detail: "usage_alerts_recent_query_failed" });
+    }
 
     const customerIds = [...new Set((alerts ?? []).map((a: any) => a.customer_id).filter(Boolean))] as string[];
     const custMap = new Map<string, { name: string | null; email: string | null }>();
 
     if (customerIds.length) {
-      const { data: custs, error: eC } = await sb
-        .from("customers")
-        .select("id, name, email")
-        .in("id", customerIds);
-
-      if (!eC) {
+      const { data: custs, error: eC } = await sb.from("customers").select("id, name, email").in("id", customerIds);
+      if (eC) {
+        // no rompemos el dashboard por no poder “decorar”
+        console.error("admin_dashboard_overview: customers(in) for alerts failed", eC);
+      } else {
         for (const c of custs ?? []) {
           custMap.set(String(c.id), { name: c.name ?? null, email: c.email ?? null });
         }
@@ -227,7 +243,7 @@ Deno.serve(async (req) => {
         detected_at: String(a.detected_at),
         customer_id: cid,
         customer_name: c?.name ?? null,
-        severity: a.severity ?? "LOW",
+        severity: String(a.severity ?? "LOW"),
         alert_type: String(a.alert_type ?? "UNKNOWN"),
         status: String(a.status ?? "OPEN"),
         reason: a.reason ?? null,
@@ -236,28 +252,39 @@ Deno.serve(async (req) => {
 
     /* -----------------------
        4) RECENT ACTIVITY (feed mezclado)
-       Ojo: aquí mantengo tus tablas tal cual.
-       Si luego las renombramos a debacu_eval_* lo ajustamos.
+       - sin joins raros: 3 queries + merge en JS
     ----------------------- */
 
     const [ev1, ev2, ev3] = await Promise.all([
-      sb.from("subscription_events")
+      sb
+        .from("subscription_events")
         .select("id, created_at, type, stripe_subscription_id, stripe_customer_id")
         .order("created_at", { ascending: false })
         .limit(10),
-      sb.from("audit_exports")
+      sb
+        .from("audit_exports")
         .select("id, created_at, format, status, customer_id, type, provided_to_type")
         .order("created_at", { ascending: false })
         .limit(10),
-      sb.from("settings_audit_log")
+      sb
+        .from("settings_audit_log")
         .select("id, changed_at, table_name, action, record_id")
         .order("changed_at", { ascending: false })
         .limit(10),
     ]);
 
-    if (ev1.error) return json(req, 500, { ok: false, error: "db_error", detail: `subscription_events: ${ev1.error.message}` });
-    if (ev2.error) return json(req, 500, { ok: false, error: "db_error", detail: `audit_exports: ${ev2.error.message}` });
-    if (ev3.error) return json(req, 500, { ok: false, error: "db_error", detail: `settings_audit_log: ${ev3.error.message}` });
+    if (ev1.error) {
+      console.error("admin_dashboard_overview: subscription_events query failed", ev1.error);
+      return json(req, 500, { ok: false, error: "request_failed", detail: "subscription_events_query_failed" });
+    }
+    if (ev2.error) {
+      console.error("admin_dashboard_overview: audit_exports query failed", ev2.error);
+      return json(req, 500, { ok: false, error: "request_failed", detail: "audit_exports_query_failed" });
+    }
+    if (ev3.error) {
+      console.error("admin_dashboard_overview: settings_audit_log query failed", ev3.error);
+      return json(req, 500, { ok: false, error: "request_failed", detail: "settings_audit_log_query_failed" });
+    }
 
     const activity: any[] = [];
 
@@ -298,7 +325,7 @@ Deno.serve(async (req) => {
     const recent_activity = activity.slice(0, 12);
 
     /* -----------------------
-       5) HEALTH (no inventamos)
+       5) HEALTH (placeholder estable)
     ----------------------- */
     const health = {
       uptime_pct: null,
@@ -326,10 +353,18 @@ Deno.serve(async (req) => {
   } catch (e: any) {
     const msg = e?.message ?? String(e);
 
-    if (msg === "UNAUTHORIZED") return json(req, 401, { ok: false, error: "unauthorized" });
-    if (msg === "FORBIDDEN") return json(req, 403, { ok: false, error: "forbidden" });
-    if (msg === "ADMIN_CHECK_FAILED") return json(req, 500, { ok: false, error: "admin_check_failed" });
+    // 🔒 errores estándar
+    if (msg === "UNAUTHORIZED" || msg === "UNAUTHENTICATED") {
+      return json(req, 401, { ok: false, error: "request_failed", detail: "UNAUTHORIZED" });
+    }
+    if (msg === "FORBIDDEN") {
+      return json(req, 403, { ok: false, error: "request_failed", detail: "FORBIDDEN" });
+    }
+    if (msg === "ADMIN_CHECK_FAILED") {
+      return json(req, 500, { ok: false, error: "request_failed", detail: "admin_check_failed" });
+    }
 
-    return json(req, 500, { ok: false, error: "unexpected", detail: msg });
+    console.error("admin_dashboard_overview unexpected error:", e);
+    return json(req, 500, { ok: false, error: "request_failed", detail: "internal_error" });
   }
 });

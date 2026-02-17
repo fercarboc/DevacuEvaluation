@@ -1,62 +1,53 @@
 // supabase/functions/_shared/auth.ts
-// deno-lint-ignore-file no-explicit-any
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-/**
- * Cliente “USER”: se crea con ANON, pero usa el JWT del request para identidad (auth.getUser()).
- * No usa service role nunca.
- */
-export function supabaseUserClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, ANON_KEY, {
-    global: {
-      headers: {
-        Authorization: auth,
-        apikey: ANON_KEY,
-      },
-    },
+export function supabaseServiceClient() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
   });
 }
 
-/**
- * Cliente “ADMIN/DB”: service-role SOLO para lectura/escritura de tablas admin internas,
- * checks y queries que no deben pasar por RLS.
- */
-export function supabaseServiceClient() {
-  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-}
+export async function requireUser(req: Request) {
+  const auth = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? "";
+  if (!auth.toLowerCase().startsWith("bearer ")) throw new Error("UNAUTHORIZED");
 
-export type AuthUser = { id: string; email?: string | null };
-
-export async function requireUser(req: Request): Promise<AuthUser> {
-  const sbUser = supabaseUserClient(req);
+  const sbUser = createClient(SUPABASE_URL, ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: auth } },
+  });
 
   const { data, error } = await sbUser.auth.getUser();
   if (error || !data?.user?.id) throw new Error("UNAUTHORIZED");
 
-  return { id: data.user.id, email: data.user.email ?? null };
+  return data.user; // { id, email, ... }
 }
 
-/**
- * Admin check SIN RPC.
- * Tabla sugerida: public.debacu_eval_admin_users(user_id uuid, is_active bool, ...)
- */
-export async function requireAdmin(req: Request): Promise<AuthUser> {
+export async function requireAdmin(req: Request) {
   const user = await requireUser(req);
+
+  // IMPORTANTE: check admin SIEMPRE con service role (evita RLS)
   const sb = supabaseServiceClient();
 
   const { data, error } = await sb
     .from("debacu_eval_admin_users")
-    .select("user_id, is_active")
+    .select("user_id, active")
     .eq("user_id", user.id)
+    .eq("active", true)
     .maybeSingle();
 
-  if (error) throw new Error("ADMIN_CHECK_FAILED");
-  if (!data || data.is_active !== true) throw new Error("FORBIDDEN");
+  if (error) {
+    console.error("requireAdmin db error:", error);
+    throw new Error("ADMIN_CHECK_FAILED");
+  }
 
-  return user;
+  if (!data?.user_id) {
+    throw new Error("FORBIDDEN");
+  }
+
+  return { user_id: user.id, email: user.email ?? null };
 }

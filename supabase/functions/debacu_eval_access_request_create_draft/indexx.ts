@@ -1,25 +1,7 @@
+// supabase/functions/debacu_eval_access_request_create/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-}
-
-function requireEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
-}
+import { json, preflight } from "../_shared/cors.ts";
+import { supabaseServiceClient } from "../_shared/auth.ts";
 
 type PropertyType = "HOTEL" | "RURAL" | "APARTMENTS" | "HOSTEL" | "OTHER";
 
@@ -42,48 +24,85 @@ type Body = {
   accepted_professional_use?: boolean;
 };
 
-Deno.serve(async (req) => {
+function isValidEmail(s: string) {
+  const v = String(s || "").trim();
+  // validación simple (suficiente para UI), sin regex agresivo
+  return v.includes("@") && v.includes(".") && v.length <= 320;
+}
+
+async function readJsonSafe<T>(req: Request): Promise<T | null> {
   try {
-    if (req.method === "OPTIONS") {
-      return new Response("ok", { status: 200, headers: corsHeaders });
-    }
-    if (req.method !== "POST") return json(405, { error: "Method not allowed" });
+    const text = await req.text();
+    if (!text) return null;
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
 
-    const SUPABASE_URL = requireEnv("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
-    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, {
+      ok: false,
+      error: "request_failed",
+      detail: "METHOD_NOT_ALLOWED",
+    });
+  }
 
-    const body = (await req.json()) as Body;
+  // ✅ público (sin JWT): NO requireUser aquí
+  const body = await readJsonSafe<Body>(req);
+  if (!body) {
+    return json(req, 400, {
+      ok: false,
+      error: "request_failed",
+      detail: "invalid_json",
+    });
+  }
 
-    const company_name = body.company_name?.trim();
-    const legal_name = body.legal_name?.trim() || null;
-    const cif = body.cif?.trim();
-    const address = body.address?.trim() || null;
-    const city = body.city?.trim() || null;
-    const country = body.country?.trim() || "ESP";
-    const property_type = body.property_type;
-    const website = body.website?.trim() || null;
-    const contact_name = body.contact_name?.trim();
-    const contact_role = body.contact_role?.trim() || null;
-    const email = body.email?.trim();
-    const phone = body.phone?.trim() || null;
-    const notes = body.notes?.trim() || null;
+  const company_name = body.company_name?.trim();
+  const legal_name = body.legal_name?.trim() || null;
+  const cif = body.cif?.trim();
+  const address = body.address?.trim() || null;
+  const city = body.city?.trim() || null;
+  const country = body.country?.trim() || "ESP";
+  const property_type = body.property_type;
+  const website = body.website?.trim() || null;
+  const contact_name = body.contact_name?.trim();
+  const contact_role = body.contact_role?.trim() || null;
+  const email = body.email?.trim();
+  const phone = body.phone?.trim() || null;
+  const notes = body.notes?.trim() || null;
 
-    if (!company_name) return json(400, { error: "company_name required" });
-    if (!cif) return json(400, { error: "cif required" });
-    if (!contact_name) return json(400, { error: "contact_name required" });
-    if (!email || !email.includes("@")) return json(400, { error: "valid email required" });
-    if (!property_type) return json(400, { error: "property_type required" });
+  if (!company_name) {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "missing_company_name" });
+  }
+  if (!cif) {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "missing_cif" });
+  }
+  if (!contact_name) {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "missing_contact_name" });
+  }
+  if (!email || !isValidEmail(email)) {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_email" });
+  }
+  if (!property_type) {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "missing_property_type" });
+  }
 
-    const rooms_count =
-      typeof body.rooms_count === "number" && Number.isFinite(body.rooms_count)
-        ? body.rooms_count
-        : null;
+  const rooms_count =
+    typeof body.rooms_count === "number" && Number.isFinite(body.rooms_count)
+      ? Math.max(0, Math.floor(body.rooms_count))
+      : null;
 
-    // ✅ evitar duplicados de draft (opcional pero recomendado)
+  // Service role (consistente)
+  const supabase = supabaseServiceClient();
+
+  try {
+    // ✅ evitar duplicados PENDING por (email,cif)
     const { data: existing, error: existingErr } = await supabase
       .from("debacu_eval_access_requests")
-      .select("id")
+      .select("id, created_at")
       .eq("status", "PENDING")
       .eq("email", email)
       .eq("cif", cif)
@@ -91,9 +110,24 @@ Deno.serve(async (req) => {
       .limit(1)
       .maybeSingle();
 
-    if (existingErr) return json(500, { error: existingErr.message });
-    if (existing?.id) return json(200, { id: existing.id, duplicate: true });
+    if (existingErr) {
+      return json(req, 500, {
+        ok: false,
+        error: "request_failed",
+        detail: "DB_READ_FAILED",
+      });
+    }
 
+    if (existing?.id) {
+      return json(req, 200, {
+        ok: true,
+        id: existing.id,
+        created_at: existing.created_at,
+        duplicate: true,
+      });
+    }
+
+    // ✅ insert + select (created_at real)
     const { data, error } = await supabase
       .from("debacu_eval_access_requests")
       .insert({
@@ -113,17 +147,39 @@ Deno.serve(async (req) => {
         phone,
         notes,
 
-       accepted_terms: false,
-  accepted_professional_use: !!body.accepted_professional_use,
+        // Mantengo tu comportamiento actual:
+        accepted_terms: false,
+        accepted_professional_use: !!body.accepted_professional_use,
       })
-      .select("id")
+      .select("id, created_at")
       .maybeSingle();
 
-    if (error) return json(500, { error: error.message });
-    if (!data?.id) return json(500, { error: "draft not created" });
+    if (error) {
+      return json(req, 500, {
+        ok: false,
+        error: "request_failed",
+        detail: "DB_INSERT_FAILED",
+      });
+    }
 
-    return json(200, { id: data.id });
-  } catch (e: any) {
-    return json(500, { error: e?.message ?? String(e) });
+    if (!data?.id) {
+      return json(req, 500, {
+        ok: false,
+        error: "request_failed",
+        detail: "draft_not_created",
+      });
+    }
+
+    return json(req, 200, {
+      ok: true,
+      id: data.id,
+      created_at: data.created_at,
+    });
+  } catch {
+    return json(req, 500, {
+      ok: false,
+      error: "request_failed",
+      detail: "INTERNAL_ERROR",
+    });
   }
 });

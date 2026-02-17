@@ -2,118 +2,32 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-
-const APP_ID = "DEBACU_EVAL";
-
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    Vary: "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    // ✅ JWT-only
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json; charset=utf-8" },
-  });
-}
-
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
-
-async function requireJwtUser(req: Request) {
-  const sb = userClient(req);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
-
-function adminClient() {
-  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
 /** ======================================================
- * ORG + ENTITLEMENTS (JWT-only)
+ * CONFIG
  * ====================================================== */
-async function resolveOrgIdForUserOrThrow(admin: ReturnType<typeof adminClient>, userId: string) {
-  const { data, error } = await admin
-    .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw new Error(`MEMBERSHIP_LOOKUP_FAILED:${error.message}`);
-  if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
-
-  return { org_id: String(data.org_id), role: (data.role ?? null) as string | null };
-}
-
-type EntitlementsRow = {
-  org_id: string;
-  customer_id: string | null;
-  subscription_status: string | null; // hoy: ACTIVE o null
-  plan_code: string | null;
-  max_users: number | null;
-  seats_used: number;
-};
-
-async function loadEntitlementsOrThrow(admin: ReturnType<typeof adminClient>, orgId: string) {
-  const { data, error } = await admin
-    .from("debacu_eval_org_entitlements_v")
-    .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used")
-    .eq("org_id", orgId)
-    .maybeSingle();
-
-  if (error) throw new Error(`ENTITLEMENTS_FAILED:${error.message}`);
-  if (!data) throw new Error("FORBIDDEN_NO_ENTITLEMENTS");
-  return data as EntitlementsRow;
-}
-
-function assertOrgActiveOrThrow(ent: EntitlementsRow) {
-  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
-  if (!ent.customer_id) throw new Error("NO_CUSTOMER_ON_ORG");
-}
+const APP_CODE = "DEBACU_EVAL";
+const STORAGE_BUCKET = "customer-exports";
 
 /** ======================================================
- * Types + utils
+ * INPUT
  * ====================================================== */
 type ReqBody = {
+  org_id?: string | null; // ✅ multi-org recomendado
+
   export_type: "PDF" | "CSV";
   export_scope: string;
+
   period_from: string; // yyyy-mm-dd
   period_to: string; // yyyy-mm-dd
-  filters?: any;
-  storage_bucket?: string; // lo ignoramos (no confiar)
+  filters?: unknown;
+  storage_bucket?: string; // ignorado
 };
 
 function assertDate(s: string, name: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error(`BAD_${name.toUpperCase()}`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error(`invalid_${name}`);
 }
 
 function normalizeFilters(v: unknown): Record<string, unknown> {
@@ -131,93 +45,230 @@ function normalizeFilters(v: unknown): Record<string, unknown> {
 }
 
 function safeScope(scope: string) {
-  return String(scope).trim();
+  return String(scope ?? "").trim();
 }
 
-export default Deno.serve(async (req: Request) => {
-  const origin = req.headers.get("origin");
-  const admin = adminClient();
+/** ======================================================
+ * MULTI-ORG + ENTITLEMENTS
+ * ====================================================== */
+async function resolveOrgIdForUserOrThrow(
+  admin: ReturnType<typeof createClient>,
+  userId: string,
+  requestedOrgId?: string | null
+): Promise<{ org_id: string; role: string | null }> {
+  // 1) org_id explícito: validar membership
+  if (requestedOrgId) {
+    // si existe status, usamos ACTIVE; si no, fallback
+    try {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id, role")
+        .eq("org_id", requestedOrgId)
+        .eq("user_id", userId)
+        .eq("status", "ACTIVE")
+        .maybeSingle();
 
-  if (req.method === "OPTIONS") return new Response("ok", { status: 200, headers: corsHeaders(origin) });
-  if (req.method !== "POST") return json(origin, 405, { ok: false, error: "method_not_allowed" });
+      if (error) throw error;
+      if (!data?.org_id) throw new Error("FORBIDDEN_NOT_MEMBER");
+      return { org_id: String(data.org_id), role: (data.role ?? null) as string | null };
+    } catch {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id, role")
+        .eq("org_id", requestedOrgId)
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (error) throw new Error(`MEMBERSHIP_LOOKUP_FAILED:${error.message}`);
+      if (!data?.org_id) throw new Error("FORBIDDEN_NOT_MEMBER");
+      return { org_id: String(data.org_id), role: (data.role ?? null) as string | null };
+    }
+  }
+
+  // 2) fallback determinista: primera membership (ideal ACTIVE)
+  try {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, role, created_at")
+      .eq("user_id", userId)
+      .eq("status", "ACTIVE")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+    return { org_id: String(data.org_id), role: (data.role ?? null) as string | null };
+  } catch {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, role, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw new Error(`MEMBERSHIP_LOOKUP_FAILED:${error.message}`);
+    if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+    return { org_id: String(data.org_id), role: (data.role ?? null) as string | null };
+  }
+}
+
+type EntitlementsRow = {
+  org_id: string;
+  customer_id: string | null;
+  subscription_status: string | null;
+  plan_code: string | null;
+  max_users: number | null;
+  seats_used: number | null;
+};
+
+async function loadEntitlementsOrThrow(admin: ReturnType<typeof createClient>, orgId: string) {
+  const { data, error } = await admin
+    .from("debacu_eval_org_entitlements_v")
+    .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used")
+    .eq("org_id", orgId)
+    .maybeSingle();
+
+  if (error) throw new Error(`ENTITLEMENTS_FAILED:${error.message}`);
+  if (!data?.org_id) throw new Error("FORBIDDEN_NO_ENTITLEMENTS");
+  return data as EntitlementsRow;
+}
+
+function assertOrgActiveOrThrow(ent: EntitlementsRow) {
+  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+  if (!ent.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+}
+
+/** ======================================================
+ * ERROR MAPPING
+ * ====================================================== */
+function mapError(e: unknown): { status: number; detail: string } {
+  const msg = String((e as any)?.message ?? e ?? "request_failed");
+
+  if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return { status: 401, detail: "UNAUTHENTICATED" };
+  if (msg === "PLAN_NOT_ACTIVE") return { status: 402, detail: "PLAN_NOT_ACTIVE" };
+
+  if (
+    msg.startsWith("FORBIDDEN") ||
+    msg.startsWith("MEMBERSHIP_LOOKUP_FAILED") ||
+    msg.startsWith("ENTITLEMENTS_FAILED")
+  ) {
+    return { status: 403, detail: msg.startsWith("FORBIDDEN") ? msg : "FORBIDDEN" };
+  }
+
+  if (
+    msg.startsWith("missing_") ||
+    msg.startsWith("invalid_") ||
+    msg === "invalid_json" ||
+    msg === "invalid_export_type" ||
+    msg === "invalid_export_scope"
+  ) {
+    return { status: 400, detail: msg };
+  }
+
+  return { status: 500, detail: "INTERNAL" };
+}
+
+/** ======================================================
+ * MAIN
+ * ====================================================== */
+export default Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "method_not_allowed", detail: "method_not_allowed" });
+  }
+
+  const admin = supabaseServiceClient(); // ✅ service role
 
   try {
-    // 1) JWT user
-    const user = await requireJwtUser(req);
+    const user = await requireUser(req);
 
-    // 2) org + entitlements (JWT-only)
-    const { org_id, role } = await resolveOrgIdForUserOrThrow(admin, user.id);
+    const body = (await req.json().catch(() => null)) as ReqBody | null;
+    if (!body) throw new Error("invalid_json");
+
+    const export_type = String(body.export_type ?? "").toUpperCase();
+    const export_scope = safeScope(body.export_scope);
+
+    if (export_type !== "PDF" && export_type !== "CSV") throw new Error("invalid_export_type");
+    if (!export_scope) throw new Error("invalid_export_scope");
+
+    const period_from = String(body.period_from ?? "").trim();
+    const period_to = String(body.period_to ?? "").trim();
+
+    assertDate(period_from, "period_from");
+    assertDate(period_to, "period_to");
+    if (period_from > period_to) throw new Error("invalid_period_range");
+
+    const filters = normalizeFilters(body.filters);
+
+    // ✅ multi-org: resolver org + entitlements
+    const { org_id, role } = await resolveOrgIdForUserOrThrow(
+      admin,
+      user.id,
+      body.org_id ? String(body.org_id) : null
+    );
+
     const ent = await loadEntitlementsOrThrow(admin, org_id);
     assertOrgActiveOrThrow(ent);
 
-    // (ahora mismo no lo usas aquí, pero lo dejo por coherencia)
-    const customer_id = String(ent.customer_id);
+    // ✅ no confiar en FE
+    const storage_bucket = STORAGE_BUCKET;
 
-    // 3) body
-    const body = (await req.json().catch(() => ({}))) as ReqBody;
+    /**
+     * Creamos una solicitud PENDING en la tabla definitiva.
+     * Nota: si tu schema NO tiene algunos campos, quítalos del insert.
+     */
+    const insertRow: Record<string, unknown> = {
+      // Identidad + tenancy
+      org_id,
+      customer_id: ent.customer_id, // si existe columna; si no, borrar
+      app_code: APP_CODE, // si existe columna; si no, borrar
 
-    if (!body?.export_type || !body?.export_scope) throw new Error("BAD_REQUEST");
-    assertDate(body.period_from, "period_from");
-    assertDate(body.period_to, "period_to");
-    if (body.period_from > body.period_to) throw new Error("BAD_RANGE");
+      // Quien lo pidió
+      requested_by_user_id: user.id, // si existe; si no, usar generated_by_user_id
+      requested_by_role: role,
+      requested_by_email: user.email ?? null,
 
-    const export_type = body.export_type;
-    const export_scope = safeScope(body.export_scope);
+      // Qué se pide
+      export_type,
+      export_scope,
+      period_from,
+      period_to,
+      filters,
 
-    // ✅ filters SIEMPRE {}
-    const filters = normalizeFilters(body.filters);
+      // Estado pipeline
+      status: "PENDING",
 
-    // ✅ no confiar en FE; bucket fijo permitido
-    const storage_bucket = "customer-exports";
-
-    // 4) crea registro PENDING
-    const { data: created, error: insErr } = await admin
-      .from("customer_audit_exports")
-      .insert({
+      // Storage reservado
+      storage_bucket,
+      storage_path: "",
+      meta: {
+        app_code: APP_CODE,
         org_id,
-        app_id: APP_ID,
-
-        requested_by_user_id: user.id,
+        customer_id: ent.customer_id,
         requested_by_role: role,
-        requested_by_email: user.email ?? null,
+      },
+    };
 
-        export_type,
-        export_scope,
-        period_from: body.period_from,
-        period_to: body.period_to,
+    // Si tu tabla es customer_audit_exports y NO la quieres tocar todavía,
+    // cambia aquí el nombre. Mi recomendación: unificar con debacu_eval_audit_exports.
+    const { data: created, error: insErr } = await admin
+      .from("debacu_eval_audit_exports")
+      .insert(insertRow as any)
+      .select("id, created_at, status")
+      .maybeSingle();
 
-        filters,
-        status: "PENDING",
+    if (insErr || !created?.id) throw new Error("CREATE_FAILED");
 
-        storage_bucket,
-        storage_path: "",
-
-        // opcional: si tienes columna customer_id en la tabla, es buena idea rellenarla:
-        // customer_id,
-      })
-      .select("id")
-      .single();
-
-    if (insErr || !created?.id) throw new Error(`CREATE_FAILED:${insErr?.message ?? "NO_ID"}`);
-
-    const export_id = created.id as string;
-
-    // Aquí irá tu pipeline real (generate + upload + update READY/FAILED).
-    return json(origin, 200, { ok: true, export_id, status: "PENDING" });
-  } catch (e: any) {
-    const msg = String(e?.message ?? e);
-    const code =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("FORBIDDEN")
-        ? 403
-        : msg.startsWith("PLAN_NOT_ACTIVE")
-        ? 402
-        : msg.startsWith("BAD_") || msg === "BAD_REQUEST"
-        ? 400
-        : 500;
-
-    console.error("customer_audit_export_generate error:", e);
-    return json(origin, code, { ok: false, error: "request_failed", detail: msg });
+    return json(req, 200, {
+      ok: true,
+      export_id: created.id,
+      status: created.status ?? "PENDING",
+      created_at: created.created_at ?? null,
+    });
+  } catch (e) {
+    const mapped = mapError(e);
+    return json(req, mapped.status, { ok: false, error: "request_failed", detail: mapped.detail });
   }
 });

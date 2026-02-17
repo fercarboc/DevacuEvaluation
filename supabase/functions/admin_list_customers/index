@@ -1,110 +1,40 @@
 // supabase/functions/admin_list_customers/index.ts
 // deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-// =======================
-// CORS (simple y seguro)
-// =======================
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+import { json, preflight } from "../_shared/cors.ts";
+import { requireAdmin } from "../_shared/auth.ts";
 
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "*";
-
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json; charset=utf-8", ...corsHeaders(req) },
-  });
-}
-
-// =======================
-// Env + helpers
-// =======================
+/* =======================
+ * Env + clients
+ * ======================= */
 function requireEnv(name: string) {
   const v = Deno.env.get(name);
   if (!v) throw new Error(`Missing env ${name}`);
   return v;
 }
 
-const SUPABASE_URL = requireEnv("SUPABASE_URL");
-const SUPABASE_ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
-const SUPABASE_SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-function getBearer(req: Request) {
-  const h = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m?.[1] ?? null;
-}
-
-function parseAllowedEmails(csv: string | null) {
-  const raw = (csv ?? "").trim();
-  if (!raw) return ["admin@debacu.com"];
-  return raw
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-function supabaseUserClient(token: string) {
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-    auth: { persistSession: false },
-  });
-}
-
 function supabaseServiceClient() {
+  const SUPABASE_URL = requireEnv("SUPABASE_URL");
+  const SUPABASE_SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
   });
 }
 
-async function requireAdmin(req: Request) {
-  const token = getBearer(req);
-  if (!token) return { ok: false as const, status: 401, error: "missing_bearer" as const };
-
-  const sbUser = supabaseUserClient(token);
-
-  // ✅ v2: getUser() sin token
-  const { data: userData, error: userErr } = await sbUser.auth.getUser();
-  if (userErr || !userData?.user) {
-    return { ok: false as const, status: 401, error: "invalid_token" as const };
-  }
-
-  // ✅ fuente de verdad consistente (igual que admin_whoami)
-  const allowed = parseAllowedEmails(Deno.env.get("ADMIN_EMAILS"));
-  const email = (userData.user.email ?? "").toLowerCase().trim();
-  const isAdmin = allowed.includes(email);
-
-  if (!isAdmin) return { ok: false as const, status: 403, error: "forbidden" as const };
-
-  return { ok: true as const, user: userData.user };
-}
-
-// =======================
-// Main
-// =======================
+/* =======================
+ * Main
+ * ======================= */
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
+  if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
-  const admin = await requireAdmin(req);
-  if (!admin.ok) return json(req, admin.status, { ok: false, error: admin.error });
-
   try {
+    // ✅ JWT-only + admin gate centralizado (fuera ADMIN_EMAILS)
+    await requireAdmin(req);
+
     const body = await req.json().catch(() => ({}));
     const q = String(body?.q ?? "").trim();
     const limit = Math.min(Math.max(Number(body?.limit ?? 200), 1), 500);
@@ -114,12 +44,16 @@ Deno.serve(async (req) => {
 
     let query = sb
       .from("customers")
-      .select("id, name, email, plan_id, billing_frequency, phone, country, address, city, nif, is_active, created_at")
+      .select(
+        "id, name, email, plan_id, billing_frequency, phone, country, address, city, nif, is_active, created_at"
+      )
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
     if (q) {
-      const qq = q.replace(/%/g, "\\%").replace(/_/g, "\\_"); // evita comodines accidentales
+      // intenta evitar comodines accidentales
+      // (si necesitas exactitud 100% con escaping, mejor mover esto a FTS o query dedicada)
+      const qq = q.replace(/%/g, "\\%").replace(/_/g, "\\_");
       query = query.or(`name.ilike.%${qq}%,email.ilike.%${qq}%`);
     }
 
@@ -138,11 +72,24 @@ Deno.serve(async (req) => {
     const rows = (customers ?? []).map((c: any) => ({
       ...c,
       plan_name: c.plan_id ? planMap.get(c.plan_id) ?? null : null,
-      last_login_at: null,
+      last_login_at: null, // placeholder
     }));
 
-    return json(req, 200, { ok: true, data: rows, meta: { limit, offset, count: rows.length } });
+    return json(req, 200, {
+      ok: true,
+      data: rows,
+      meta: { limit, offset, count: rows.length },
+    });
   } catch (e: any) {
-    return json(req, 500, { ok: false, error: "unexpected", detail: e?.message ?? String(e) });
+    const msg = e?.message ?? String(e);
+
+    if (msg === "UNAUTHORIZED" || msg === "missing_bearer" || msg === "invalid_token") {
+      return json(req, 401, { ok: false, error: "unauthorized" });
+    }
+    if (msg === "FORBIDDEN" || msg === "forbidden_admin_only") {
+      return json(req, 403, { ok: false, error: "forbidden" });
+    }
+
+    return json(req, 500, { ok: false, error: "unexpected", detail: msg });
   }
 });

@@ -1,7 +1,9 @@
 // supabase/functions/debacu_eval_channel_leak_detail_get/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { serve } from "https://deno.land/std@0.177.1/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
 type PeriodField = "evaluation_date" | "created_at";
 type ChannelGroup = "OTA" | "DIRECTO" | "B2B" | "OTROS";
@@ -24,6 +26,10 @@ type InputBody = {
 
   limit?: number;
   offset?: number;
+
+  // multi-org
+  org_id?: string;
+  orgId?: string;
 };
 
 type RowOut = {
@@ -47,38 +53,6 @@ type RowOut = {
   document: string | null;
   full_name: string | null;
 };
-
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function corsHeaders(req: Request): Record<string, string> {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    Vary: "Origin",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(req: Request, body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json; charset=utf-8", ...corsHeaders(req) },
-  });
-}
-
-function mustEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env var: ${name}`);
-  return v;
-}
 
 function isIsoDate(d: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(d);
@@ -150,82 +124,141 @@ function normalizePeriodField(v: unknown): PeriodField {
   return "evaluation_date";
 }
 
-function userClient(req: Request, supabaseUrl: string, anonKey: string) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(supabaseUrl, anonKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
+function isUuid(v: unknown): v is string {
+  if (typeof v !== "string") return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
 
-function adminClient(supabaseUrl: string, serviceKey: string) {
-  return createClient(supabaseUrl, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+function isMissingColumnError(msg: string) {
+  return /column .* does not exist/i.test(msg);
 }
 
-async function requireJwtUser(req: Request, supabaseUrl: string, anonKey: string) {
-  const sb = userClient(req, supabaseUrl, anonKey);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
+/** =====================================================
+ * Multi-org: resolve org_id (validate membership ACTIVE)
+ * ===================================================== */
+async function resolveOrgIdForUser(
+  sbAdmin: ReturnType<typeof createClient>,
+  userId: string,
+  requestedOrgId?: string,
+): Promise<{ ok: true; org_id: string } | { ok: false; status: number; detail: string }> {
+  // 1) Si viene org_id => validar membership
+  if (requestedOrgId) {
+    // Intento con status=ACTIVE (schema final)
+    const q1 = await sbAdmin
+      .from("debacu_eval_org_members")
+      .select("org_id")
+      .eq("user_id", userId)
+      .eq("org_id", requestedOrgId)
+      .eq("status", "ACTIVE")
+      .limit(1)
+      .maybeSingle();
 
-async function requireOrgMemberAndCustomerId(admin: ReturnType<typeof createClient>, user_id: string) {
-  const { data: mem, error: memErr } = await admin
+    if (q1.error) {
+      // Fallback si no existe columna status
+      if (isMissingColumnError(q1.error.message)) {
+        const q2 = await sbAdmin
+          .from("debacu_eval_org_members")
+          .select("org_id")
+          .eq("user_id", userId)
+          .eq("org_id", requestedOrgId)
+          .limit(1)
+          .maybeSingle();
+
+        if (q2.error) return { ok: false, status: 500, detail: "request_failed" };
+        if (!q2.data?.org_id) return { ok: false, status: 403, detail: "FORBIDDEN" };
+        return { ok: true, org_id: String(q2.data.org_id) };
+      }
+      return { ok: false, status: 500, detail: "request_failed" };
+    }
+
+    if (!q1.data?.org_id) return { ok: false, status: 403, detail: "FORBIDDEN" };
+    return { ok: true, org_id: String(q1.data.org_id) };
+  }
+
+  // 2) Fallback determinista: primera membership ACTIVE
+  const q1 = await sbAdmin
     .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", user_id)
+    .select("org_id, created_at")
+    .eq("user_id", userId)
+    .eq("status", "ACTIVE")
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+  if (q1.error) {
+    if (isMissingColumnError(q1.error.message)) {
+      const q2 = await sbAdmin
+        .from("debacu_eval_org_members")
+        .select("org_id, created_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
 
-  const org_id = String(mem.org_id);
-
-  let customer_id: string | null = null;
-  try {
-    const { data: ent, error: entErr } = await admin
-      .from("debacu_eval_org_entitlements_v")
-      .select("customer_id")
-      .eq("org_id", org_id)
-      .maybeSingle();
-    if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
-  } catch {}
-
-  if (!customer_id) {
-    const { data: org, error: orgErr } = await admin
-      .from("debacu_eval_organizations")
-      .select("customer_id")
-      .eq("id", org_id)
-      .maybeSingle();
-    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
-    customer_id = String(org.customer_id);
+      if (q2.error) return { ok: false, status: 500, detail: "request_failed" };
+      if (!q2.data?.org_id) return { ok: false, status: 403, detail: "FORBIDDEN" };
+      return { ok: true, org_id: String(q2.data.org_id) };
+    }
+    return { ok: false, status: 500, detail: "request_failed" };
   }
 
-  return { org_id, customer_id };
+  if (!q1.data?.org_id) return { ok: false, status: 403, detail: "FORBIDDEN" };
+  return { ok: true, org_id: String(q1.data.org_id) };
 }
 
-serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
-  if (req.method !== "POST") return json(req, { ok: false, error: "method_not_allowed" }, 405);
+async function loadEntitlements(
+  sbAdmin: ReturnType<typeof createClient>,
+  orgId: string,
+): Promise<
+  | { ok: true; customer_id: string; subscription_status: string | null; plan_code: string | null }
+  | { ok: false; status: number; detail: string }
+> {
+  const { data, error } = await sbAdmin
+    .from("debacu_eval_org_entitlements_v")
+    .select("customer_id, subscription_status, plan_code")
+    .eq("org_id", orgId)
+    .maybeSingle();
+
+  if (error) return { ok: false, status: 500, detail: "request_failed" };
+  const customer_id = data?.customer_id ? String(data.customer_id) : "";
+  if (!customer_id) return { ok: false, status: 403, detail: "FORBIDDEN" };
+
+  return { ok: true, customer_id, subscription_status: (data as any)?.subscription_status ?? null, plan_code: (data as any)?.plan_code ?? null };
+}
+
+function assertPlanActive(subscription_status: string | null) {
+  // Según tu regla: 402 cuando aplique.
+  // Si tu view solo devuelve ACTIVE, esto no molesta. Si mañana mete más estados, te cubre.
+  if (subscription_status && subscription_status !== "ACTIVE") return false;
+  return true;
+}
+
+/** =====================================================
+ * Handler
+ * ===================================================== */
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "request_failed", detail: "method_not_allowed" });
+  }
+
+  // JWT-only
+  const user = await requireUser(req);
+
+  // Service role (consistencia)
+  const sbAdmin = supabaseServiceClient();
 
   try {
-    const SUPABASE_URL = mustEnv("SUPABASE_URL");
-    const SERVICE_ROLE = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-    const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
-
-    const user = await requireJwtUser(req, SUPABASE_URL, ANON_KEY);
-    const admin = adminClient(SUPABASE_URL, SERVICE_ROLE);
-    const { org_id, customer_id } = await requireOrgMemberAndCustomerId(admin, user.id);
-
     const body = (await req.json().catch(() => ({} as any))) as InputBody;
 
-    const channel_group = String(body.channel_group ?? body.channelGroup ?? "").trim().toUpperCase() as ChannelGroup;
-    const platform_key_in = String(body.platform_key ?? body.platformKey ?? "").trim().toUpperCase();
+    const channel_group = String(body.channel_group ?? body.channelGroup ?? "")
+      .trim()
+      .toUpperCase() as ChannelGroup;
+
+    const platform_key_in = String(body.platform_key ?? body.platformKey ?? "")
+      .trim()
+      .toUpperCase();
 
     const period_from = String(body.period_from ?? body.periodFrom ?? "").trim();
     const period_to = String(body.period_to ?? body.periodTo ?? "").trim();
@@ -234,23 +267,51 @@ serve(async (req) => {
     const limit = Math.max(1, Math.min(200, Math.trunc(toNumber(body.limit ?? 25))));
     const offset = Math.max(0, Math.trunc(toNumber(body.offset ?? 0)));
 
-    if (!channel_group || !["OTA", "DIRECTO", "B2B", "OTROS"].includes(channel_group)) {
-      return json(req, { ok: false, error: "INVALID_CHANNEL_GROUP" }, 400);
+    const requestedOrgId = (body.org_id ?? body.orgId ?? "") ? String(body.org_id ?? body.orgId) : undefined;
+    if (requestedOrgId != null && requestedOrgId !== undefined && requestedOrgId !== "" && !isUuid(requestedOrgId)) {
+      return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_org_id" });
     }
-    if (!platform_key_in) return json(req, { ok: false, error: "INVALID_PLATFORM_KEY" }, 400);
+
+    if (!channel_group || !["OTA", "DIRECTO", "B2B", "OTROS"].includes(channel_group)) {
+      return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_channel_group" });
+    }
+    if (!platform_key_in) {
+      return json(req, 400, { ok: false, error: "request_failed", detail: "missing_platform_key" });
+    }
     if (!isIsoDate(period_from) || !isIsoDate(period_to)) {
-      return json(req, { ok: false, error: "INVALID_PERIOD_FORMAT" }, 400);
+      return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_period_format" });
     }
 
     const fromDate = new Date(`${period_from}T00:00:00.000Z`);
     const toDate = new Date(`${period_to}T00:00:00.000Z`);
     if (!Number.isFinite(fromDate.getTime()) || !Number.isFinite(toDate.getTime())) {
-      return json(req, { ok: false, error: "INVALID_PERIOD_VALUE" }, 400);
+      return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_period_value" });
     }
-    if (fromDate.getTime() > toDate.getTime()) return json(req, { ok: false, error: "PERIOD_FROM_GT_TO" }, 400);
+    if (fromDate.getTime() > toDate.getTime()) {
+      return json(req, 400, { ok: false, error: "request_failed", detail: "period_from_gt_to" });
+    }
     const toPlus1 = new Date(toDate.getTime() + 24 * 60 * 60 * 1000);
 
-    // ✅ RAW (igual que el agregador): NO dependemos de la vista ni de patterns.
+    // Resolve org (multi-org) + entitlements
+    const orgRes = await resolveOrgIdForUser(sbAdmin, user.id, requestedOrgId && requestedOrgId !== "" ? requestedOrgId : undefined);
+    if (!orgRes.ok) {
+      return json(req, orgRes.status, { ok: false, error: "request_failed", detail: orgRes.detail });
+    }
+
+    const entRes = await loadEntitlements(sbAdmin, orgRes.org_id);
+    if (!entRes.ok) {
+      return json(req, entRes.status, { ok: false, error: "request_failed", detail: entRes.detail });
+    }
+
+    if (!assertPlanActive(entRes.subscription_status)) {
+      return json(req, 402, { ok: false, error: "request_failed", detail: "PLAN_NOT_ACTIVE" });
+    }
+
+    const customer_id = entRes.customer_id;
+
+    // =====================================================
+    // Query RAW (igual que agregador) + filtrado exacto en JS
+    // =====================================================
     type EvalRow = {
       id: string;
       evaluation_date: string | null;
@@ -265,7 +326,7 @@ serve(async (req) => {
       full_name: string | null;
     };
 
-    let q = admin
+    let q = sbAdmin
       .from("debacu_evaluations")
       .select(
         [
@@ -297,11 +358,12 @@ serve(async (req) => {
       .order("created_at", { ascending: false, nullsFirst: false });
 
     const { data, error, count } = await q;
-    if (error) return json(req, { ok: false, error: "QUERY_FAILED", detail: error.message }, 500);
+    if (error) {
+      return json(req, 500, { ok: false, error: "request_failed", detail: "request_failed" });
+    }
 
     const all = (data ?? []) as EvalRow[];
 
-    // Filtrado EXACTO en JS (mismo algoritmo)
     const filtered: RowOut[] = [];
     for (const r of all) {
       const pk = platformKeyFromNorm(normPlatform(r.platform));
@@ -338,12 +400,12 @@ serve(async (req) => {
     const totalExact = filtered.length;
     const page = filtered.slice(offset, offset + limit);
 
-    return json(req, {
+    return json(req, 200, {
       ok: true,
       data: {
         meta: {
           app_id: "DEBACU_EVAL",
-          org_id,
+          org_id: orgRes.org_id,
           customer_id,
           channel_group,
           platform_key: platform_key_in,
@@ -355,20 +417,11 @@ serve(async (req) => {
         total: totalExact,
         limit,
         offset,
-        // opcional: info de count SQL bruto
         total_in_period_raw: Number(count ?? all.length),
       },
     });
-  } catch (e: any) {
-    const msg = String(e?.message ?? e);
-    const status =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED")
-          ? 403
-          : 500;
-
-    console.error("debacu_eval_channel_leak_detail_get ERROR", e);
-    return json(req, { ok: false, error: "request_failed", detail: msg }, status);
+  } catch {
+    // higiene: no filtrar stack
+    return json(req, 500, { ok: false, error: "request_failed", detail: "internal_error" });
   }
 });

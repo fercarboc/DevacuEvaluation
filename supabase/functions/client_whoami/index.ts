@@ -1,33 +1,34 @@
 // supabase/functions/client_whoami/index.ts
 // deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const APP_ID = "DEBACU_EVAL";
 
-const corsHeaders: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Max-Age": "86400",
+// Ajusta si tu schema difiere
+const MEMBERSHIP_STATUS_COLUMN = "status";
+const MEMBERSHIP_ACTIVE_VALUE = "ACTIVE";
+
+type ReqBody = {
+  org_id?: string; // recomendado: UI manda org_id cuando el user tiene varios hoteles
 };
 
-function json(status: number, body: any) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "content-type": "application/json; charset=utf-8" },
+function supabaseServiceClient() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
   });
 }
 
-function requireEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env ${name}`);
-  return v;
-}
-
-function getBearer(req: Request) {
-  const h = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m?.[1] ?? null;
+function isUuid(v: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    v,
+  );
 }
 
 function normEmail(email: string | null): string | null {
@@ -67,7 +68,7 @@ async function findPlanByCode(sb: any, code: string) {
  * - Si no hay email -> crea customer genérico
  * - Si hay email -> busca por email, si no existe hace upsert por email
  *
- * IMPORTANTE: para upsert requiere UNIQUE(email) en customers.
+ * NOTA: requiere UNIQUE(email) en customers si usas upsert por email.
  */
 async function ensureCustomerByEmail(sb: any, email: string | null) {
   const e = normEmail(email);
@@ -109,7 +110,7 @@ async function ensureCustomerByEmail(sb: any, email: string | null) {
         trial_used: false,
         app_id: APP_ID,
       },
-      { onConflict: "email" }
+      { onConflict: "email" },
     )
     .select("id, email, name")
     .single();
@@ -119,19 +120,15 @@ async function ensureCustomerByEmail(sb: any, email: string | null) {
 }
 
 /**
- * ⚠️ CLAVE:
  * org_members.org_id tiene FK -> debacu_eval_organizations(id)
- * Por eso garantizamos que exista una organization con id = customer.id
- *
- * Esto evita tener que mapear ids distintos (customer_id / org_id).
+ * Garantizamos organization id = customer.id (tu modelo actual).
  */
 async function ensureOrganizationForCustomer(
   sb: any,
-  customer: { id: string; name?: string | null; email?: string | null }
+  customer: { id: string; name?: string | null; email?: string | null },
 ) {
   const orgId = customer.id;
 
-  // 1) Si ya existe, listo
   const { data: org, error: oErr } = await sb
     .from("debacu_eval_organizations")
     .select("id")
@@ -141,9 +138,6 @@ async function ensureOrganizationForCustomer(
   if (oErr) throw new Error(`org_lookup_failed:${oErr.message}`);
   if (org?.id) return { id: orgId };
 
-  // 2) Crear org con el mismo id (para que org_members FK no falle)
-  // Nota: created_at normalmente tiene default now() así que no hace falta.
-  // Rellenamos solo lo mínimo seguro: id + name.
   const name =
     (customer?.name ?? "").trim() ||
     (customer?.email ? `Org ${customer.email}` : "Nueva organización");
@@ -153,8 +147,6 @@ async function ensureOrganizationForCustomer(
     .insert({
       id: orgId,
       name,
-      // opcional:
-      // country: "ESP",
     })
     .select("id")
     .single();
@@ -163,11 +155,10 @@ async function ensureOrganizationForCustomer(
   return created;
 }
 
-
 async function ensureMembership(sb: any, org_id: string, user_id: string) {
   const { data: member, error: mErr } = await sb
     .from("debacu_eval_org_members")
-    .select("org_id, role")
+    .select("org_id, role, status")
     .eq("org_id", org_id)
     .eq("user_id", user_id)
     .maybeSingle();
@@ -175,10 +166,11 @@ async function ensureMembership(sb: any, org_id: string, user_id: string) {
   if (mErr) throw new Error(`membership_lookup_failed:${mErr.message}`);
   if (member?.org_id) return member;
 
+  // por defecto OWNER + ACTIVE (ajusta si tu tabla tiene defaults/constraints)
   const { data: created, error: cErr } = await sb
     .from("debacu_eval_org_members")
-    .insert({ org_id, user_id, role: "OWNER" })
-    .select("org_id, role")
+    .insert({ org_id, user_id, role: "OWNER", [MEMBERSHIP_STATUS_COLUMN]: MEMBERSHIP_ACTIVE_VALUE })
+    .select("org_id, role, status")
     .single();
 
   if (cErr) throw new Error(`membership_create_failed:${cErr.message}`);
@@ -186,8 +178,9 @@ async function ensureMembership(sb: any, org_id: string, user_id: string) {
 }
 
 /**
- * Opcional: crea suscripción FREE_TRIAL si no hay ninguna
- * (si ya tienes un flujo distinto, puedes quitar esto)
+ * Opcional: crea suscripción FREE si no hay ninguna.
+ * OJO: esto es bootstrap de producto. Si tu flujo real ya lo hace el onboarding,
+ * puedes quitarlo para no meter efectos colaterales en whoami.
  */
 async function ensureSubscriptionIfNone(sb: any, customer_id: string) {
   const { data: sub, error: sErr } = await sb
@@ -203,9 +196,8 @@ async function ensureSubscriptionIfNone(sb: any, customer_id: string) {
   if (sub?.id) return;
 
   const freePlan = await findPlanByCode(sb, "FREE");
-  if (!freePlan?.id) return; // si no existe, no hacemos nada
+  if (!freePlan?.id) return;
 
-  // OJO: tu tabla subscriptions ya tiene billing_frequency tipo FREE_TRIAL en ejemplos.
   const today = new Date().toISOString().slice(0, 10);
 
   const { error: iErr } = await sb.from("subscriptions").insert({
@@ -220,113 +212,206 @@ async function ensureSubscriptionIfNone(sb: any, customer_id: string) {
   });
 
   if (iErr) {
-    // no tiramos whoami si esto falla
+    // whoami NO debe caerse por esto
     console.warn("subscription_bootstrap_failed", iErr.message);
   }
 }
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
-  if (req.method !== "POST") return json(405, { ok: false, error: "method_not_allowed" });
+/** ======================================================
+ * Multi-org resolution (UI should send org_id)
+ * ====================================================== */
+async function resolveOrgIdOrThrow(
+  sb: any,
+  userId: string,
+  requestedOrgId?: string | null,
+) {
+  if (requestedOrgId) {
+    const orgId = String(requestedOrgId).trim();
+    if (!isUuid(orgId)) throw new Error("invalid_org_id");
+
+    const { data, error } = await sb
+      .from("debacu_eval_org_members")
+      .select("org_id")
+      .eq("user_id", userId)
+      .eq("org_id", orgId)
+      .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
+      .maybeSingle();
+
+    if (error) throw new Error(`membership_lookup_failed:${error.message}`);
+    if (!data?.org_id) throw new Error("FORBIDDEN");
+    return orgId;
+  }
+
+  const { data, error } = await sb
+    .from("debacu_eval_org_members")
+    .select("org_id, created_at")
+    .eq("user_id", userId)
+    .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`membership_lookup_failed:${error.message}`);
+  if (!data?.org_id) throw new Error("FORBIDDEN");
+  return String(data.org_id);
+}
+
+/** ======================================================
+ * Entitlements, subscription, plan, seats
+ * ====================================================== */
+type EntitlementsRow = {
+  org_id: string;
+  customer_id: string | null;
+  subscription_status: string | null;
+  plan_code: string | null;
+  max_users: number | null;
+  seats_used: number | null;
+};
+
+async function loadEntitlements(sb: any, orgId: string): Promise<EntitlementsRow | null> {
+  const { data, error } = await sb
+    .from("debacu_eval_org_entitlements_v")
+    .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used")
+    .eq("org_id", orgId)
+    .maybeSingle();
+
+  // whoami: best-effort (si falla view, devolvemos null y seguimos con fallback)
+  if (error) return null;
+  return (data ?? null) as EntitlementsRow | null;
+}
+
+async function loadLatestSubscription(sb: any, customer_id: string) {
+  const { data, error } = await sb
+    .from("subscriptions")
+    .select("id, plan_id, status, trial_ends_at, grace_ends_at, suspended_at, extra_seats, billing_frequency")
+    .eq("customer_id", customer_id)
+    .eq("app_id", APP_ID)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`subscription_query_failed:${error.message}`);
+  return data ?? null;
+}
+
+async function loadPlanById(sb: any, plan_id: string) {
+  const { data, error } = await sb
+    .from("plans")
+    .select("id, name, code, extra_config")
+    .eq("id", plan_id)
+    .maybeSingle();
+
+  if (error) throw new Error(`plan_query_failed:${error.message}`);
+  return (data ?? null) as PlanRow | null;
+}
+
+async function countSeatsUsed(sb: any, org_id: string) {
+  // si quieres excluir INVITED/SUSPENDED, aquí debes filtrar status.
+  const { count, error } = await sb
+    .from("debacu_eval_org_members")
+    .select("id", { count: "exact", head: true })
+    .eq("org_id", org_id);
+
+  if (error) throw new Error(`seat_count_failed:${error.message}`);
+  return count ?? 0;
+}
+
+/** ======================================================
+ * MAIN
+ * ====================================================== */
+export default Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+
+  const sb = supabaseServiceClient();
 
   try {
-    const SUPABASE_URL = requireEnv("SUPABASE_URL");
-    const ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
-    const SRV_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+    const user = await requireUser(req);
+    const body = (await req.json().catch(() => ({}))) as ReqBody;
 
-    const token = getBearer(req);
-    if (!token) return json(401, { ok: false, error: "missing_bearer" });
+    const user_id = user.id;
+    const email = normEmail(user.email ?? null);
 
-    // 1) Validar JWT con ANON
-    const sbUser = createClient(SUPABASE_URL, ANON_KEY, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-      auth: { persistSession: false },
-    });
-
-    const { data: u, error: uErr } = await sbUser.auth.getUser();
-    if (uErr || !u?.user) return json(401, { ok: false, error: "invalid_token" });
-
-    const user_id = u.user.id;
-    const email = normEmail(u.user.email ?? null);
-
-    // 2) Service role
-    const sb = createClient(SUPABASE_URL, SRV_KEY, { auth: { persistSession: false } });
-
-    // 3) ¿ya tiene membership?
+    // 1) ¿tiene membership?
     const { data: member0, error: m0Err } = await sb
       .from("debacu_eval_org_members")
-      .select("org_id, role")
+      .select("org_id, role, status, created_at")
       .eq("user_id", user_id)
-      .maybeSingle();
+      .order("created_at", { ascending: true })
+      .limit(50);
 
-    if (m0Err) return json(500, { ok: false, error: "membership_query_failed", detail: m0Err.message });
+    if (m0Err) throw new Error(`membership_query_failed:${m0Err.message}`);
 
-    let org_id: string | null = member0?.org_id ?? null;
-    let role: string | null = member0?.role ?? null;
+    const memberships = (member0 ?? []).map((m: any) => ({
+      org_id: String(m.org_id),
+      role: (m.role ?? null) as string | null,
+      status: (m.status ?? null) as string | null,
+      created_at: m.created_at ?? null,
+    }));
 
-    // 4) Bootstrap si no tiene org/membership
-    if (!org_id) {
+    // 2) Bootstrap si NO tiene ninguna membership (solo en este caso)
+    if (memberships.length === 0) {
       const customer = await ensureCustomerByEmail(sb, email);
-      const org = await ensureOrganizationForCustomer(sb, customer); // ✅ aquí se arregla tu FK
-      const member = await ensureMembership(sb, org.id, user_id);
+      const org = await ensureOrganizationForCustomer(sb, customer);
+      const mem = await ensureMembership(sb, org.id, user_id);
 
-      org_id = member.org_id;
-      role = member.role ?? "OWNER";
-
-      // opcional: si no hay subs, crea FREE_TRIAL
+      // opcional (ver comentario)
       await ensureSubscriptionIfNone(sb, customer.id);
+
+      memberships.push({
+        org_id: String(mem.org_id),
+        role: (mem.role ?? "OWNER") as string,
+        status: (mem.status ?? MEMBERSHIP_ACTIVE_VALUE) as string,
+        created_at: null,
+      });
     }
 
-    // 5) Subscription actual (última)
-    const { data: sub, error: sErr } = await sb
-      .from("subscriptions")
-      .select("id, plan_id, status, trial_ends_at, grace_ends_at, suspended_at, extra_seats, billing_frequency")
-      .eq("customer_id", org_id) // ✅ porque org_id == customer_id en nuestro modelo
-      .eq("app_id", APP_ID)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // 3) Resolver org actual (UI manda org_id si multi-org)
+    const org_id = await resolveOrgIdOrThrow(sb, user_id, body?.org_id ?? null);
 
-    if (sErr) return json(500, { ok: false, error: "subscription_query_failed", detail: sErr.message });
+    // 4) Entitlements (best-effort). Si no hay, asumimos customer_id = org_id (tu modelo)
+    const ent = await loadEntitlements(sb, org_id);
+    const customer_id = String(ent?.customer_id ?? org_id);
 
-    // 6) Plan
+    // 5) Subscription + plan (best-effort controlado)
+    const sub = await loadLatestSubscription(sb, customer_id);
+
     let plan: PlanRow | null = null;
     if (sub?.plan_id) {
-      const { data: p, error: pErr } = await sb
-        .from("plans")
-        .select("id, name, code, extra_config")
-        .eq("id", sub.plan_id)
-        .maybeSingle();
-
-      if (pErr) return json(500, { ok: false, error: "plan_query_failed", detail: pErr.message });
-      plan = (p ?? null) as PlanRow | null;
+      plan = await loadPlanById(sb, String(sub.plan_id));
     }
 
-    // 7) Seats used
-    const { count: used, error: usedErr } = await sb
-      .from("debacu_eval_org_members")
-      .select("*", { count: "exact", head: true })
-      .eq("org_id", org_id);
-
-    if (usedErr) return json(500, { ok: false, error: "seat_count_failed", detail: usedErr.message });
+    // 6) Seats
+    const used = await countSeatsUsed(sb, org_id);
 
     const included = includedSeatsFromPlan(plan);
     const extra = Number.isFinite(Number(sub?.extra_seats)) ? Math.max(0, Number(sub?.extra_seats)) : 0;
     const allowed = included + extra;
 
-    // 8) Trial flags
+    // 7) Trial flags (no bloquea whoami)
     const now = new Date();
     const trialEnds = sub?.trial_ends_at ? new Date(sub.trial_ends_at) : null;
     const trialActive = !!trialEnds && trialEnds.getTime() > now.getTime();
     const trialExpired = !!trialEnds && trialEnds.getTime() <= now.getTime();
 
-    return json(200, {
+    return json(req, 200, {
       ok: true,
       data: {
         user_id,
         email,
+        // multi-org
         org_id,
-        role,
+        memberships,
+        // entitlements (si existe)
+        entitlements: ent
+          ? {
+              subscription_status: ent.subscription_status ?? null,
+              plan_code: ent.plan_code ?? null,
+              max_users: ent.max_users ?? null,
+              seats_used: ent.seats_used ?? null,
+            }
+          : null,
+        // plan/subscription (según tablas)
         plan: plan ? { id: plan.id, name: plan.name, code: plan.code, included_seats: included } : null,
         subscription: sub
           ? {
@@ -337,7 +422,7 @@ Deno.serve(async (req) => {
               grace_ends_at: sub.grace_ends_at ?? null,
             }
           : null,
-        seats: { used: used ?? 0, included, extra, allowed },
+        seats: { used, included, extra, allowed },
         trial: {
           active: trialActive,
           ends_at: trialEnds ? trialEnds.toISOString() : null,
@@ -346,6 +431,22 @@ Deno.serve(async (req) => {
       },
     });
   } catch (e: any) {
-    return json(500, { ok: false, error: "unexpected", detail: e?.message ?? String(e) });
+    const msg = String(e?.message ?? e);
+
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
+      return json(req, 401, { ok: false, error: "UNAUTHENTICATED" });
+    }
+
+    if (msg.startsWith("invalid_") || msg.startsWith("missing_")) {
+      return json(req, 400, { ok: false, error: msg });
+    }
+
+    if (msg === "FORBIDDEN" || msg.startsWith("forbidden_")) {
+      return json(req, 403, { ok: false, error: "FORBIDDEN" });
+    }
+
+    // no filtramos trazas
+    console.error("client_whoami error:", msg);
+    return json(req, 500, { ok: false, error: "request_failed", detail: "internal_error" });
   }
 });

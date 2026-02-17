@@ -1,122 +1,159 @@
+// supabase/functions/system_weekly_report_snapshot_generate/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { PDFDocument, StandardFonts, rgb } from "https://esm.sh/pdf-lib@1.17.1";
 
-/* ======================================================
- * ENV
- * ====================================================== */
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const DEFAULT_APP_CODE = "DEBACU_EVAL";
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
+
 const EXPORT_BUCKET = "system-exports";
+const APP_ID = "DEBACU_EVAL";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-/* ======================================================
- * CORS + RESP
- * ====================================================== */
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-
-  // si viene un Origin válido (local o prod), lo devolvemos tal cual
-  // si no, fallback a debacu.com (evita "*" con credenciales / headers sensibles)
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(req), "Content-Type": "application/json" },
-  });
-}
-
-/* ======================================================
- * TYPES
- * ====================================================== */
 type PeriodField = "evaluation_date" | "created_at";
 
 type ReqBody = {
+  org_id?: string | null; // ✅ multi-org (opcional)
   title?: string;
   period_from: string; // YYYY-MM-DD
   period_to: string; // YYYY-MM-DD
   period_field?: PeriodField; // default evaluation_date
+
+  // snapshot de la UI
   image_png_data_url: string; // data:image/png;base64,...
 };
 
-type SessionResolved = {
-  customer_id: string;
-  customer_name: string;
-  app_code: string;
+type EntitlementsRow = {
+  org_id: string;
+  customer_id: string | null;
+  seats_used: number;
+  plan_code: string | null;
+  max_users: number | null;
+  subscription_status: string | null; // ACTIVE | null
 };
 
 /* ======================================================
- * HELPERS
+ * Helpers
  * ====================================================== */
-function assertDate(s: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error("invalid_date_format");
+function assertDate(s: string, name: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(s ?? ""))) throw new Error(`BAD_${name.toUpperCase()}`);
+}
+
+function clampRange(from: string, to: string) {
+  return from <= to ? { from, to } : { from: to, to: from };
 }
 
 function stripPngDataUrl(dataUrl: string) {
   const m = (dataUrl || "").match(/^data:image\/png;base64,(.+)$/);
-  if (!m) throw new Error("invalid_image_data_url");
+  if (!m) throw new Error("BAD_IMAGE_DATA_URL");
   return m[1];
 }
 
 function b64ToBytes(b64: string): Uint8Array {
-  // Deno Edge Runtime expone atob
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
 
-/* ======================================================
- * SESSION RESOLVE (x-session-token)
- * ====================================================== */
-async function resolveSessionCustomer(
-  sb: ReturnType<typeof createClient>,
-  token: string
-): Promise<SessionResolved> {
-  const { data, error } = await sb
-    .from("debacu_eval_sessions")
-    .select("customer_id, customer_name, app_code, revoked_at, expires_at")
-    .eq("token", token)
-    .maybeSingle();
+async function sha256Hex(bytes: Uint8Array) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
 
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("invalid_session_token");
-  if (data.revoked_at) throw new Error("session_revoked");
-  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) throw new Error("session_expired");
-
-  return {
-    customer_id: String(data.customer_id),
-    customer_name: String(data.customer_name ?? ""),
-    app_code: String(data.app_code ?? DEFAULT_APP_CODE),
-  };
+function asciiSafe(s: string) {
+  return String(s ?? "")
+    .replaceAll("→", "-")
+    .replaceAll("·", "-")
+    .replaceAll("€", "EUR")
+    .replace(/[^\x20-\x7EÁÉÍÓÚÜÑáéíóúüñ]/g, " ");
 }
 
 /* ======================================================
- * PDF GENERATION
+ * Multi-org + entitlements
  * ====================================================== */
-async function buildPdfFromSnapshot(params: {
-  title: string;
-  subtitle: string;
-  pngBytes: Uint8Array;
-}) {
+async function resolveOrgIdForUserOrThrow(
+  admin: ReturnType<typeof supabaseServiceClient>,
+  userId: string,
+  requestedOrgId?: string | null
+): Promise<string> {
+  if (requestedOrgId) {
+    // prefer ACTIVE membership if status column exists
+    try {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id")
+        .eq("org_id", requestedOrgId)
+        .eq("user_id", userId)
+        .eq("status", "ACTIVE")
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!data?.org_id) throw new Error("FORBIDDEN");
+      return String(data.org_id);
+    } catch {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id")
+        .eq("org_id", requestedOrgId)
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (error || !data?.org_id) throw new Error("FORBIDDEN");
+      return String(data.org_id);
+    }
+  }
+
+  // fallback deterministic: first ACTIVE else first
+  try {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, created_at")
+      .eq("user_id", userId)
+      .eq("status", "ACTIVE")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data?.org_id) throw new Error("FORBIDDEN");
+    return String(data.org_id);
+  } catch {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data?.org_id) throw new Error("FORBIDDEN");
+    return String(data.org_id);
+  }
+}
+
+async function loadEntitlementsOrThrow(admin: ReturnType<typeof supabaseServiceClient>, orgId: string) {
+  const { data, error } = await admin
+    .from("debacu_eval_org_entitlements_v")
+    .select("org_id, customer_id, seats_used, plan_code, max_users, subscription_status")
+    .eq("org_id", orgId)
+    .maybeSingle();
+
+  if (error || !data?.org_id) throw new Error("FORBIDDEN");
+  return data as EntitlementsRow;
+}
+
+function assertOrgEnabledOrThrow(ent: EntitlementsRow) {
+  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+  if (!ent.customer_id) throw new Error("FORBIDDEN");
+  if (!ent.plan_code || !Number.isFinite(Number(ent.max_users))) throw new Error("PLAN_LIMITS_MISSING");
+  if (ent.max_users != null && ent.seats_used > ent.max_users) throw new Error("SEATS_EXCEEDED");
+}
+
+/* ======================================================
+ * PDF build: snapshot -> A4 con título + subtítulo
+ * ====================================================== */
+async function buildPdfFromSnapshot(params: { title: string; subtitle: string; pngBytes: Uint8Array }) {
   const pdf = await PDFDocument.create();
   const page = pdf.addPage([595.28, 841.89]); // A4 portrait
 
@@ -126,7 +163,7 @@ async function buildPdfFromSnapshot(params: {
   const { width, height } = page.getSize();
 
   // Title
-  page.drawText(params.title, {
+  page.drawText(asciiSafe(params.title), {
     x: 40,
     y: height - 52,
     size: 16,
@@ -135,7 +172,7 @@ async function buildPdfFromSnapshot(params: {
   });
 
   // Subtitle
-  page.drawText(params.subtitle, {
+  page.drawText(asciiSafe(params.subtitle), {
     x: 40,
     y: height - 72,
     size: 10,
@@ -147,7 +184,7 @@ async function buildPdfFromSnapshot(params: {
   const png = await pdf.embedPng(params.pngBytes);
 
   const margin = 40;
-  const topReserved = 110; // espacio para título + subtítulo
+  const topReserved = 110;
   const availableWidth = width - margin * 2;
   const availableHeight = height - topReserved - margin;
 
@@ -165,93 +202,170 @@ async function buildPdfFromSnapshot(params: {
 }
 
 /* ======================================================
- * MAIN
+ * Export logging (audit_exports)
  * ====================================================== */
-Deno.serve(async (req: Request) => {
-  // ✅ PRE-FLIGHT: responder SIEMPRE, sin validar nada
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(req) });
+async function insertPendingExport(admin: ReturnType<typeof supabaseServiceClient>, row: any) {
+  const { data, error } = await admin.from("audit_exports").insert(row).select("id").single();
+  if (error || !data?.id) throw new Error("EXPORT_INSERT_FAILED");
+  return String(data.id);
+}
+
+async function markExportReady(admin: ReturnType<typeof supabaseServiceClient>, exportId: string, patch: any) {
+  const { error } = await admin.from("audit_exports").update(patch).eq("id", exportId);
+  if (error) throw new Error("EXPORT_UPDATE_FAILED");
+}
+
+async function markExportFailed(admin: ReturnType<typeof supabaseServiceClient>, exportId: string, detail: string) {
+  await admin.from("audit_exports").update({ status: "FAILED", error_detail: detail }).eq("id", exportId);
+}
+
+/* ======================================================
+ * Errors (STRICT)
+ * ====================================================== */
+function mapError(e: unknown): { status: number; detail: string } {
+  const msg = String((e as any)?.message ?? e ?? "request_failed");
+
+  if (msg === "UNAUTHENTICATED") return { status: 401, detail: "UNAUTHENTICATED" };
+  if (msg === "PLAN_NOT_ACTIVE") return { status: 402, detail: "PLAN_NOT_ACTIVE" };
+  if (msg === "FORBIDDEN") return { status: 403, detail: "FORBIDDEN" };
+  if (msg === "SEATS_EXCEEDED") return { status: 403, detail: "SEATS_EXCEEDED" };
+
+  if (msg.startsWith("BAD_")) return { status: 400, detail: msg };
+  if (msg === "PLAN_LIMITS_MISSING") return { status: 500, detail: "PLAN_LIMITS_MISSING" };
+
+  if (msg === "EXPORT_INSERT_FAILED") return { status: 500, detail: "EXPORT_INSERT_FAILED" };
+  if (msg === "EXPORT_UPDATE_FAILED") return { status: 500, detail: "EXPORT_UPDATE_FAILED" };
+
+  if (msg === "UPLOAD_FAILED") return { status: 500, detail: "UPLOAD_FAILED" };
+  if (msg === "SIGNED_URL_FAILED") return { status: 500, detail: "SIGNED_URL_FAILED" };
+
+  return { status: 500, detail: "request_failed" };
+}
+
+/* ======================================================
+ * MAIN (JWT-only)
+ * ====================================================== */
+export default Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "request_failed", detail: "method_not_allowed" });
   }
 
-  if (req.method !== "POST") {
-    return json(req, 405, { ok: false, error: "method_not_allowed" });
-  }
+  const admin = supabaseServiceClient();
 
   try {
-    const sessionToken = req.headers.get("x-session-token") ?? "";
-    if (!sessionToken) return json(req, 401, { ok: false, error: "missing_session_token" });
+    const user = await requireUser(req);
 
-    let body: ReqBody;
-    try {
-      body = (await req.json()) as ReqBody;
-    } catch {
-      return json(req, 400, { ok: false, error: "invalid_json" });
-    }
+    const body = (await req.json().catch(() => ({}))) as ReqBody;
 
-    const title = (body.title ?? "Informe semanal (7 días)").slice(0, 120);
-    const periodFrom = String(body.period_from ?? "");
-    const periodTo = String(body.period_to ?? "");
-    const periodField: PeriodField = (body.period_field as any) || "evaluation_date";
+    const title = String(body.title ?? "Informe semanal (snapshot)").slice(0, 120);
+    const rawFrom = String(body.period_from ?? "");
+    const rawTo = String(body.period_to ?? "");
+    assertDate(rawFrom, "period_from");
+    assertDate(rawTo, "period_to");
+    const fixed = clampRange(rawFrom, rawTo);
 
-    assertDate(periodFrom);
-    assertDate(periodTo);
-    if (periodFrom > periodTo) return json(req, 400, { ok: false, error: "invalid_period_range" });
+    const period_field: PeriodField = (body.period_field ?? "evaluation_date") as PeriodField;
 
-    if (!body.image_png_data_url) return json(req, 400, { ok: false, error: "missing_image_png_data_url" });
+    if (!body.image_png_data_url) throw new Error("BAD_IMAGE_DATA_URL");
+
+    // ✅ org
+    const orgId = await resolveOrgIdForUserOrThrow(admin, user.id, body.org_id ? String(body.org_id) : null);
+
+    // ✅ entitlements
+    const ent = await loadEntitlementsOrThrow(admin, orgId);
+    assertOrgEnabledOrThrow(ent);
+
+    const customerId = String(ent.customer_id ?? "");
+    if (!customerId) throw new Error("FORBIDDEN");
 
     // decode PNG
     const b64 = stripPngDataUrl(body.image_png_data_url);
     const pngBytes = b64ToBytes(b64);
 
-    // supabase admin
-    const sb = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-      auth: { persistSession: false },
-    });
+    // ⚠️ consejo práctico: si la imagen viene enorme, esta función puede petar por payload.
+    // (no lo bloqueo aquí, pero si ves 413/timeout, hay que pasar a “upload PNG -> generar PDF server-side”.)
 
-    // validar sesión
-    const sess = await resolveSessionCustomer(sb, sessionToken);
+    const subtitle = `${asciiSafe(user.email ?? "")} · ${fixed.from} - ${fixed.to} · Campo: ${period_field} · Org: ${orgId}`;
 
-    const subtitle = `${sess.customer_name} · ${periodFrom} → ${periodTo} · Campo: ${periodField}`;
+    // 1) Generar PDF
+    const pdfBytes = await buildPdfFromSnapshot({ title, subtitle, pngBytes });
 
-    // pdf
-    const pdfBytes = await buildPdfFromSnapshot({
+    // 2) Crear export (PENDING) ANTES de upload
+    const exportId = crypto.randomUUID();
+    const storagePath = `debacu_eval/org/${orgId}/weekly_snapshots/${exportId}.pdf`;
+
+    let exportRowId: string | null = null;
+    exportRowId = await insertPendingExport(admin, {
+      id: exportId,               // si tu tabla no permite setear id, quita esta línea
+      app_id: APP_ID,
+      org_id: orgId,
+      customer_id: customerId,
+
+      export_type: "PDF",
+      scope: "WEEKLY_SNAPSHOT",
+      status: "PENDING",
+
       title,
-      subtitle,
-      pngBytes,
-    });
+      period_from: fixed.from,
+      period_to: fixed.to,
+      period_field,
 
-    // upload
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const fileName = `weekly_report_${ts}.pdf`;
-    const storagePath = `weekly-reports/${sess.customer_id}/${fileName}`;
-
-    const { error: uploadError } = await sb.storage.from(EXPORT_BUCKET).upload(storagePath, pdfBytes, {
-      contentType: "application/pdf",
-      upsert: false,
-    });
-
-    if (uploadError) throw new Error(`upload_failed:${uploadError.message}`);
-
-    // signed url (1h)
-    const { data: signed, error: signedErr } = await sb.storage
-      .from(EXPORT_BUCKET)
-      .createSignedUrl(storagePath, 60 * 60);
-
-    if (signedErr) throw new Error(`signed_url_failed:${signedErr.message}`);
-
-    return json(req, 200, {
-      ok: true,
-      customer_id: sess.customer_id,
-      customer_name: sess.customer_name,
-      period_from: periodFrom,
-      period_to: periodTo,
-      period_field: periodField,
       storage_bucket: EXPORT_BUCKET,
       storage_path: storagePath,
-      file_size_bytes: pdfBytes?.length ?? null,
-      download_url: signed?.signedUrl ?? null,
     });
-  } catch (e: any) {
-    return json(req, 500, { ok: false, error: "request_failed", detail: String(e?.message ?? e) });
+
+    try {
+      // 3) Upload
+      const up = await admin.storage
+        .from(EXPORT_BUCKET)
+        .upload(storagePath, pdfBytes, { contentType: "application/pdf", upsert: true });
+
+      if (up.error) throw new Error("UPLOAD_FAILED");
+
+      // 4) Metadata + signed url
+      const fileSize = pdfBytes.byteLength;
+      const hash = await sha256Hex(pdfBytes);
+
+      const signed = await admin.storage.from(EXPORT_BUCKET).createSignedUrl(storagePath, 60 * 10);
+      if (signed.error || !signed.data?.signedUrl) throw new Error("SIGNED_URL_FAILED");
+
+      // 5) Update READY
+      await markExportReady(admin, exportRowId, {
+        status: "READY",
+        file_size_bytes: fileSize,
+        sha256: hash,
+        storage_bucket: EXPORT_BUCKET,
+        storage_path: storagePath,
+        error_detail: null,
+      });
+
+      return json(req, 200, {
+        ok: true,
+        export_id: exportId,
+        org_id: orgId,
+        app_id: APP_ID,
+
+        period_from: fixed.from,
+        period_to: fixed.to,
+        period_field,
+
+        storage_bucket: EXPORT_BUCKET,
+        storage_path: storagePath,
+
+        file_size_bytes: fileSize,
+        sha256: hash,
+
+        download_url: signed.data.signedUrl,
+        expires_in: 600,
+      });
+    } catch (err: any) {
+      const detail = String(err?.message ?? err ?? "FAILED");
+      if (exportRowId) await markExportFailed(admin, exportRowId, detail);
+      throw err;
+    }
+  } catch (e) {
+    const mapped = mapError(e);
+    return json(req, mapped.status, { ok: false, error: "request_failed", detail: mapped.detail });
   }
 });

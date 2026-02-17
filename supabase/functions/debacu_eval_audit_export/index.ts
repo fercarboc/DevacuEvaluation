@@ -1,8 +1,15 @@
 // supabase/functions/debacu_eval_audit_export/index.ts
 // deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { PDFDocument, StandardFonts, rgb } from "npm:pdf-lib@1.17.1";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { PDFDocument, StandardFonts, rgb } from "https://esm.sh/pdf-lib@1.17.1";
 
+import { json, preflight } from "../_shared/cors.ts";
+import { requireAdmin, supabaseServiceClient } from "../_shared/auth.ts";
+
+/* ======================================================
+ * Types
+ * ====================================================== */
 type AuditSource = "ALL" | "PRODUCT" | "SYSTEM";
 type ExportFormat = "CSV" | "PDF" | "XML";
 
@@ -12,8 +19,8 @@ type Body = {
   source?: AuditSource;
   customer?: string | null;
   type?: string | null;
-  from?: string | null;
-  to?: string | null;
+  from?: string | null; // ISO
+  to?: string | null; // ISO
 
   delivered_to_name: string;
   delivered_to_org?: string | null;
@@ -23,102 +30,34 @@ type Body = {
   limit?: number;
 };
 
-// =======================
-// CORS
-// =======================
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+/* ======================================================
+ * Config
+ * ====================================================== */
+const EXPORT_BUCKET = "system-exports"; // <- según tu doc/arquitectura
+const SIGNED_URL_TTL_SECONDS = 600;
 
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "*";
-
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json; charset=utf-8", ...corsHeaders(req) },
-  });
-}
-
-// =======================
-// Env + Clients
-// =======================
-function requireEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env ${name}`);
-  return v;
-}
-
-const SUPABASE_URL = requireEnv("SUPABASE_URL");
-const SUPABASE_ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
-const SUPABASE_SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-function getBearer(req: Request) {
-  const h = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m?.[1] ?? null;
-}
-
-function parseAllowedEmails(csv: string | null) {
-  const raw = (csv ?? "").trim();
-  if (!raw) return ["admin@debacu.com"];
-  return raw
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-function supabaseUserClient(token: string) {
-  // ✅ validación JWT / lecturas "como usuario": ANON + Authorization
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-    auth: { persistSession: false },
-  });
-}
-
-function supabaseServiceClient() {
-  // ✅ lecturas admin + writes + storage: SERVICE ROLE
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
-}
-
-async function requireAdmin(req: Request) {
-  const token = getBearer(req);
-  if (!token) return { ok: false as const, status: 401, error: "missing_bearer" as const };
-
-  const sbUser = supabaseUserClient(token);
-
-  // ✅ supabase-js v2: getUser() SIN pasar token
-  const { data: userData, error: userErr } = await sbUser.auth.getUser();
-  if (userErr || !userData?.user) {
-    return { ok: false as const, status: 401, error: "invalid_token" as const };
+/* ======================================================
+ * Utils
+ * ====================================================== */
+async function readJsonSafe<T>(req: Request): Promise<T | null> {
+  try {
+    const text = await req.text();
+    if (!text) return null;
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
   }
-
-  const email = (userData.user.email ?? "").toLowerCase().trim();
-  const allowed = parseAllowedEmails(Deno.env.get("ADMIN_EMAILS"));
-  const isAdmin = allowed.includes(email);
-
-  if (!isAdmin) return { ok: false as const, status: 403, error: "forbidden" as const };
-
-  return { ok: true as const, user: userData.user };
 }
 
-// =======================
-// Utils
-// =======================
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
+}
+
+function isIsoLike(v: any) {
+  if (typeof v !== "string") return false;
+  return v.includes("T") || /^\d{4}-\d{2}-\d{2}/.test(v);
+}
+
 function safeFileNamePart(v: string) {
   return (
     v
@@ -261,128 +200,217 @@ async function buildPDF(rows: any[], title: string) {
   return new Uint8Array(bytes);
 }
 
-// =======================
-// Main
-// =======================
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+/* ======================================================
+ * Audit query (NO RPC)
+ * ====================================================== */
+async function listAuditRows(sb: ReturnType<typeof supabaseServiceClient>, body: Body) {
+  const source: AuditSource = (body.source ?? "ALL") as AuditSource;
+  const limit = Math.min(Math.max(Number(body.limit ?? 5000), 1), 20000);
 
-  const admin = await requireAdmin(req);
-  if (!admin.ok) return json(req, admin.status, { ok: false, error: admin.error });
+  let q = sb
+    .from("debacu_eval_audit_log")
+    .select(
+      "id, created_at, customer_id, app_id, event_type, action, entity, meta",
+    )
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  // Heurística de “source”
+  if (source === "SYSTEM") q = q.eq("entity", "stripe");
+  if (source === "PRODUCT") q = q.neq("entity", "stripe");
+
+  if (body.customer) q = q.eq("customer_id", safeStr(body.customer));
+  if (body.type) q = q.eq("event_type", safeStr(body.type));
+
+  if (body.from && isIsoLike(body.from)) q = q.gte("created_at", body.from);
+  if (body.to && isIsoLike(body.to)) q = q.lte("created_at", body.to);
+
+  const { data, error } = await q;
+  if (error) throw new Error("DB_AUDIT_LIST_FAILED");
+
+  const rows = Array.isArray(data) ? data : [];
+
+  // Normalización de salida como en tu audit_api
+  return rows.map((r: any) => ({
+    created_at: r.created_at,
+    customer_id: r.customer_id,
+    app_id: r.app_id,
+    source: r.entity === "stripe" ? "SYSTEM" : "PRODUCT",
+    type: r.event_type ?? r.action ?? "—",
+    stripe_subscription_id: r?.meta?.stripe_subscription_id ?? null,
+    payload: r.meta ?? null,
+  }));
+}
+
+/* ======================================================
+ * Main
+ * ====================================================== */
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "request_failed", detail: "METHOD_NOT_ALLOWED" });
+  }
+
+  // ✅ admin-only JWT (sin allowlist local)
+  let adminUser: any;
+  try {
+    const admin = await requireAdmin(req);
+    // requireAdmin puede devolver user o un objeto; nos cubrimos
+    adminUser = (admin as any)?.user ?? admin;
+  } catch (e: any) {
+    const msg = e?.message ?? "";
+    const status = msg === "UNAUTHENTICATED" ? 401 : 403;
+    const detail = status === 401 ? "UNAUTHENTICATED" : "FORBIDDEN";
+    return json(req, status, { ok: false, error: "request_failed", detail });
+  }
+
+  const body = await readJsonSafe<Body>(req);
+  if (!body) {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_json" });
+  }
+
+  const format = body.format;
+  if (!format || !["CSV", "PDF", "XML"].includes(format)) {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_format" });
+  }
+
+  if (!safeStr(body.delivered_to_name)) {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "missing_delivered_to_name" });
+  }
+  if (!safeStr(body.delivered_to_reason)) {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "missing_delivered_to_reason" });
+  }
+
+  const sb = supabaseServiceClient();
+
+  // 1) obtener filas (NO RPC)
+  let rows: any[] = [];
+  try {
+    rows = await listAuditRows(sb, body);
+  } catch {
+    return json(req, 500, { ok: false, error: "request_failed", detail: "DB_AUDIT_LIST_FAILED" });
+  }
+
+  // 2) construir fichero
+  const now = new Date();
+  const dateTag = now.toISOString().slice(0, 10);
+
+  const customerTag = body.customer ? safeFileNamePart(body.customer) : "all";
+  const sourceTag = safeFileNamePart(body.source ?? "ALL");
+  const typeTag = body.type ? safeFileNamePart(body.type) : "all";
+
+  const baseName = `audit_${dateTag}_${sourceTag}_${customerTag}_${typeTag}`;
+  const ext = format.toLowerCase();
+  const fileName = `${baseName}.${ext}`;
+
+  // ✅ path UUID (sin upsert)
+  const objectId = crypto.randomUUID();
+  const storagePath = `${dateTag}/${objectId}.${ext}`;
+
+  let fileBytes: Uint8Array;
+  let contentType = "application/octet-stream";
 
   try {
-    const body = (await req.json()) as Body;
-
-    if (!body.format || !["CSV", "PDF", "XML"].includes(body.format)) {
-      return json(req, 400, { ok: false, error: "invalid_format" });
-    }
-    if (!body.delivered_to_name?.trim()) return json(req, 400, { ok: false, error: "delivered_to_name_required" });
-    if (!body.delivered_to_reason?.trim()) return json(req, 400, { ok: false, error: "delivered_to_reason_required" });
-
-    const limit = Math.min(Math.max(body.limit ?? 5000, 1), 20000);
-
-    // ✅ SERVICE ROLE para TODO lo admin (RPC + storage + insert + signed url)
-    const sb = supabaseServiceClient();
-
-    // ✅ RPC con SERVICE ROLE (soluciona "permission denied for view admin_audit_all")
-    const { data: rows, error: rpcErr } = await sb.rpc("admin_list_audit_events", {
-      p_source: body.source ?? "ALL",
-      p_customer: body.customer ?? null,
-      p_type: body.type ?? null,
-      p_from: body.from ?? null,
-      p_to: body.to ?? null,
-      p_limit: limit,
-      p_offset: 0,
-    });
-
-    if (rpcErr) return json(req, 400, { ok: false, error: "rpc_error", detail: rpcErr.message });
-
-    const dataRows = Array.isArray(rows) ? rows : [];
-    const now = new Date();
-    const dateTag = now.toISOString().slice(0, 10);
-
-    const customerTag = body.customer ? safeFileNamePart(body.customer) : "all";
-    const sourceTag = safeFileNamePart(body.source ?? "ALL");
-    const typeTag = body.type ? safeFileNamePart(body.type) : "all";
-
-    const baseName = `audit_${dateTag}_${sourceTag}_${customerTag}_${typeTag}`;
-    const fileName = `${baseName}.${body.format.toLowerCase()}`;
-
-    const bucket = "audit-exports";
-    const storagePath = `${dateTag}/${fileName}`;
-
-    let fileBytes: Uint8Array;
-    let contentType = "application/octet-stream";
-
-    if (body.format === "CSV") {
-      fileBytes = buildCSV(dataRows);
+    if (format === "CSV") {
+      fileBytes = buildCSV(rows);
       contentType = "text/csv";
-    } else if (body.format === "XML") {
-      fileBytes = buildXML(dataRows);
+    } else if (format === "XML") {
+      fileBytes = buildXML(rows);
       contentType = "application/xml";
     } else {
       const title = `Debacu Evaluation 360 — Auditoría (${dateTag})`;
-      fileBytes = await buildPDF(dataRows, title);
+      fileBytes = await buildPDF(rows, title);
       contentType = "application/pdf";
     }
+  } catch {
+    return json(req, 500, { ok: false, error: "request_failed", detail: "FILE_BUILD_FAILED" });
+  }
 
-    const sha = await sha256Hex(fileBytes);
+  const sha = await sha256Hex(fileBytes);
 
-    const { error: upErr } = await sb.storage.from(bucket).upload(storagePath, fileBytes, {
-      contentType,
-      upsert: true,
-    });
-    if (upErr) return json(req, 400, { ok: false, error: "upload_error", detail: upErr.message });
+  // 3) upload a Storage
+  const { error: upErr } = await sb.storage.from(EXPORT_BUCKET).upload(storagePath, fileBytes, {
+    contentType,
+    upsert: false,
+  });
+  if (upErr) {
+    return json(req, 500, { ok: false, error: "request_failed", detail: "UPLOAD_FAILED" });
+  }
 
-    // Insert metadata (ajusta nombres si tu tabla difiere)
+  // 4) insert DB (si falla, BORRAR storage best-effort)
+  let exportId: string | null = null;
+
+  try {
+    // ⚠️ Ajusta aquí si tu tabla tiene columnas distintas.
+    // Meta razonable: guardamos file_name aparte (útil en UI) aunque el objeto sea UUID.
     const { data: ins, error: insErr } = await sb
       .from("debacu_eval_audit_exports")
       .insert({
-        generated_by_user_id: admin.user.id,
-        generated_by_email: (admin.user.email ?? "").toLowerCase(),
+        generated_by_user_id: adminUser?.id ?? null,
+        generated_by_email: (adminUser?.email ?? "").toLowerCase() || null,
 
-        delivered_to_name: body.delivered_to_name.trim(),
-        delivered_to_org: body.delivered_to_org?.trim() || null,
-        delivered_to_reason: body.delivered_to_reason.trim(),
-        delivered_to_reference: body.delivered_to_reference?.trim() || null,
+        delivered_to_name: safeStr(body.delivered_to_name),
+        delivered_to_org: safeStr(body.delivered_to_org ?? "") || null,
+        delivered_to_reason: safeStr(body.delivered_to_reason),
+        delivered_to_reference: safeStr(body.delivered_to_reference ?? "") || null,
 
         filter_source: body.source ?? null,
         filter_customer: body.customer ?? null,
         filter_type: body.type ?? null,
-        filter_from: body.from ? body.from.slice(0, 10) : null,
-        filter_to: body.to ? body.to.slice(0, 10) : null,
+        filter_from: body.from ? String(body.from).slice(0, 10) : null,
+        filter_to: body.to ? String(body.to).slice(0, 10) : null,
 
-        format: body.format,
-        row_count: dataRows.length,
-        storage_bucket: bucket,
+        format,
+        row_count: rows.length,
+
+        storage_bucket: EXPORT_BUCKET,
         storage_path: storagePath,
+        file_name: fileName, // <- si tu tabla no tiene file_name, quítalo
         file_sha256: sha,
         file_bytes: fileBytes.byteLength,
-        meta: { limit },
+
+        meta: {
+          limit: Math.min(Math.max(Number(body.limit ?? 5000), 1), 20000),
+          content_type: contentType,
+        },
       })
-      .select("id")
-      .maybeSingle();
+      .select("id, created_at")
+      .single();
 
-    if (insErr) return json(req, 400, { ok: false, error: "insert_error", detail: insErr.message });
+    if (insErr) throw insErr;
+    exportId = ins?.id ?? null;
 
-    const { data: signed, error: signErr } = await sb.storage.from(bucket).createSignedUrl(storagePath, 600);
-    if (signErr) return json(req, 400, { ok: false, error: "sign_error", detail: signErr.message });
+    // 5) signed URL
+    const { data: signed, error: signErr } = await sb.storage
+      .from(EXPORT_BUCKET)
+      .createSignedUrl(storagePath, SIGNED_URL_TTL_SECONDS);
+
+    if (signErr) {
+      // NO borramos el archivo (ya hay fila DB). Devuelve error genérico.
+      return json(req, 500, { ok: false, error: "request_failed", detail: "SIGNED_URL_FAILED" });
+    }
 
     return json(req, 200, {
       ok: true,
       data: {
-        export_id: ins?.id ?? null,
-        bucket,
+        export_id: exportId,
+        created_at: ins?.created_at ?? null,
+        bucket: EXPORT_BUCKET,
         path: storagePath,
         file_name: fileName,
         sha256: sha,
         bytes: fileBytes.byteLength,
-        row_count: dataRows.length,
+        row_count: rows.length,
         signed_url: signed?.signedUrl ?? null,
       },
     });
-  } catch (e: any) {
-    return json(req, 500, { ok: false, error: "unexpected", detail: e?.message ?? String(e) });
+  } catch {
+    // hygiene: borrar orphan file best-effort
+    try {
+      await sb.storage.from(EXPORT_BUCKET).remove([storagePath]);
+    } catch {
+      // ignore
+    }
+    return json(req, 500, { ok: false, error: "request_failed", detail: "DB_INSERT_FAILED" });
   }
 });

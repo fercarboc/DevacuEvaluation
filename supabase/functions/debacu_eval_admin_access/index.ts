@@ -1,84 +1,30 @@
 // supabase/functions/debacu-eval-admin-access-requests/index.ts
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-/** ======================================================
- *  ENV
- *  ====================================================== */
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+import { json, preflight } from "../_shared/cors.ts";
+import { requireAdmin, supabaseServiceClient } from "../_shared/auth.ts";
 
-/** ======================================================
- *  CORS
- *  ====================================================== */
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+const APP_ID = "DEBACU_EVAL";
 
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
-  });
-}
-
-async function readBody(req: Request) {
-  const t = await req.text();
-  if (!t) return {};
+/* ======================================================
+ * Utils
+ * ====================================================== */
+async function readJsonSafe<T>(req: Request): Promise<T | null> {
   try {
-    return JSON.parse(t);
+    const text = await req.text();
+    if (!text) return null;
+    return JSON.parse(text) as T;
   } catch {
-    return {};
+    return null;
   }
 }
 
-/** ======================================================
- *  Clients
- *  ====================================================== */
-function assertSupabaseReady(origin: string | null) {
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ANON_KEY) {
-    return json(origin, 500, {
-      error: "Server misconfigured",
-      detail: "Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY",
-    });
-  }
-  return null;
-}
-
-const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
-
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
-
-/** ======================================================
- *  Helpers
- *  ====================================================== */
-function safeLowerEmail(v: any) {
-  return typeof v === "string" ? v.trim().toLowerCase() : "";
-}
 function safeStr(v: any) {
   return typeof v === "string" ? v.trim() : "";
+}
+function safeLowerEmail(v: any) {
+  return typeof v === "string" ? v.trim().toLowerCase() : "";
 }
 function safeUpper(v: any) {
   return typeof v === "string" ? v.trim().toUpperCase() : "";
@@ -94,41 +40,24 @@ function resolveSiteUrl(body: any) {
   return (fromBody || fromEnv || fallback).replace(/\/$/, "");
 }
 
-/** ======================================================
- *  AUTHZ: require ADMIN (JWT real)
- *  ====================================================== */
-async function requireAdmin(req: Request) {
-  const sbUser = userClient(req);
-  const { data, error } = await sbUser.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-
-  const userId = data.user.id;
-
-  const { data: adminRow, error: adminErr } = await admin
-    .from("debacu_eval_admin_users")
-    .select("user_id")
-    .eq("user_id", userId)
-    .eq("active", true)
-    .maybeSingle();
-
-  if (adminErr) throw new Error("ADMIN_CHECK_FAILED");
-  if (!adminRow) throw new Error("FORBIDDEN");
-
-  return { user: data.user };
+function logLine(payload: Record<string, unknown>) {
+  console.log(JSON.stringify(payload));
 }
 
-/** ======================================================
- *  Customers + Profile
- *  ====================================================== */
-async function getOrCreateCustomerByEmail(email: string, company_name: string | null) {
+/* ======================================================
+ * DB helpers (service role)
+ * ====================================================== */
+async function getOrCreateCustomerByEmail(admin: ReturnType<typeof supabaseServiceClient>, email: string, company_name: string | null) {
+  // ⚠️ Si tu tabla customers es multi-app real, filtrar por app_id evita colisiones.
   const { data: existing, error: findErr } = await admin
     .from("customers")
     .select("id")
     .eq("email", email)
+    .eq("app_id", APP_ID)
     .maybeSingle();
 
-  if (findErr) throw new Error(`DB error (customers find): ${findErr.message}`);
-  if (existing?.id) return existing.id as string;
+  if (findErr) throw new Error("DB_CUSTOMERS_FIND_FAILED");
+  if (existing?.id) return String(existing.id);
 
   const customer_id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -138,26 +67,30 @@ async function getOrCreateCustomerByEmail(email: string, company_name: string | 
     name: company_name,
     email,
     is_active: true,
-    app_id: "DEBACU_EVAL",
+    app_id: APP_ID,
     created_at: now,
     updated_at: now,
   });
 
-  if (insErr) throw new Error(`DB error (customers insert): ${insErr.message}`);
+  if (insErr) throw new Error("DB_CUSTOMERS_INSERT_FAILED");
   return customer_id;
 }
 
-async function upsertDebacuEvalCustomerProfile(input: {
-  customer_id: string;
-  legal_name?: string | null;
-  property_type?: string | null;
-  rooms_count?: number | null;
-  website?: string | null;
-  contact_name?: string | null;
-  contact_role?: string | null;
-  notes?: string | null;
-}) {
+async function upsertDebacuEvalCustomerProfile(
+  admin: ReturnType<typeof supabaseServiceClient>,
+  input: {
+    customer_id: string;
+    legal_name?: string | null;
+    property_type?: string | null;
+    rooms_count?: number | null;
+    website?: string | null;
+    contact_name?: string | null;
+    contact_role?: string | null;
+    notes?: string | null;
+  },
+) {
   const now = new Date().toISOString();
+
   const payload = {
     customer_id: input.customer_id,
     legal_name: input.legal_name ?? null,
@@ -174,36 +107,26 @@ async function upsertDebacuEvalCustomerProfile(input: {
     .from("debacu_eval_customer_profile")
     .upsert(payload, { onConflict: "customer_id" });
 
-  if (error) throw new Error(`DB error (profile upsert): ${error.message}`);
+  if (error) throw new Error("DB_PROFILE_UPSERT_FAILED");
 }
 
-/** ======================================================
- *  Organization ONLY (sin membership)
- *  ====================================================== */
-async function ensureOrganizationOnly(params: {
-  customer_id: string;
-  org_name: string;
-  legal_name?: string | null;
-  cif?: string | null;
-  address?: string | null;
-  city?: string | null;
-  country?: string | null;
-  property_type?: string | null;
-  rooms_count?: number | null;
-  website?: string | null;
-}) {
-  const {
-    customer_id,
-    org_name,
-    legal_name,
-    cif,
-    address,
-    city,
-    country,
-    property_type,
-    rooms_count,
-    website,
-  } = params;
+/** Organization ONLY (sin membership) */
+async function ensureOrganizationOnly(
+  admin: ReturnType<typeof supabaseServiceClient>,
+  params: {
+    customer_id: string;
+    org_name: string;
+    legal_name?: string | null;
+    cif?: string | null;
+    address?: string | null;
+    city?: string | null;
+    country?: string | null;
+    property_type?: string | null;
+    rooms_count?: number | null;
+    website?: string | null;
+  },
+) {
+  const { customer_id } = params;
 
   const { data: orgExisting, error: orgFindErr } = await admin
     .from("debacu_eval_organizations")
@@ -213,80 +136,70 @@ async function ensureOrganizationOnly(params: {
     .limit(1)
     .maybeSingle();
 
-  if (orgFindErr) throw new Error(`DB error (org find): ${orgFindErr.message}`);
+  if (orgFindErr) throw new Error("DB_ORG_FIND_FAILED");
 
-  let org_id = orgExisting?.id as string | undefined;
+  let org_id = orgExisting?.id ? String(orgExisting.id) : null;
+
+  const now = new Date().toISOString();
+  const patch = {
+    name: params.org_name,
+    legal_name: params.legal_name ?? null,
+    cif: params.cif ?? null,
+    address: params.address ?? null,
+    city: params.city ?? null,
+    country: safeUpper(params.country ?? "ESP") || "ESP",
+    property_type: params.property_type ?? null,
+    rooms_count: typeof params.rooms_count === "number" ? params.rooms_count : null,
+    website: params.website ?? null,
+  };
 
   if (!org_id) {
-    const now = new Date().toISOString();
     const { data: inserted, error: orgInsErr } = await admin
       .from("debacu_eval_organizations")
       .insert({
-        name: org_name,
-        legal_name: legal_name ?? null,
-        cif: cif ?? null,
-        address: address ?? null,
-        city: city ?? null,
-        country: (country ?? "ESP").toUpperCase(),
-        property_type: property_type ?? null,
-        rooms_count: typeof rooms_count === "number" ? rooms_count : null,
-        website: website ?? null,
+        ...patch,
         customer_id,
         created_at: now,
       })
       .select("id")
       .single();
 
-    if (orgInsErr) throw new Error(`DB error (org insert): ${orgInsErr.message}`);
-    org_id = inserted.id as string;
+    if (orgInsErr) throw new Error("DB_ORG_INSERT_FAILED");
+    org_id = String(inserted.id);
   } else {
     const { error: orgUpdErr } = await admin
       .from("debacu_eval_organizations")
-      .update({
-        name: org_name,
-        legal_name: legal_name ?? null,
-        cif: cif ?? null,
-        address: address ?? null,
-        city: city ?? null,
-        country: (country ?? "ESP").toUpperCase(),
-        property_type: property_type ?? null,
-        rooms_count: typeof rooms_count === "number" ? rooms_count : null,
-        website: website ?? null,
-      })
+      .update(patch)
       .eq("id", org_id);
 
-    if (orgUpdErr) throw new Error(`DB error (org update): ${orgUpdErr.message}`);
+    if (orgUpdErr) throw new Error("DB_ORG_UPDATE_FAILED");
   }
 
   return { org_id };
 }
 
-/** ======================================================
- *  Subscriptions FREE_TRIAL helper (30 días)
- *  ====================================================== */
-async function ensureFreeTrialSubscription(customer_id: string) {
-  const app_id = "DEBACU_EVAL";
-
+/** FREE_TRIAL helper (30 días) */
+async function ensureFreeTrialSubscription(admin: ReturnType<typeof supabaseServiceClient>, customer_id: string) {
   const { data: existing, error: existErr } = await admin
     .from("subscriptions")
     .select("id, status")
     .eq("customer_id", customer_id)
-    .eq("app_id", app_id)
+    .eq("app_id", APP_ID)
     .in("status", ["ACTIVE", "TRIAL_ACTIVE"])
     .order("created_at", { ascending: false })
     .limit(1);
 
-  if (existErr) throw new Error(`DB error (subscriptions check): ${existErr.message}`);
+  if (existErr) throw new Error("DB_SUBSCRIPTIONS_CHECK_FAILED");
   if (existing && existing.length > 0) return { created: false, subscription: existing[0] };
 
   const { data: plan, error: planErr } = await admin
     .from("plans")
     .select("id, code")
-    .eq("app_id", app_id)
+    .eq("app_id", APP_ID)
     .eq("code", "FREE")
     .single();
 
-  if (planErr || !plan) throw new Error(`Plan FREE not found: ${planErr?.message ?? "no-plan"}`);
+  if (planErr || !plan?.id) throw new Error("PLAN_FREE_NOT_FOUND");
 
   const today = new Date();
   const end = new Date(today);
@@ -297,8 +210,8 @@ async function ensureFreeTrialSubscription(customer_id: string) {
     .from("subscriptions")
     .insert({
       customer_id,
-      app_id,
-      plan_id: plan.id as string,
+      app_id: APP_ID,
+      plan_id: String(plan.id),
       billing_frequency: "FREE_TRIAL",
       start_date: toDate(today),
       end_date: toDate(end),
@@ -311,34 +224,41 @@ async function ensureFreeTrialSubscription(customer_id: string) {
     .select("*")
     .single();
 
-  if (insErr) throw new Error(`DB error (subscriptions insert): ${insErr.message}`);
+  if (insErr) throw new Error("DB_SUBSCRIPTIONS_INSERT_FAILED");
   return { created: true, subscription: inserted };
 }
 
-/** ======================================================
- *  HANDLER
- *  ====================================================== */
-serve(async (req) => {
-  const origin = req.headers.get("origin");
+/* ======================================================
+ * Handler
+ * ====================================================== */
+type Action = "LIST" | "APPROVE" | "REJECT" | "RESEND";
 
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(origin) });
+Deno.serve(async (req) => {
+  const FN = "debacu-eval-admin-access-requests";
+
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "request_failed", detail: "METHOD_NOT_ALLOWED" });
   }
 
-  const miscfg = assertSupabaseReady(origin);
-  if (miscfg) return miscfg;
-
+  // ✅ Admin JWT-only (sin allowlist en cada función)
   try {
     await requireAdmin(req);
+  } catch {
+    return json(req, 403, { ok: false, error: "request_failed", detail: "FORBIDDEN" });
+  }
 
-    const body = await readBody(req);
-    let action = body?.action as string | undefined;
-    if (!action && (body?.status || body?.limit)) action = "LIST";
+  const body = (await readJsonSafe<any>(req)) ?? {};
+  let action: Action | null = (body?.action as Action) ?? null;
+  if (!action && (body?.status || body?.limit)) action = "LIST";
 
+  const admin = supabaseServiceClient();
+
+  try {
     /** LIST */
     if (action === "LIST") {
       const status = (body?.status ?? "PENDING") as "PENDING" | "APPROVED" | "REJECTED" | "ALL";
-      const limit = Number(body?.limit ?? 100);
+      const limit = Math.min(Math.max(Number(body?.limit ?? 100), 1), 500);
 
       let q = admin
         .from("debacu_eval_access_requests")
@@ -349,18 +269,23 @@ serve(async (req) => {
       if (status !== "ALL") q = q.eq("status", status);
 
       const { data, error } = await q;
-      if (error) return json(origin, 500, { error: "DB error (list)", detail: error.message });
-      return json(origin, 200, { data });
+      if (error) {
+        return json(req, 500, { ok: false, error: "request_failed", detail: "DB_LIST_FAILED" });
+      }
+
+      return json(req, 200, { ok: true, data: data ?? [] });
     }
 
     /** APPROVE */
     if (action === "APPROVE") {
-      const request_id = body?.requestId as string;
+      const request_id = safeStr(body?.requestId);
       const decision_notes = safeStr(body?.decisionNotes ?? "");
       const send_email = Boolean(body?.sendEmail ?? false);
       const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? null;
 
-      if (!request_id) return json(origin, 400, { error: "Missing requestId" });
+      if (!request_id) {
+        return json(req, 400, { ok: false, error: "request_failed", detail: "missing_requestId" });
+      }
 
       const { data: request, error: requestError } = await admin
         .from("debacu_eval_access_requests")
@@ -369,15 +294,17 @@ serve(async (req) => {
         .single();
 
       if (requestError || !request) {
-        return json(origin, 404, { error: "Request not found", detail: requestError?.message });
+        return json(req, 404, { ok: false, error: "request_failed", detail: "REQUEST_NOT_FOUND" });
       }
 
       if (!request.accepted_terms) {
-        return json(origin, 400, { error: "No se puede aprobar: accepted_terms=false" });
+        return json(req, 400, { ok: false, error: "request_failed", detail: "terms_not_accepted" });
       }
 
       const email = safeLowerEmail(request.email);
-      if (!email) return json(origin, 400, { error: "Request has no email" });
+      if (!email) {
+        return json(req, 400, { ok: false, error: "request_failed", detail: "missing_email" });
+      }
 
       const company_name = (request.company_name ?? null) as string | null;
       const legal_name = (request.legal_name ?? null) as string | null;
@@ -393,8 +320,10 @@ serve(async (req) => {
       const phone = (request.phone ?? null) as string | null;
       const notes = (request.notes ?? null) as string | null;
 
-      const customer_id = await getOrCreateCustomerByEmail(email, company_name);
+      // customer
+      const customer_id = await getOrCreateCustomerByEmail(admin, email, company_name);
 
+      // update customers (sin exponer errores DB)
       const now = new Date().toISOString();
       const { error: custUpdErr } = await admin
         .from("customers")
@@ -407,16 +336,16 @@ serve(async (req) => {
           phone,
           email,
           is_active: true,
-          app_id: "DEBACU_EVAL",
+          app_id: APP_ID,
           updated_at: now,
         })
         .eq("id", customer_id);
 
       if (custUpdErr) {
-        return json(origin, 500, { error: "DB error (customers update)", detail: custUpdErr.message });
+        return json(req, 500, { ok: false, error: "request_failed", detail: "DB_CUSTOMERS_UPDATE_FAILED" });
       }
 
-      await upsertDebacuEvalCustomerProfile({
+      await upsertDebacuEvalCustomerProfile(admin, {
         customer_id,
         legal_name,
         property_type,
@@ -427,8 +356,8 @@ serve(async (req) => {
         notes,
       });
 
-      // ✅ crea/actualiza org (sin membership aún)
-      const orgRes = await ensureOrganizationOnly({
+      // org
+      const orgRes = await ensureOrganizationOnly(admin, {
         customer_id,
         org_name: company_name || `Org ${email}`,
         legal_name,
@@ -441,9 +370,10 @@ serve(async (req) => {
         website,
       });
 
-      const subRes = await ensureFreeTrialSubscription(customer_id);
+      // subscription trial
+      const subRes = await ensureFreeTrialSubscription(admin, customer_id);
 
-      // ✅ Invite Supabase (Variante 1)
+      // invite email (opcional)
       let email_sent = false;
       let email_detail: string | null = null;
       let last_email_status: string | null = null;
@@ -458,12 +388,12 @@ serve(async (req) => {
           if (inviteErr) throw inviteErr;
 
           email_sent = true;
-          email_detail = `SENT (inviteUserByEmail) redirectTo=${redirectTo}`;
+          email_detail = `SENT redirectTo=${redirectTo}`;
           last_email_status = "SENT";
           last_email_at = now;
         } catch (e: any) {
           email_sent = false;
-          email_detail = e?.message ?? String(e);
+          email_detail = (e?.message ?? String(e)).slice(0, 500);
           last_email_status = "FAILED";
           last_email_at = now;
         }
@@ -477,7 +407,7 @@ serve(async (req) => {
           reviewed_by,
           reviewed_at: now,
           customer_id,
-          org_id: orgRes.org_id, // ✅ importante para orgInviteFinalize
+          org_id: orgRes.org_id,
           last_email_status,
           last_email_at,
           last_email_detail: email_detail,
@@ -485,10 +415,12 @@ serve(async (req) => {
         .eq("id", request_id);
 
       if (updateError) {
-        return json(origin, 500, { error: "DB error (update request)", detail: updateError.message });
+        return json(req, 500, { ok: false, error: "request_failed", detail: "DB_REQUEST_UPDATE_FAILED" });
       }
 
-      return json(origin, 200, {
+      logLine({ fn: FN, action: "APPROVE", request_id, customer_id, org_id: orgRes.org_id });
+
+      return json(req, 200, {
         ok: true,
         customer_id,
         org_id: orgRes.org_id,
@@ -504,11 +436,13 @@ serve(async (req) => {
 
     /** REJECT */
     if (action === "REJECT") {
-      const request_id = body?.requestId as string;
+      const request_id = safeStr(body?.requestId);
       const decision_notes = safeStr(body?.decisionNotes ?? "");
       const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? null;
 
-      if (!request_id) return json(origin, 400, { error: "Missing requestId" });
+      if (!request_id) {
+        return json(req, 400, { ok: false, error: "request_failed", detail: "missing_requestId" });
+      }
 
       const now = new Date().toISOString();
       const { error } = await admin
@@ -521,17 +455,23 @@ serve(async (req) => {
         })
         .eq("id", request_id);
 
-      if (error) return json(origin, 500, { error: "DB error (reject)", detail: error.message });
-      return json(origin, 200, { ok: true });
+      if (error) {
+        return json(req, 500, { ok: false, error: "request_failed", detail: "DB_REQUEST_UPDATE_FAILED" });
+      }
+
+      logLine({ fn: FN, action: "REJECT", request_id });
+      return json(req, 200, { ok: true });
     }
 
     /** RESEND */
     if (action === "RESEND") {
-      const request_id = body?.requestId as string;
+      const request_id = safeStr(body?.requestId);
       const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? null;
       const send_email = Boolean(body?.sendEmail ?? true);
 
-      if (!request_id) return json(origin, 400, { error: "Missing requestId" });
+      if (!request_id) {
+        return json(req, 400, { ok: false, error: "request_failed", detail: "missing_requestId" });
+      }
 
       const { data: request, error: requestError } = await admin
         .from("debacu_eval_access_requests")
@@ -540,14 +480,18 @@ serve(async (req) => {
         .single();
 
       if (requestError || !request) {
-        return json(origin, 404, { error: "Request not found", detail: requestError?.message });
+        return json(req, 404, { ok: false, error: "request_failed", detail: "REQUEST_NOT_FOUND" });
       }
 
       const email = safeLowerEmail(request.email);
-      if (!email) return json(origin, 400, { error: "Request has no email" });
+      if (!email) {
+        return json(req, 400, { ok: false, error: "request_failed", detail: "missing_email" });
+      }
 
       const customer_id = request.customer_id ?? null;
-      if (!customer_id) return json(origin, 400, { error: "Request has no customer_id (not approved?)" });
+      if (!customer_id) {
+        return json(req, 400, { ok: false, error: "request_failed", detail: "missing_customer_id" });
+      }
 
       const now = new Date().toISOString();
       let email_sent = false;
@@ -563,16 +507,16 @@ serve(async (req) => {
           if (inviteErr) throw inviteErr;
 
           email_sent = true;
-          email_detail = `SENT (inviteUserByEmail) redirectTo=${redirectTo}`;
+          email_detail = `SENT redirectTo=${redirectTo}`;
           last_email_status = "SENT";
         } catch (e: any) {
           email_sent = false;
-          email_detail = e?.message ?? String(e);
+          email_detail = (e?.message ?? String(e)).slice(0, 500);
           last_email_status = "FAILED";
         }
       }
 
-      await admin
+      const { error: updErr } = await admin
         .from("debacu_eval_access_requests")
         .update({
           last_email_status,
@@ -583,7 +527,13 @@ serve(async (req) => {
         })
         .eq("id", request_id);
 
-      return json(origin, 200, {
+      if (updErr) {
+        return json(req, 500, { ok: false, error: "request_failed", detail: "DB_REQUEST_UPDATE_FAILED" });
+      }
+
+      logLine({ fn: FN, action: "RESEND", request_id, customer_id, email_sent, last_email_status });
+
+      return json(req, 200, {
         ok: true,
         customer_id,
         email_sent,
@@ -591,10 +541,18 @@ serve(async (req) => {
       });
     }
 
-    return json(origin, 400, { error: "Invalid action" });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const code = msg === "UNAUTHENTICATED" ? 401 : msg === "FORBIDDEN" ? 403 : 500;
-    return json(origin, code, { error: "Request failed", detail: msg });
+    return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_action" });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "INTERNAL_ERROR";
+
+    // Mapeo conservador (sin filtrar detalles DB)
+    if (msg === "UNAUTHENTICATED") {
+      return json(req, 401, { ok: false, error: "request_failed", detail: "UNAUTHENTICATED" });
+    }
+    if (msg === "FORBIDDEN") {
+      return json(req, 403, { ok: false, error: "request_failed", detail: "FORBIDDEN" });
+    }
+
+    return json(req, 500, { ok: false, error: "request_failed", detail: "INTERNAL_ERROR" });
   }
 });

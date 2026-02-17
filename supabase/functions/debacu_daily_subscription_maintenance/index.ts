@@ -2,56 +2,56 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
+import { json, preflight } from "../_shared/cors.ts";
+// requireUser/requireAdmin no aplican aquí (cron), pero mantenemos patrón de imports del repo.
+import { supabaseServiceClient } from "../_shared/auth.ts";
+
+/* ======================================================
+ * ENV
+ * ====================================================== */
 function mustEnv(name: string) {
   const v = Deno.env.get(name);
   if (!v) throw new Error(`Missing env var ${name}`);
   return v;
 }
 
-const SUPABASE_URL = mustEnv("SUPABASE_URL");
-const SUPABASE_SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
 const CRON_SECRET = mustEnv("CRON_SECRET");
 
 // Opcionales
 const DEFAULT_GRACE_DAYS = Number(Deno.env.get("DEFAULT_GRACE_DAYS") ?? "3");
 const BATCH_LIMIT = Number(Deno.env.get("BATCH_LIMIT") ?? "1000");
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
+/**
+ * Service role (NO JWT) — esta función es “internals/cron”.
+ * - No usa x-session-token (legacy eliminado)
+ * - No usa RPC
+ */
+const supabase = supabaseServiceClient?.()
+  // fallback ultra-defensivo por si aún no tienes el helper exportado (recomendado: NO usarlo y arreglar el helper)
+  ?? createClient(
+    mustEnv("SUPABASE_URL"),
+    mustEnv("SUPABASE_SERVICE_ROLE_KEY"),
+    { auth: { persistSession: false, autoRefreshToken: false } },
+  );
 
-// Para tu cron interno NO hace falta CORS, pero lo dejo por si lo disparas manualmente.
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-cron-secret",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-}
-
+/* ======================================================
+ * Helpers time
+ * ====================================================== */
 function isoNow() {
   return new Date().toISOString();
 }
-
 function isoDate(d = new Date()) {
   return d.toISOString().slice(0, 10);
 }
-
 function addDaysFromNow(days: number) {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString();
 }
 
-/**
- * Inserta eventos en subscription_events (snake_case)
- */
+/* ======================================================
+ * Events (idempotente best-effort)
+ * ====================================================== */
 async function insertEvent(params: {
   type: string;
   customer_id?: string | null;
@@ -75,21 +75,15 @@ async function insertEvent(params: {
   });
 
   if (error) {
+    // idempotencia “blanda”: si por lo que sea colisiona un unique, no tiramos toda la ejecución
     const msg = String((error as any)?.message ?? "").toLowerCase();
     if (!(msg.includes("duplicate") || msg.includes("unique"))) throw error;
   }
 }
 
-/**
- * 1) TRIAL expirados:
- * - billing_frequency = FREE_TRIAL
- * - status = ACTIVE
- * - next_billing_date <= today
- * -> status = PENDING_PAYMENT
- * -> required_plan_code = BASIC
- * -> required_billing_frequency = MONTHLY
- * -> grace_ends_at = now + DEFAULT_GRACE_DAYS (si era null)
- */
+/* ======================================================
+ * 1) Trial expirados -> PENDING_PAYMENT + grace
+ * ====================================================== */
 async function processTrialExpirations() {
   const now = isoNow();
   const today = isoDate();
@@ -127,10 +121,8 @@ async function processTrialExpirations() {
       .update({
         status: "PENDING_PAYMENT",
         grace_ends_at: grace,
-
         required_plan_code: "BASIC",
         required_billing_frequency: "MONTHLY",
-
         updated_at: now,
       })
       .eq("id", r.id)
@@ -159,12 +151,9 @@ async function processTrialExpirations() {
   return { updated, scanned: (rows ?? []).length };
 }
 
-/**
- * 2) PENDING_PAYMENT con grace vencida:
- * - status = PENDING_PAYMENT
- * - grace_ends_at < now()
- * -> status = SUSPENDED + suspended_at
- */
+/* ======================================================
+ * 2) Grace vencida (PENDING_PAYMENT) -> SUSPENDED
+ * ====================================================== */
 async function processGraceExpiredSuspensions() {
   const now = isoNow();
 
@@ -221,19 +210,9 @@ async function processGraceExpiredSuspensions() {
   return { updated, scanned: (rows ?? []).length };
 }
 
-/**
- * ✅ 4) APLICAR DOWNGRADES PROGRAMADOS (required_plan_code)
- *
- * Criterio:
- * - status = ACTIVE
- * - required_plan_code IS NOT NULL
- * - next_billing_date <= today   (ya toca el cambio en el nuevo ciclo)
- *
- * Acción:
- * - Resolver plan_id destino (plans por app_id + code)
- * - Update subscriptions: plan_id, billing_frequency (si required_billing_frequency), limpiar required_*
- * - Log event CRON_DOWNGRADE_APPLIED
- */
+/* ======================================================
+ * 4) Aplicar downgrades programados (required_plan_code)
+ * ====================================================== */
 async function applyScheduledDowngrades() {
   const now = isoNow();
   const today = isoDate();
@@ -271,7 +250,9 @@ async function applyScheduledDowngrades() {
     const app_id = r.app_id as string;
     const customer_id = r.customer_id as string;
 
-    const requiredPlanCode = String(r.required_plan_code ?? "").toUpperCase().trim();
+    const requiredPlanCode = String(r.required_plan_code ?? "")
+      .toUpperCase()
+      .trim();
     const requiredFreq = (r.required_billing_frequency ?? null) as string | null;
 
     // 1) resolver plan destino
@@ -309,13 +290,10 @@ async function applyScheduledDowngrades() {
     const patch: Record<string, unknown> = {
       plan_id: planRow.id,
       updated_at: now,
-
-      // limpiar “cambio programado”
       required_plan_code: null,
       required_billing_frequency: null,
     };
 
-    // si quieres que el billing_frequency “real” quede actualizado en BD:
     if (requiredFreq) patch.billing_frequency = requiredFreq;
 
     const { error: upErr } = await supabase
@@ -353,11 +331,9 @@ async function applyScheduledDowngrades() {
   return { applied, scanned: (rows ?? []).length, skipped_no_plan };
 }
 
-/**
- * 3) Limpieza: evitar múltiples ACTIVE por (customer_id, app_id)
- * - deja solo la más reciente
- * - el resto => REPLACED + end_date=today
- */
+/* ======================================================
+ * 3) Fix duplicados ACTIVE por (customer_id, app_id)
+ * ====================================================== */
 async function fixDuplicateActives() {
   const now = isoNow();
   const today = isoDate();
@@ -429,25 +405,35 @@ async function fixDuplicateActives() {
   return { replaced, groups: groups.size, scanned: list.length };
 }
 
+/* ======================================================
+ * Handler
+ * ====================================================== */
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (req.method !== "POST") return json(405, { error: "Method not allowed" });
-
-  // Seguridad cron interno
-  const secret = req.headers.get("x-cron-secret");
-  if (!secret || secret !== CRON_SECRET) {
-    return json(401, { error: "Unauthorized (cron secret)" });
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, {
+      ok: false,
+      error: "request_failed",
+      detail: "METHOD_NOT_ALLOWED",
+    });
   }
 
-  try {
-    const started_at = isoNow();
+  // Seguridad cron interno: NO JWT, solo secret
+  const secret = req.headers.get("x-cron-secret");
+  if (!secret || secret !== CRON_SECRET) {
+    return json(req, 401, {
+      ok: false,
+      error: "request_failed",
+      detail: "UNAUTHORIZED",
+    });
+  }
 
+  const started_at = isoNow();
+
+  try {
     const r1 = await processTrialExpirations();
     const r2 = await processGraceExpiredSuspensions();
-
-    // ✅ NUEVO: aplicar downgrades programados
     const r4 = await applyScheduledDowngrades();
-
     const r3 = await fixDuplicateActives();
 
     await insertEvent({
@@ -455,7 +441,7 @@ Deno.serve(async (req) => {
       payload: { r1, r2, r3, r4, started_at, finished_at: isoNow() },
     });
 
-    return json(200, {
+    return json(req, 200, {
       ok: true,
       r1,
       r2,
@@ -465,17 +451,22 @@ Deno.serve(async (req) => {
       finished_at: isoNow(),
     });
   } catch (e) {
-    const msg = String((e as any)?.message ?? e);
+    const msg = e instanceof Error ? e.message : "UNKNOWN_ERROR";
 
+    // log best-effort (sin filtrar stack)
     try {
       await insertEvent({
         type: "CRON_DAILY_MAINTENANCE_ERROR",
-        payload: { error: msg, ran_at: isoNow() },
+        payload: { error: msg, started_at, finished_at: isoNow() },
       });
     } catch {
       // ignore
     }
 
-    return json(500, { ok: false, error: msg });
+    return json(req, 500, {
+      ok: false,
+      error: "request_failed",
+      detail: "INTERNAL_ERROR",
+    });
   }
 });

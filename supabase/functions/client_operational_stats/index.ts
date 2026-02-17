@@ -1,41 +1,18 @@
 // supabase/functions/debacu_eval_stats_operativas_get/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { serve } from "https://deno.land/std@0.177.1/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const DEFAULT_APP_ID = "DEBACU_EVAL";
 
-function corsHeaders(req: Request): Record<string, string> {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json; charset=utf-8", ...corsHeaders(req) },
-  });
-}
-
-function mustEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env var ${name}`);
-  return v;
-}
+// membership ACTIVE (ajusta si tu schema difiere)
+const MEMBERSHIP_STATUS_COLUMN = "status";
+const MEMBERSHIP_ACTIVE_VALUE = "ACTIVE";
 
 /** YYYY-MM-DD -> {startISO, endExclusiveISO} en UTC */
 function dayRangeUTC(isoDate: string) {
@@ -81,161 +58,170 @@ function hourUTC(iso: string) {
 }
 
 type DailyPoint = {
-  date: string;        // YYYY-MM-DD
-  count: number;       // consultas totales
-  highRisk: number;    // ALTO
-  mediumRisk: number;  // MEDIO
-  lowRisk: number;     // BAJO
-  records: number;     // registros creados ese día
+  date: string; // YYYY-MM-DD
+  count: number; // consultas totales
+  highRisk: number; // ALTO
+  mediumRisk: number; // MEDIO
+  lowRisk: number; // BAJO
+  records: number; // registros creados ese día
 };
 
 type HourlyPoint = {
-  hour: number;        // 0..23
+  hour: number; // 0..23
   count: number;
   highRisk: number;
   mediumRisk: number;
   lowRisk: number;
 };
 
-/* ======================================================
- * JWT + tenant resolution (org -> customer)
+type ReqBody = {
+  org_id?: string; // recomendado: UI lo manda
+  // Compat: aceptamos period_from/period_to (nuevo) o from/to (viejo)
+  period_from?: string;
+  period_to?: string;
+  from?: string;
+  to?: string;
+  app_id?: string;
+};
+
+function supabaseServiceClient() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+function isUuid(v: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    v,
+  );
+}
+
+/** ======================================================
+ * ORG + ENTITLEMENTS (source of truth)
  * ====================================================== */
-function userClient(req: Request, supabaseUrl: string, anonKey: string) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(supabaseUrl, anonKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
+async function resolveOrgIdOrThrow(
+  admin: ReturnType<typeof supabaseServiceClient>,
+  userId: string,
+  requestedOrgId?: string | null,
+) {
+  if (requestedOrgId) {
+    const orgId = String(requestedOrgId).trim();
+    if (!isUuid(orgId)) throw new Error("invalid_org_id");
 
-function adminClient(supabaseUrl: string, serviceKey: string) {
-  return createClient(supabaseUrl, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id")
+      .eq("user_id", userId)
+      .eq("org_id", orgId)
+      .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
+      .maybeSingle();
 
-async function requireJwtUser(req: Request, supabaseUrl: string, anonKey: string) {
-  const sb = userClient(req, supabaseUrl, anonKey);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
+    if (error) throw new Error(`membership_lookup_failed:${error.message}`);
+    if (!data?.org_id) throw new Error("FORBIDDEN");
+    return orgId;
+  }
 
-async function requireOrgMemberAndCustomerId(admin: ReturnType<typeof createClient>, user_id: string) {
-  const { data: mem, error: memErr } = await admin
+  const { data, error } = await admin
     .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", user_id)
+    .select("org_id, created_at")
+    .eq("user_id", userId)
+    .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+  if (error) throw new Error(`membership_lookup_failed:${error.message}`);
+  if (!data?.org_id) throw new Error("FORBIDDEN");
+  return String(data.org_id);
+}
 
-  const org_id = String(mem.org_id);
+type EntitlementsRow = {
+  org_id: string;
+  customer_id: string | null;
+  subscription_status: string | null;
+};
 
-  // 1) entitlements view si existe
-  let customer_id: string | null = null;
-  try {
-    const { data: ent, error: entErr } = await admin
-      .from("debacu_eval_org_entitlements_v")
-      .select("customer_id")
-      .eq("org_id", org_id)
-      .maybeSingle();
+async function loadEntitlementsOrThrow(
+  admin: ReturnType<typeof supabaseServiceClient>,
+  orgId: string,
+) {
+  const { data, error } = await admin
+    .from("debacu_eval_org_entitlements_v")
+    .select("org_id, customer_id, subscription_status")
+    .eq("org_id", orgId)
+    .maybeSingle();
 
-    if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
-  } catch {
-    // ignore
-  }
+  if (error) throw new Error(`entitlements_failed:${error.message}`);
+  if (!data?.customer_id) throw new Error("FORBIDDEN");
+  return data as EntitlementsRow;
+}
 
-  // 2) fallback organizations
-  if (!customer_id) {
-    const { data: org, error: orgErr } = await admin
-      .from("debacu_eval_organizations")
-      .select("customer_id")
-      .eq("id", org_id)
-      .maybeSingle();
-
-    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
-    customer_id = String(org.customer_id);
-  }
-
-  return { org_id, customer_id };
+function assertPlanActiveOrThrow(ent: EntitlementsRow) {
+  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
 }
 
 /* ======================================================
- * Main
+ * MAIN
  * ====================================================== */
-serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(req) });
-  }
-  if (req.method !== "POST") {
-    return json(req, 405, { ok: false, error: "method_not_allowed" });
-  }
+export default Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+
+  const admin = supabaseServiceClient();
 
   try {
-    const SUPABASE_URL = mustEnv("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-    const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
+    const user = await requireUser(req);
+    const body = (await req.json().catch(() => ({}))) as ReqBody;
 
-    // 1) JWT obligatorio
-    const user = await requireJwtUser(req, SUPABASE_URL, ANON_KEY);
-
-    // 2) tenant: org -> customer
-    const admin = adminClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-    const { org_id, customer_id } = await requireOrgMemberAndCustomerId(admin, user.id);
-
-    const body = await req.json().catch(() => ({} as any));
-
-    // Compat: aceptamos period_from/period_to (nuevo) o from/to (viejo)
-    const periodFrom = String(body?.period_from ?? body?.from ?? "");
-    const periodTo = String(body?.period_to ?? body?.to ?? "");
-    const appId = String(body?.app_id ?? DEFAULT_APP_ID);
+    const periodFrom = String(body?.period_from ?? body?.from ?? "").trim();
+    const periodTo = String(body?.period_to ?? body?.to ?? "").trim();
+    const appId = String(body?.app_id ?? DEFAULT_APP_ID).trim() || DEFAULT_APP_ID;
 
     if (!periodFrom || !periodTo) {
       return json(req, 400, { ok: false, error: "missing_period_from_to" });
     }
 
-    // Validación simple formato YYYY-MM-DD
     if (!/^\d{4}-\d{2}-\d{2}$/.test(periodFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(periodTo)) {
-      return json(req, 400, { ok: false, error: "invalid_date_format", detail: "Use YYYY-MM-DD" });
+      return json(req, 400, { ok: false, error: "invalid_date_format" });
     }
 
     const isSingleDay = periodFrom === periodTo;
     const { startISO, endExclusiveISO } = rangeUTC(periodFrom, periodTo);
 
-    // 3) Cargar consultas CHECK_SIGNALS del rango (audit_log)
+    // org + entitlements
+    const org_id = await resolveOrgIdOrThrow(admin, user.id, body?.org_id ?? null);
+    const ent = await loadEntitlementsOrThrow(admin, org_id);
+    assertPlanActiveOrThrow(ent);
+
+    const customer_id = String(ent.customer_id);
+
+    // 1) Cargar CHECK_SIGNALS del rango
+    // ⚠️ Riesgo performance si el rango es enorme y hay muchas filas.
+    // Si quieres, puedes capar a X filas o forzar máximo 31 días desde UI.
     const { data: auditRows, error: aErr } = await admin
       .from("debacu_eval_audit_log")
-      .select("created_at, event_type, action, meta, customer_id, app_id")
+      .select("created_at, meta")
       .eq("customer_id", customer_id)
       .eq("app_id", appId)
       .eq("event_type", "CHECK_SIGNALS")
       .gte("created_at", startISO)
       .lt("created_at", endExclusiveISO);
+      // .limit(20000); // <-- opcional soft-cap
 
-    if (aErr) {
-      return json(req, 500, { ok: false, error: "failed_load_audit_rows", detail: aErr.message });
-    }
+    if (aErr) throw new Error(`failed_load_audit_rows:${aErr.message}`);
 
-    // 4) Cargar registros creados por el hotel en el rango (evaluations)
-    // ⚠️ Si tu tabla real es "debacu_eval_evaluations", cambia aquí.
+    // 2) Cargar registros creados por el hotel en el rango
+    // Mantengo TU tabla/campo tal cual (creator_customer_uuid). Si ya migraste a otro, cámbialo aquí.
     const { data: evalRows, error: eErr } = await admin
       .from("debacu_evaluations")
-      // .from("debacu_eval_evaluations")
       .select("created_at")
       .eq("creator_customer_uuid", customer_id)
       .gte("created_at", startISO)
       .lt("created_at", endExclusiveISO);
 
-    if (eErr) {
-      return json(req, 500, { ok: false, error: "failed_load_evaluation_rows", detail: eErr.message });
-    }
+    if (eErr) throw new Error(`failed_load_evaluation_rows:${eErr.message}`);
 
-    // 5) Construir daily con días completos aunque no haya datos
+    // 3) Construir daily con días completos aunque no haya datos
     const dailyMap = new Map<string, DailyPoint>();
 
     const fromStart = new Date(dayRangeUTC(periodFrom).startISO);
@@ -253,7 +239,7 @@ serve(async (req) => {
       });
     }
 
-    // 6) Agregar consultas por día + riesgo
+    // 4) Agregar consultas por día + riesgo
     let totalConsultas = 0;
     let totalHigh = 0;
     let totalMed = 0;
@@ -263,7 +249,7 @@ serve(async (req) => {
       const createdAt = String((row as any)?.created_at ?? "");
       if (!createdAt) continue;
 
-      const dayKey = createdAt.slice(0, 10); // YYYY-MM-DD
+      const dayKey = createdAt.slice(0, 10);
       const p = dailyMap.get(dayKey) ?? {
         date: dayKey,
         count: 0,
@@ -287,10 +273,11 @@ serve(async (req) => {
         p.lowRisk += 1;
         totalLow += 1;
       }
+
       dailyMap.set(dayKey, p);
     }
 
-    // 7) Agregar registros creados por día
+    // 5) Agregar registros creados por día
     let totalRegistros = 0;
 
     for (const row of evalRows ?? []) {
@@ -316,7 +303,7 @@ serve(async (req) => {
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([, v]) => v);
 
-    // 8) HOURLY si es un solo día
+    // 6) HOURLY si es un solo día
     let hourly: HourlyPoint[] | null = null;
 
     if (isSingleDay) {
@@ -365,18 +352,28 @@ serve(async (req) => {
         },
       },
       daily,
-      hourly, // null si no aplica
+      hourly,
     });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
-    const status =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED")
-          ? 403
-          : 500;
 
-    console.error("debacu_eval_stats_operativas_get ERROR", e);
-    return json(req, status, { ok: false, error: "request_failed", detail: msg });
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
+      return json(req, 401, { ok: false, error: "UNAUTHENTICATED" });
+    }
+
+    if (msg === "PLAN_NOT_ACTIVE") {
+      return json(req, 402, { ok: false, error: "PLAN_NOT_ACTIVE" });
+    }
+
+    if (msg.startsWith("missing_") || msg.startsWith("invalid_")) {
+      return json(req, 400, { ok: false, error: msg });
+    }
+
+    if (msg === "FORBIDDEN" || msg.startsWith("forbidden_")) {
+      return json(req, 403, { ok: false, error: "FORBIDDEN" });
+    }
+
+    console.error("debacu_eval_stats_operativas_get error:", msg);
+    return json(req, 500, { ok: false, error: "request_failed", detail: "internal_error" });
   }
 });

@@ -1,139 +1,144 @@
 // supabase/functions/audit_export_get_signed_url/index.ts
 // deno-lint-ignore-file no-explicit-any
-import { serve } from "https://deno.land/std@0.177.1/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  // 👇 MUY IMPORTANTE: incluir content-type
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-};
+import { json, preflight } from "../_shared/cors.ts";
+import { requireAdmin } from "../_shared/auth.ts";
 
-function respond(status: number, body: any) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      ...corsHeaders,
-      "content-type": "application/json; charset=utf-8",
-    },
-  });
+/* =======================
+ * Env + helpers
+ * ======================= */
+function requireEnv(name: string) {
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`Missing env ${name}`);
+  return v;
 }
 
-function getIp(req: Request) {
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0]?.trim() ?? null;
+function supabaseServiceClient() {
+  const SUPABASE_URL = requireEnv("SUPABASE_URL");
+  const SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+}
+
+function firstIp(req: Request) {
+  const xf = req.headers.get("x-forwarded-for") ?? "";
+  if (xf) return xf.split(",")[0]?.trim() || null;
   return req.headers.get("x-real-ip") ?? null;
 }
 
-function isAdminEmail(email: string | null | undefined, allowedCsv?: string | null) {
-  if (!email) return false;
-  const list = (allowedCsv ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  if (list.length === 0) return false;
-  return list.includes(email.toLowerCase());
+function clampInt(v: any, def: number, min: number, max: number) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  const i = Math.trunc(n);
+  return Math.max(min, Math.min(max, i));
 }
 
-serve(async (req) => {
-  // ✅ Preflight CORS
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders });
-  }
-
-  if (req.method !== "POST") {
-    return respond(405, { error: "Method not allowed" });
-  }
+/* =======================
+ * Main
+ * ======================= */
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
   try {
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const ADMIN_EMAILS = Deno.env.get("ADMIN_EMAILS") ?? "";
+    // ✅ Admin only (source of truth: debacu_eval_admin_users)
+    const admin = await requireAdmin(req);
 
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) return respond(401, { error: "Missing Authorization header" });
+    const body = await req.json().catch(() => ({}));
+    const exportId = String(body?.export_id ?? "").trim();
+    const expiresIn = clampInt(body?.expires_in, 300, 60, 3600);
 
-    // Cliente "user" para validar JWT
-    const supaUser = createClient(SUPABASE_URL, ANON_KEY, {
-      global: { headers: { Authorization: authHeader } },
-    });
+    if (!exportId) return json(req, 400, { ok: false, error: "missing_export_id" });
 
-    const { data: userData, error: userErr } = await supaUser.auth.getUser();
-    if (userErr || !userData?.user) return respond(401, { error: "Invalid token" });
+    const sb = supabaseServiceClient();
 
-    const user = userData.user;
-    const userEmail = user.email ?? null;
-
-    // ✅ Solo admins (allowlist por env)
-    if (!isAdminEmail(userEmail, ADMIN_EMAILS)) {
-      return respond(403, { error: "Not authorized" });
-    }
-
-    let body: any = {};
-    try {
-      body = await req.json();
-    } catch {
-      return respond(400, { error: "Invalid JSON body" });
-    }
-
-    const exportId = body?.export_id as string | undefined;
-    const expiresIn = Number(body?.expires_in ?? 300);
-
-    if (!exportId) return respond(400, { error: "export_id is required" });
-    if (!Number.isFinite(expiresIn) || expiresIn < 60 || expiresIn > 3600) {
-      return respond(400, { error: "expires_in must be between 60 and 3600 seconds" });
-    }
-
-    // Service role: Storage + insert log (bypassa RLS)
-    const supaSrv = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-
-    // 1) Leer audit_exports (bucket + storage_path)
-    const { data: expRow, error: expErr } = await supaSrv
+    // 1) Leer audit_exports para saber bucket + path
+    // OJO: tus nombres reales son storage_bucket / storage_path (no "bucket")
+    const { data: expRow, error: expErr } = await sb
       .from("audit_exports")
-      .select("id,bucket,storage_path")
+      .select("id, storage_bucket, storage_path")
       .eq("id", exportId)
       .maybeSingle();
 
-    if (expErr) return respond(500, { error: expErr.message });
-    if (!expRow?.bucket || !expRow?.storage_path) {
-      return respond(404, { error: "Export not found" });
+    if (expErr) return json(req, 500, { ok: false, error: "db_error", detail: expErr.message });
+    if (!expRow?.storage_bucket || !expRow?.storage_path) {
+      return json(req, 404, { ok: false, error: "export_not_found" });
     }
 
     // 2) Firmar URL
-    const { data: signed, error: signErr } = await supaSrv.storage
-      .from(expRow.bucket)
-      .createSignedUrl(expRow.storage_path, expiresIn);
+    const { data: signed, error: signErr } = await sb.storage
+      .from(String(expRow.storage_bucket))
+      .createSignedUrl(String(expRow.storage_path), expiresIn);
 
     if (signErr || !signed?.signedUrl) {
-      return respond(500, { error: signErr?.message ?? "Failed to sign URL" });
+      return json(req, 500, { ok: false, error: "sign_failed", detail: signErr?.message ?? "no_signed_url" });
     }
 
-    // 3) Log audit_export_downloads
-    const ip = getIp(req);
-    const ua = req.headers.get("user-agent");
+    // 3) Log descarga (mejor esfuerzo)
+    const ip = firstIp(req);
+    const ua = req.headers.get("user-agent") ?? null;
 
-    const { error: insErr } = await supaSrv.from("audit_export_downloads").insert({
-      export_id: exportId,
-      downloaded_by_user_id: user.id,
-      downloaded_by_email: userEmail,
-      ip,
-      user_agent: ua,
-    });
+    // intentamos primero SYSTEM table; si no existe, fallback a debacu_eval_*
+    let logged = false;
+    let log_warning: string | null = null;
 
-    if (insErr) {
-      return respond(200, {
+    // Tabla A: audit_export_downloads (SYSTEM)
+    try {
+      const { error: insErr } = await sb.from("audit_export_downloads").insert({
+        export_id: exportId,
+        downloaded_by_user_id: admin.user_id,
+        downloaded_by_email: admin.email ?? null,
+        ip,
+        user_agent: ua,
+      });
+      if (!insErr) logged = true;
+      else log_warning = `log_failed:audit_export_downloads:${insErr.message}`;
+    } catch (e: any) {
+      log_warning = `log_failed:audit_export_downloads:${e?.message ?? String(e)}`;
+    }
+
+    // Tabla B: debacu_eval_audit_export_downloads (si la A no existe / falla)
+    if (!logged) {
+      try {
+        const { error: insErr2 } = await sb.from("debacu_eval_audit_export_downloads").insert({
+          export_id: exportId,
+          downloaded_by: admin.user_id,
+          downloaded_by_email: admin.email ?? null,
+          ip,
+          user_agent: ua,
+        });
+        if (!insErr2) {
+          logged = true;
+          log_warning = null;
+        } else {
+          log_warning = `log_failed:debacu_eval_audit_export_downloads:${insErr2.message}`;
+        }
+      } catch (e: any) {
+        log_warning = `log_failed:debacu_eval_audit_export_downloads:${e?.message ?? String(e)}`;
+      }
+    }
+
+    return json(req, 200, {
+      ok: true,
+      data: {
         signed_url: signed.signedUrl,
         expires_in: expiresIn,
-        warning: "Signed URL generated but failed to log download",
-        log_error: insErr.message,
-      });
+        export_id: exportId,
+        logged_download: logged,
+        warning: log_warning,
+      },
+    });
+  } catch (e: any) {
+    const msg = e?.message ?? String(e);
+
+    if (msg === "UNAUTHORIZED" || msg === "missing_bearer" || msg === "invalid_token") {
+      return json(req, 401, { ok: false, error: "unauthorized" });
+    }
+    if (msg === "FORBIDDEN" || msg === "forbidden_admin_only") {
+      return json(req, 403, { ok: false, error: "forbidden" });
     }
 
-    return respond(200, { signed_url: signed.signedUrl, expires_in: expiresIn });
-  } catch (e) {
-    return respond(500, { error: String((e as any)?.message ?? e) });
+    return json(req, 500, { ok: false, error: "unexpected", detail: msg });
   }
 });

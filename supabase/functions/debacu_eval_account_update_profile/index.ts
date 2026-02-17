@@ -1,71 +1,16 @@
 // supabase/functions/debacu_eval_account_update_profile/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-/** ======================================================
- *  CORS
- *  ====================================================== */
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    Vary: "Origin",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token, x-debacu-session-token, x-debacu-eval-session-token",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
+const APP_ID = "DEBACU_EVAL";
 
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
-  });
-}
-
-function mustEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env var: ${name}`);
-  return v;
-}
-
-function safeStr(v: any) {
-  return typeof v === "string" ? v.trim() : "";
-}
-
-function readSessionToken(req: Request) {
-  return (
-    safeStr(req.headers.get("x-session-token")) ||
-    safeStr(req.headers.get("x-debacu-session-token")) ||
-    safeStr(req.headers.get("x-debacu-eval-session-token"))
-  );
-}
-
-async function readJson(req: Request) {
-  const t = await req.text();
-  if (!t) return {};
-  try {
-    return JSON.parse(t);
-  } catch {
-    return {};
-  }
-}
-
-/** ======================================================
- *  Types
- *  ====================================================== */
+/* ======================================================
+ * Types
+ * ====================================================== */
 type ReqBody = {
-  customer_id: string;
-  app_id?: string;
+  org_id?: string; // ✅ recomendado SIEMPRE
   patch: {
     name?: string | null;
     nif?: string | null;
@@ -77,7 +22,7 @@ type ReqBody = {
     phone?: string | null;
     email?: string | null;
 
-    // opcionales (si los usas después)
+    // extras opcionales
     commercial_name?: string | null;
     legal_name?: string | null;
     billing_email?: string | null;
@@ -87,10 +32,27 @@ type ReqBody = {
   };
 };
 
+/* ======================================================
+ * Utils
+ * ====================================================== */
+async function readJsonSafe<T>(req: Request): Promise<T | null> {
+  try {
+    const text = await req.text();
+    if (!text) return null;
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
+}
+
 /** ======================================================
- *  Helpers: build update patch (NO pisa con null si no viene)
- *  - undefined => no tocar columna
- *  - null => borrar columna
+ * build update patch (NO pisa con null si no viene)
+ * - undefined => no tocar columna
+ * - null => borrar columna
  * ====================================================== */
 function buildCustomerUpdate(patch: ReqBody["patch"]) {
   const u: Record<string, any> = {};
@@ -119,7 +81,7 @@ function buildCustomerUpdate(patch: ReqBody["patch"]) {
   setIfDefined("phone", patch.phone);
   setIfDefined("email", patch.email);
 
-  // Extras (por si los usas)
+  // Extras
   setIfDefined("commercial_name", patch.commercial_name);
   setIfDefined("legal_name", patch.legal_name);
   setIfDefined("billing_email", patch.billing_email);
@@ -130,109 +92,148 @@ function buildCustomerUpdate(patch: ReqBody["patch"]) {
   return u;
 }
 
-function isMissingColumnError(message: string) {
-  // PostgREST suele decir: "column <x> does not exist"
-  return /column .* does not exist/i.test(message);
+/* ======================================================
+ * Tenant helpers
+ * ====================================================== */
+async function resolveOrgForUser(params: {
+  admin: ReturnType<typeof supabaseServiceClient>;
+  user_id: string;
+  org_id?: string | null;
+}) {
+  const { admin, user_id } = params;
+  const requestedOrgId = safeStr(params.org_id) || null;
+
+  // ✅ Ajusta si tu tabla no tiene status. En Debacu normalmente sí.
+  let q = admin
+    .from("debacu_eval_org_members")
+    .select("org_id, role, created_at")
+    .eq("user_id", user_id)
+    .eq("status", "ACTIVE");
+
+  if (requestedOrgId) q = q.eq("org_id", requestedOrgId);
+
+  const { data, error } = await q.order("created_at", { ascending: true }).limit(1);
+
+  if (error) throw new Error("DB_MEMBERSHIP_FAILED");
+  const mem = (data ?? [])[0];
+
+  if (!mem?.org_id) {
+    throw new Error(requestedOrgId ? "FORBIDDEN_ORG_NOT_ALLOWED" : "FORBIDDEN_NO_ACTIVE_ORG");
+  }
+
+  return { org_id: String(mem.org_id), role: mem.role ?? null };
 }
 
-/** ======================================================
- *  Handler
- *  ====================================================== */
-Deno.serve(async (req) => {
-  const origin = req.headers.get("origin");
+async function resolveCustomerId(params: {
+  admin: ReturnType<typeof supabaseServiceClient>;
+  org_id: string;
+}) {
+  const { admin, org_id } = params;
 
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(origin) });
-  }
-
-  if (req.method !== "POST") {
-    return json(origin, 405, { error: "Method not allowed" });
-  }
-
+  // 1) entitlements view (si existe)
   try {
-    const SUPABASE_URL = mustEnv("SUPABASE_URL");
-    const SERVICE_ROLE = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-
-    // 1) JWT obligatorio
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const jwt = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-    if (!jwt) return json(origin, 401, { error: "Missing Authorization" });
-
-    const { data: userData, error: userErr } = await admin.auth.getUser(jwt);
-    if (userErr || !userData?.user?.id) return json(origin, 401, { error: "Invalid session" });
-
-    const userId = userData.user.id;
-
-    // 2) Body
-    const body = (await readJson(req)) as Partial<ReqBody>;
-    const customerId = safeStr(body?.customer_id);
-    const appId = safeStr(body?.app_id) || "DEBACU_EVAL";
-    if (!customerId) return json(origin, 400, { error: "customer_id required" });
-
-    // 3) x-session-token obligatorio
-    const sessionToken = readSessionToken(req);
-    if (!sessionToken) return json(origin, 401, { error: "Missing x-session-token" });
-
-    // 4) Validar sesión Debacu (token+customer+app y no revocada/expirada)
-    const nowIso = new Date().toISOString();
-
-    // Intento 1: si la tabla tiene user_id (lo ideal)
-    let sess: any = null;
-
-    const q1 = await admin
-      .from("debacu_eval_sessions")
-      .select("token, customer_id, app_code, expires_at, revoked_at, user_id")
-      .eq("token", sessionToken)
-      .eq("customer_id", customerId)
-      .eq("app_code", appId)
-      .is("revoked_at", null)
+    const { data: ent, error: entErr } = await admin
+      .from("debacu_eval_org_entitlements_v")
+      .select("customer_id")
+      .eq("org_id", org_id)
       .maybeSingle();
 
-    if (q1.error && isMissingColumnError(q1.error.message)) {
-      // Fallback: tabla sin user_id todavía
-      const q2 = await admin
-        .from("debacu_eval_sessions")
-        .select("token, customer_id, app_code, expires_at, revoked_at")
-        .eq("token", sessionToken)
-        .eq("customer_id", customerId)
-        .eq("app_code", appId)
-        .is("revoked_at", null)
-        .maybeSingle();
+    if (!entErr && ent?.customer_id) return String(ent.customer_id);
+  } catch {
+    // ignore
+  }
 
-      if (q2.error) return json(origin, 500, { error: "SESSION_CHECK_FAILED", detail: q2.error.message });
-      sess = q2.data;
-    } else {
-      if (q1.error) return json(origin, 500, { error: "SESSION_CHECK_FAILED", detail: q1.error.message });
-      sess = q1.data;
+  // 2) fallback organizations
+  const { data: org, error: orgErr } = await admin
+    .from("debacu_eval_organizations")
+    .select("customer_id")
+    .eq("id", org_id)
+    .maybeSingle();
+
+  if (orgErr) throw new Error("DB_ORG_LOOKUP_FAILED");
+  if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+  return String(org.customer_id);
+}
+
+/* ======================================================
+ * Handler
+ * ====================================================== */
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "request_failed", detail: "METHOD_NOT_ALLOWED" });
+  }
+
+  // ✅ JWT-only
+  let userId = "";
+  try {
+    const user = await requireUser(req);
+    userId = user.id;
+  } catch {
+    return json(req, 401, { ok: false, error: "request_failed", detail: "UNAUTHENTICATED" });
+  }
+
+  const body = await readJsonSafe<ReqBody>(req);
+  if (!body) {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_json" });
+  }
+
+  if (!body.patch || typeof body.patch !== "object") {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "missing_patch" });
+  }
+
+  const update = buildCustomerUpdate(body.patch);
+  if (Object.keys(update).length === 0) {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "patch_empty" });
+  }
+
+  const admin = supabaseServiceClient();
+
+  try {
+    // ✅ resolver customer_id por org_id (no confiar en customer_id del cliente)
+    const { org_id } = await resolveOrgForUser({
+      admin,
+      user_id: userId,
+      org_id: safeStr(body.org_id) || null,
+    });
+
+    const customer_id = await resolveCustomerId({ admin, org_id });
+
+    // (Opcional pero recomendable) blindaje por app
+    const { data: cust, error: custErr } = await admin
+      .from("customers")
+      .select("id, app_id")
+      .eq("id", customer_id)
+      .maybeSingle();
+
+    if (custErr) {
+      return json(req, 500, { ok: false, error: "request_failed", detail: "DB_CUSTOMER_READ_FAILED" });
+    }
+    if (!cust?.id) {
+      return json(req, 404, { ok: false, error: "request_failed", detail: "CUSTOMER_NOT_FOUND" });
+    }
+    if (cust.app_id && String(cust.app_id) !== APP_ID) {
+      return json(req, 403, { ok: false, error: "request_failed", detail: "FORBIDDEN" });
     }
 
-    if (!sess) return json(origin, 401, { error: "SESSION_INVALID" });
-    if (sess.expires_at && String(sess.expires_at) <= nowIso) return json(origin, 401, { error: "SESSION_EXPIRED" });
-
-    // 🔐 Si existe sess.user_id, debe coincidir con el auth.uid
-    if (sess.user_id && String(sess.user_id) !== String(userId)) {
-      return json(origin, 403, { error: "Not allowed" });
+    // ✅ update customers
+    const { error: updErr } = await admin.from("customers").update(update).eq("id", customer_id);
+    if (updErr) {
+      return json(req, 500, { ok: false, error: "request_failed", detail: "DB_UPDATE_FAILED" });
     }
 
-    // 5) Whitelist patch
-    const patch = (body?.patch ?? {}) as ReqBody["patch"];
-    const update = buildCustomerUpdate(patch);
+    return json(req, 200, { ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "INTERNAL_ERROR";
 
-    if (Object.keys(update).length === 0) {
-      return json(origin, 400, { error: "patch is empty" });
+    if (msg === "FORBIDDEN_ORG_NOT_ALLOWED" || msg === "FORBIDDEN_NO_ACTIVE_ORG" || msg === "FORBIDDEN_NO_CUSTOMER") {
+      return json(req, 403, { ok: false, error: "request_failed", detail: "FORBIDDEN" });
     }
 
-    // 6) Update customers
-    const { error: updErr } = await admin.from("customers").update(update).eq("id", customerId);
-    if (updErr) return json(origin, 500, { error: "DB_UPDATE_FAILED", detail: updErr.message });
+    if (msg === "DB_MEMBERSHIP_FAILED" || msg === "DB_ORG_LOOKUP_FAILED") {
+      return json(req, 500, { ok: false, error: "request_failed", detail: "DB_ERROR" });
+    }
 
-    return json(origin, 200, { ok: true });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return json(origin, 500, { error: "Request failed", detail: msg });
+    return json(req, 500, { ok: false, error: "request_failed", detail: "INTERNAL_ERROR" });
   }
 });

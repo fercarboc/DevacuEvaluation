@@ -1,55 +1,45 @@
 // supabase/functions/audit_export/index.ts
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+// deno-lint-ignore-file no-explicit-any
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+
+import { json, preflight } from "../_shared/cors.ts";
+import { requireAdmin } from "../_shared/auth.ts";
 
 type AuditExportRequest = {
   file_name: string;
-  mime_type: string; // "application/pdf" | "text/csv" | ...
+  mime_type: string;
   format: "PDF" | "CSV" | "XML" | string;
 
-  // hash: aceptamos sha256 o client_sha256 (tu UI manda client_sha256)
   sha256?: string;
   client_sha256?: string;
 
-  // contenido
   file_base64: string;
 
-  // metadatos
-  app_id?: string | null; // ej: "SYSTEM"
-  customer_id?: string | null; // null si es sistema
-  date_from?: string | null; // "yyyy-mm-dd" o null
-  date_to?: string | null; // "yyyy-mm-dd" o null
+  app_id?: string | null; // "SYSTEM"
+  customer_id?: string | null;
+  date_from?: string | null; // yyyy-mm-dd
+  date_to?: string | null;   // yyyy-mm-dd
   row_count?: number | null;
 
-  source?: string | null; // ej: "abuse_settings_audit_grouped"
-  type?: string | null; // ej: "CONFIG_CHANGES"
-  filters_json?: any; // objeto libre
+  source?: string | null;
+  type?: string | null;
+  filters_json?: any;
 
-  // opcionales
   purpose?: string | null;
   legal_basis?: string | null;
   notes?: string | null;
 
-  // “a quién se entrega” (ajustado a tus columnas reales)
-  provided_to_type?: string | null; // idealmente enum audit_provided_to_type
+  provided_to_type?: string | null;
   provided_to_name?: string | null;
   provided_to_ref?: string | null;
   provided_to_contact?: string | null;
 };
 
-const corsHeaders: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Max-Age": "86400",
-};
-
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+function requireEnv(name: string) {
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`Missing env ${name}`);
+  return v;
 }
 
 function isHexSha256(s: string) {
@@ -57,7 +47,10 @@ function isHexSha256(s: string) {
 }
 
 function safeFileName(name: string) {
-  const cleaned = name.replaceAll("\\", "_").replaceAll("/", "_").trim();
+  const cleaned = String(name ?? "")
+    .replaceAll("\\", "_")
+    .replaceAll("/", "_")
+    .trim();
   return cleaned.length ? cleaned : `export_${crypto.randomUUID()}`;
 }
 
@@ -76,143 +69,161 @@ function yyyyMmDdParts(d = new Date()) {
   return { yyyy, mm, dd };
 }
 
-serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (req.method !== "POST") return json(405, { error: "Method not allowed" });
+function clampInt(v: any, def: number, min: number, max: number) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  const i = Math.trunc(n);
+  return Math.max(min, Math.min(max, i));
+}
+
+function isYmd(s: any) {
+  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+function supabaseServiceClient() {
+  const SUPABASE_URL = requireEnv("SUPABASE_URL");
+  const SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+}
+
+const STORAGE_BUCKET = "system-exports";
+const DEFAULT_APP_ID = "SYSTEM";
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
   try {
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    // ✅ Seguridad: esto crea exports “SYSTEM” → admin only
+    const actor = await requireAdmin(req);
 
-    if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
-      return json(500, {
-        error: "Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY",
-      });
-    }
+    const actor_user_id = actor.user_id;
+    const actor_email = actor.email ?? null;
 
-    // Service role para escribir (storage + db)
-    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-      auth: { persistSession: false },
-    });
-
-    const body = (await req.json()) as AuditExportRequest;
+    const body = (await req.json().catch(() => ({}))) as Partial<AuditExportRequest>;
 
     // --- Validaciones mínimas ---
-    const fileName = safeFileName(body.file_name);
-    const mimeType = String(body.mime_type || "").trim();
-    const format = String(body.format || "").trim();
-    const fileBase64 = String(body.file_base64 || "").trim();
+    const fileName = safeFileName(String(body.file_name ?? ""));
+    const mimeType = String(body.mime_type ?? "").trim();
+    const format = String(body.format ?? "").trim();
+    const fileBase64 = String(body.file_base64 ?? "").trim();
 
-    const sha = (body.sha256 || body.client_sha256 || "").trim().toLowerCase();
+    const sha = String((body.sha256 || body.client_sha256 || "") ?? "").trim().toLowerCase();
 
-    if (!fileName) return json(400, { error: "file_name is required" });
-    if (!mimeType) return json(400, { error: "mime_type is required" });
-    if (!format) return json(400, { error: "format is required" });
-    if (!fileBase64) return json(400, { error: "file_base64 is required" });
-    if (!sha) return json(400, { error: "client_sha256/sha256 is required" });
-    if (!isHexSha256(sha)) return json(400, { error: "sha256 must be 64 hex chars" });
+    if (!mimeType) return json(req, 400, { ok: false, error: "mime_type_required" });
+    if (!format) return json(req, 400, { ok: false, error: "format_required" });
+    if (!fileBase64) return json(req, 400, { ok: false, error: "file_base64_required" });
+    if (!sha) return json(req, 400, { ok: false, error: "sha256_required" });
+    if (!isHexSha256(sha)) return json(req, 400, { ok: false, error: "sha256_invalid" });
 
-    // --- Intentar sacar usuario (para generated_by / generated_by_email) ---
-    // OJO: aquí NO validamos permisos; solo leemos el user si viene Authorization.
-    // El control de acceso lo debes hacer en el front (admin) + RLS/edge si lo deseas.
-    let generatedBy: string | null = null;
-    let generatedByEmail: string | null = null;
-    const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
-    if (authHeader) {
-      const supabaseUser = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_ANON_KEY") ?? "", {
-        auth: { persistSession: false },
-        global: { headers: { Authorization: authHeader } },
-      });
+    // fechas opcionales
+    const date_from = body.date_from ?? null;
+    const date_to = body.date_to ?? null;
+    if (date_from && !isYmd(date_from)) return json(req, 400, { ok: false, error: "date_from_invalid" });
+    if (date_to && !isYmd(date_to)) return json(req, 400, { ok: false, error: "date_to_invalid" });
 
-      const { data: u } = await supabaseUser.auth.getUser();
-      generatedBy = u?.user?.id ?? null;
-      generatedByEmail = (u?.user?.email as string | undefined) ?? null;
-    }
+    const row_count =
+      body.row_count === null || body.row_count === undefined
+        ? null
+        : clampInt(body.row_count, 0, 0, 10_000_000);
 
     // --- Decode bytes ---
-    const bytes = decodeBase64ToUint8Array(fileBase64);
+    let bytes: Uint8Array;
+    try {
+      bytes = decodeBase64ToUint8Array(fileBase64);
+    } catch {
+      return json(req, 400, { ok: false, error: "file_base64_invalid" });
+    }
 
-    // --- Storage: bucket system-exports ---
-    const storageBucket = "system-exports";
-
-    // path: SYSTEM/2026/01/27/<uuid>_<fileName>
+    // --- Storage path ---
     const { yyyy, mm, dd } = yyyyMmDdParts(new Date());
-    const appId = (body.app_id ?? "SYSTEM") || "SYSTEM";
+    const appId = (body.app_id ?? DEFAULT_APP_ID) || DEFAULT_APP_ID; // siempre cae a SYSTEM
     const key = crypto.randomUUID();
     const storagePath = `${appId}/${yyyy}/${mm}/${dd}/${key}_${fileName}`;
 
-    const { error: upErr } = await supabase.storage
-      .from(storageBucket)
+    const sb = supabaseServiceClient();
+
+    // 1) Upload storage
+    const { error: upErr } = await sb.storage
+      .from(STORAGE_BUCKET)
       .upload(storagePath, bytes, { contentType: mimeType, upsert: false });
 
-    if (upErr) return json(500, { error: "storage upload failed", detail: upErr.message });
+    if (upErr) return json(req, 500, { ok: false, error: "storage_upload_failed", detail: upErr.message });
 
-    // --- Insert DB (tabla audit_exports) ---
-    // ✅ ALINEADO con tu tabla:
-    // storage_bucket, storage_path, file_sha256, mime_type, file_name, etc.
-   const insertRow: Record<string, unknown> = {
-  created_at: new Date().toISOString(),
+    // 2) Insert DB audit_exports
+    const insertRow: Record<string, unknown> = {
+      // si tu tabla tiene default now(), puedes quitar created_at
+      created_at: new Date().toISOString(),
 
-  generated_by: generatedBy,
-  generated_by_email: generatedByEmail,
+      generated_by: actor_user_id,
+      generated_by_email: actor_email,
 
-  app_id: appId,
-  customer_id: body.customer_id ?? null,
+      app_id: appId,
+      customer_id: body.customer_id ?? null,
 
-  file_name: fileName,
-  file_sha256: sha,
-  mime_type: mimeType,
-  format,
+      file_name: fileName,
+      file_sha256: sha,
+      mime_type: mimeType,
+      format,
 
-  row_count: body.row_count ?? null,
-  date_from: body.date_from ?? null,
-  date_to: body.date_to ?? null,
+      row_count,
+      date_from,
+      date_to,
 
-  source: body.source ?? null,
-  type: body.type ?? null,
-  filters_json: body.filters_json ?? null,
+      source: body.source ?? null,
+      type: body.type ?? null,
+      filters_json: body.filters_json ?? null,
 
-  purpose: body.purpose ?? null,
-  legal_basis: body.legal_basis ?? null,
-  notes: body.notes ?? null,
+      purpose: body.purpose ?? null,
+      legal_basis: body.legal_basis ?? null,
+      notes: body.notes ?? null,
 
-  storage_bucket: storageBucket,
-  storage_path: storagePath,
+      storage_bucket: STORAGE_BUCKET,
+      storage_path: storagePath,
 
-  // 🔴 CLAVE: NO PUEDE SER NULL
-  provided_to_type: body.provided_to_type ?? "SYSTEM",
-  provided_to_name: body.provided_to_name ?? "System export",
-  provided_to_ref: body.provided_to_ref ?? "SYSTEM",
-  provided_to_contact: body.provided_to_contact ?? generatedByEmail,
+      // ⚠️ tus columnas “provided_to_*” parecen NOT NULL → ponemos defaults sensatos
+      provided_to_type: body.provided_to_type ?? "SYSTEM",
+      provided_to_name: body.provided_to_name ?? "System export",
+      provided_to_ref: body.provided_to_ref ?? "SYSTEM",
+      provided_to_contact: body.provided_to_contact ?? actor_email,
 
-  status: "READY",
-};
+      status: "READY",
+    };
 
-
-    const { data: inserted, error: insErr } = await supabase
+    const { data: inserted, error: insErr } = await sb
       .from("audit_exports")
       .insert(insertRow)
       .select("id")
       .maybeSingle();
 
     if (insErr) {
-      return json(500, {
-        error: "db insert failed (audit_exports)",
+      // si falla DB, NO borramos el archivo automáticamente (podrías hacerlo, pero ojo con auditoría)
+      return json(req, 500, {
+        ok: false,
+        error: "db_insert_failed",
         detail: insErr.message,
         insertRowKeys: Object.keys(insertRow),
-        hint:
-          "Revisa nombres de columnas: esta función usa storage_bucket/storage_path/file_sha256. Si tu tabla usa otros nombres, dímelos y lo ajusto.",
       });
     }
 
-    return json(200, {
-      success: true,
-      audit_export_id: inserted?.id ?? null,
-      storage_bucket: storageBucket,
-      storage_path: storagePath,
+    return json(req, 200, {
+      ok: true,
+      data: {
+        audit_export_id: inserted?.id ?? null,
+        storage_bucket: STORAGE_BUCKET,
+        storage_path: storagePath,
+      },
     });
-  } catch (err) {
-    console.error("audit_export fatal", err);
-    return json(500, { error: "Internal server error" });
+  } catch (e: any) {
+    const msg = e?.message ?? String(e);
+
+    if (msg === "UNAUTHORIZED" || msg === "missing_bearer" || msg === "invalid_token") {
+      return json(req, 401, { ok: false, error: "unauthorized" });
+    }
+    if (msg === "FORBIDDEN" || msg === "forbidden_admin_only") {
+      return json(req, 403, { ok: false, error: "forbidden" });
+    }
+
+    return json(req, 500, { ok: false, error: "unexpected", detail: msg });
   }
 });

@@ -1,72 +1,123 @@
+// supabase/functions/debacu_eval_whoami/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, requireAdmin, supabaseServiceClient } from "../_shared/auth.ts";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+type Body = {
+  org_id?: string | null;
+};
 
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  };
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
 }
 
-function json(req: Request, status: number, body: any) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(req), "Content-Type": "application/json" },
-  });
+async function readJsonSafe<T>(req: Request): Promise<T | null> {
+  try {
+    const text = await req.text();
+    if (!text) return null;
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
 }
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders(req) });
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: { message: "Method not allowed" } });
-
-  const authHeader = req.headers.get("Authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-
-  if (!token) return json(req, 401, { ok: false, error: { message: "Missing bearer token" } });
-
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
-
-  // valida token supabase y obtiene user
-  const { data: userRes, error: userErr } = await admin.auth.getUser(token);
-  if (userErr || !userRes?.user) {
-    return json(req, 401, { ok: false, error: { message: "Invalid token" } });
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "request_failed", detail: "METHOD_NOT_ALLOWED" });
   }
 
-  const email = (userRes.user.email ?? "").toLowerCase();
+  // ✅ JWT-only user
+  let user: any;
+  try {
+    user = await requireUser(req); // debe validar Authorization: Bearer <jwt>
+  } catch (e: any) {
+    const msg = e?.message ?? "";
+    const status = msg === "UNAUTHENTICATED" ? 401 : 401;
+    return json(req, status, { ok: false, error: "request_failed", detail: "UNAUTHENTICATED" });
+  }
 
-  // TODO: aquí tu lógica real:
-  // - localizar org/hotel por email
-  // - comprobar suscripción
-  // - roles, etc.
+  // ✅ is_admin por tabla (no por email)
+  let is_admin = false;
+  try {
+    await requireAdmin(req);
+    is_admin = true;
+  } catch {
+    is_admin = false;
+  }
 
-  // EJEMPLO PAYWALL:
-  // if (no_sub) return json(req, 200, { ok:false, error:{code:"NO_SUBSCRIPTION"} });
+  const body = await readJsonSafe<Body>(req);
+  const requestedOrgId = safeStr(body?.org_id ?? "");
 
-  // session_token (si lo sigues usando)
-  const session_token = crypto.randomUUID();
+  const sb = supabaseServiceClient();
 
-  const user = {
-    email,
-    // ... lo que tu app necesite
-    isAdmin: email === "admin@debacu.com",
-  };
+  // 1) Resolver org_id: preferimos body.org_id
+  let org_id: string | null = requestedOrgId || null;
+  let role: string | null = null;
 
-  return json(req, 200, { ok: true, session_token, user });
+  if (org_id) {
+    const { data: mem, error: memErr } = await sb
+      .from("debacu_eval_org_members")
+      .select("org_id, role, status")
+      .eq("org_id", org_id)
+      .eq("user_id", user.id)
+      .eq("status", "ACTIVE")
+      .maybeSingle();
+
+    if (memErr) {
+      return json(req, 500, { ok: false, error: "request_failed", detail: "DB_MEMBERSHIP_FAILED" });
+    }
+    if (!mem?.org_id) {
+      return json(req, 403, { ok: false, error: "request_failed", detail: "FORBIDDEN" });
+    }
+    role = mem.role ?? null;
+  } else {
+    // Fallback determinista: primera membership ACTIVE por created_at asc
+    const { data: mem, error: memErr } = await sb
+      .from("debacu_eval_org_members")
+      .select("org_id, role, created_at")
+      .eq("user_id", user.id)
+      .eq("status", "ACTIVE")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (memErr) {
+      return json(req, 500, { ok: false, error: "request_failed", detail: "DB_MEMBERSHIP_FAILED" });
+    }
+    if (!mem?.org_id) {
+      return json(req, 403, { ok: false, error: "request_failed", detail: "FORBIDDEN" });
+    }
+    org_id = String(mem.org_id);
+    role = mem.role ?? null;
+  }
+
+  // 2) Resolver customer_id (si tu org lo tiene)
+  let customer_id: string | null = null;
+  const { data: orgRow, error: orgErr } = await sb
+    .from("debacu_eval_organizations")
+    .select("customer_id")
+    .eq("id", org_id)
+    .maybeSingle();
+
+  if (orgErr) {
+    return json(req, 500, { ok: false, error: "request_failed", detail: "DB_ORG_FAILED" });
+  }
+  customer_id = orgRow?.customer_id ? String(orgRow.customer_id) : null;
+
+  return json(req, 200, {
+    ok: true,
+    user: {
+      id: user.id,
+      email: (user.email ?? "").toLowerCase(),
+      is_admin,
+    },
+    org: {
+      org_id,
+      role,
+      customer_id,
+    },
+  });
 });

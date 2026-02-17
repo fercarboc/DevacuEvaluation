@@ -1,17 +1,53 @@
 ﻿// supabase/functions/_shared/cors.ts
 // deno-lint-ignore-file no-explicit-any
 
-const ALLOWED_ORIGINS = new Set<string>([
+/**
+ * CORS compartido (Debacu)
+ * - Permite origins explícitos (local + debacu.com)
+ * - Permite cualquier subdominio *.vercel.app (preview + prod en Vercel)
+ * - NO usa "*" (porque usamos Authorization Bearer)
+ * - Refleja Access-Control-Request-Headers en preflight (robusto)
+ */
+
+const EXPLICIT_ALLOWED_ORIGINS = new Set<string>([
   "http://localhost:3000",
   "http://localhost:5173",
   "https://debacu.com",
   "https://www.debacu.com",
+  "https://debacu-evaluation.vercel.app",
 ]);
+
+function isAllowedOrigin(origin: string): boolean {
+  if (!origin) return false;
+
+  // allow exact
+  if (EXPLICIT_ALLOWED_ORIGINS.has(origin)) return true;
+
+  // allow Vercel preview/prod subdomains
+  // examples:
+  // - https://debacu-evaluation.vercel.app
+  // - https://debacu-evaluation-xxxx-team.vercel.app
+  try {
+    const u = new URL(origin);
+    const host = u.hostname.toLowerCase();
+
+    // only https on vercel
+    if (u.protocol !== "https:") return false;
+
+    // allow *.vercel.app
+    if (host === "vercel.app") return false; // (no root)
+    if (host.endsWith(".vercel.app")) return true;
+
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 function getAllowOrigin(req: Request): string {
   const origin = req.headers.get("Origin") ?? "";
   if (!origin) return ""; // non-browser / server-to-server
-  return ALLOWED_ORIGINS.has(origin) ? origin : "";
+  return isAllowedOrigin(origin) ? origin : "";
 }
 
 export function corsHeaders(req: Request): Headers {
@@ -24,8 +60,7 @@ export function corsHeaders(req: Request): Headers {
     h.set("Vary", "Origin");
   }
 
-  // Importante: reflejar headers solicitados en preflight (patrón Supabase)
-  // para que no se rompa si el SDK añade headers nuevos.
+  // Reflejar headers solicitados en preflight (más compatible)
   const reqHeaders = req.headers.get("Access-Control-Request-Headers");
   h.set(
     "Access-Control-Allow-Headers",
@@ -33,14 +68,14 @@ export function corsHeaders(req: Request): Headers {
       "authorization, apikey, content-type, x-client-info, x-supabase-client",
   );
 
-  // Métodos que realmente usas
+  // Métodos típicos
   h.set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
 
-  // Si NO usas cookies, no pongas credentials.
-  // (Con Authorization: Bearer es suficiente)
+  // Si NO usas cookies, NO habilitar credentials
+  // (JWT Bearer + apikey es suficiente)
   // h.set("Access-Control-Allow-Credentials", "true");
 
-  // Opcional: cache de preflight (reduce ruido en network)
+  // Cache de preflight
   h.set("Access-Control-Max-Age", "86400");
 
   return h;
@@ -50,7 +85,11 @@ export function preflight(req: Request): Response {
   return new Response(null, { status: 204, headers: corsHeaders(req) });
 }
 
-export function json(req: Request, status: number, body: Record<string, any>): Response {
+export function json(
+  req: Request,
+  status: number,
+  body: Record<string, any>,
+): Response {
   const headers = corsHeaders(req);
   headers.set("Content-Type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(body), { status, headers });

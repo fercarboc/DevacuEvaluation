@@ -1,76 +1,24 @@
 // supabase/functions/admin_update_system_settings/index.ts
 // deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+import { json, preflight } from "../_shared/cors.ts";
+import { requireAdmin } from "../_shared/auth.ts";
 
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "*";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(req: Request, status: number, body: any) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(req), "content-type": "application/json; charset=utf-8" },
-  });
-}
-
+/* =======================
+ * Env + helpers
+ * ======================= */
 function requireEnv(name: string) {
   const v = Deno.env.get(name);
   if (!v) throw new Error(`Missing env ${name}`);
   return v;
 }
 
-function getBearer(req: Request) {
-  const h = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m?.[1] ?? null;
-}
-
-function parseAllowedEmails(csv: string | null) {
-  const raw = (csv ?? "").trim();
-  if (!raw) return ["admin@debacu.com"]; // fallback
-  return raw
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-async function requireAdminUser(req: Request) {
+function supabaseServiceClient() {
   const SUPABASE_URL = requireEnv("SUPABASE_URL");
-  const ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
-  const ADMIN_EMAILS = Deno.env.get("ADMIN_EMAILS");
-
-  const token = getBearer(req);
-  if (!token) throw Object.assign(new Error("missing_bearer"), { status: 401 });
-
-  const sbUser = createClient(SUPABASE_URL, ANON_KEY, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-    auth: { persistSession: false },
-  });
-
-  const { data: u, error: uErr } = await sbUser.auth.getUser();
-  if (uErr || !u?.user) throw Object.assign(new Error("invalid_token"), { status: 401 });
-
-  const email = (u.user.email ?? "").toLowerCase();
-  const allowed = parseAllowedEmails(ADMIN_EMAILS);
-  const isAdmin = allowed.includes(email);
-
-  if (!isAdmin) throw Object.assign(new Error("forbidden_admin_only"), { status: 403 });
-
-  return { user_id: u.user.id, email: u.user.email ?? null };
+  const SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 }
 
 function firstIp(req: Request) {
@@ -110,31 +58,44 @@ function buildDiff(before: any, after: any) {
   return diff;
 }
 
+const SINGLETON_ID = "singleton";
+
+/* =======================
+ * Main
+ * ======================= */
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
+  if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
   try {
-    const SUPABASE_URL = requireEnv("SUPABASE_URL");
-    const SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+    // ✅ JWT-only + admin gate centralizado
+    // Necesitamos actor_user_id + actor_email para audit.
+    // OJO: si tu requireAdmin no devuelve email, añádelo en _shared/auth.ts o cámbialo aquí.
+    const actor: any = await requireAdmin(req);
 
-    // ✅ admin check igual que admin_whoami
-    const actor = await requireAdminUser(req);
+    const actor_user_id = actor?.user_id ?? actor?.user?.id ?? null;
+    const actor_email = actor?.email ?? actor?.user?.email ?? null;
 
-    const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
+    if (!actor_user_id) {
+      // si tu shared no devuelve user_id, algo está mal
+      throw Object.assign(new Error("UNAUTHORIZED"), { status: 401 });
+    }
+
+    const sb = supabaseServiceClient();
 
     const payload = await req.json().catch(() => ({}));
     const next = validate(payload);
 
-    // Leer settings actuales (y asegurar singleton)
+    // leer settings actuales
     const { data: current, error: selErr } = await sb
       .from("debacu_eval_system_settings")
       .select("retention_days, abuse_threshold_percent, allow_new_access_requests, updated_at, updated_by")
-      .eq("id", "singleton")
+      .eq("id", SINGLETON_ID)
       .maybeSingle();
 
     if (selErr) throw selErr;
 
+    // defaults defensivos (mejor tener defaults en DB)
     const before = current ?? {
       retention_days: 90,
       abuse_threshold_percent: 75,
@@ -152,32 +113,34 @@ Deno.serve(async (req) => {
 
     const nowIso = new Date().toISOString();
 
+    // upsert singleton
     const { data: updated, error: upErr } = await sb
       .from("debacu_eval_system_settings")
       .upsert(
         {
-          id: "singleton",
+          id: SINGLETON_ID,
           retention_days: after.retention_days,
           abuse_threshold_percent: after.abuse_threshold_percent,
           allow_new_access_requests: after.allow_new_access_requests,
-          updated_at: nowIso,
-          updated_by: actor.user_id,
+          updated_at: nowIso, // si tienes trigger DB, puedes quitarlo
+          updated_by: actor_user_id,
         },
-        { onConflict: "id" },
+        { onConflict: "id" }
       )
       .select("retention_days, abuse_threshold_percent, allow_new_access_requests, updated_at, updated_by")
       .single();
 
     if (upErr) throw upErr;
 
+    // audit
     const ip = firstIp(req);
     const userAgent = req.headers.get("user-agent") ?? null;
 
     const { data: audit, error: insErr } = await sb
       .from("debacu_eval_settings_audit_log")
       .insert({
-        actor_user_id: actor.user_id,
-        actor_email: actor.email,
+        actor_user_id,
+        actor_email,
         action: "UPDATE_SETTINGS",
         settings_before: before,
         settings_after: updated,
@@ -199,7 +162,17 @@ Deno.serve(async (req) => {
       },
     });
   } catch (e: any) {
+    const msg = e?.message ?? String(e);
+
+    // coherente con el resto
+    if (msg === "UNAUTHORIZED" || msg === "missing_bearer" || msg === "invalid_token") {
+      return json(req, 401, { ok: false, error: "unauthorized" });
+    }
+    if (msg === "FORBIDDEN" || msg === "forbidden_admin_only") {
+      return json(req, 403, { ok: false, error: "forbidden" });
+    }
+
     const status = e?.status ?? 500;
-    return json(req, status, { ok: false, error: "unexpected", detail: e?.message ?? String(e) });
+    return json(req, status, { ok: false, error: "unexpected", detail: msg });
   }
 });

@@ -1,151 +1,114 @@
 // supabase/functions/client_audit_export_download/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
+
+function requireEnv(name: string) {
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`Missing env ${name}`);
+  return v;
+}
 
 const APP_ID = "DEBACU_EVAL";
-const APP_CODE = "DEBACU_EVAL";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token",
-    "Access-Control-Max-Age": "86400",
-  };
+function supabaseServiceClient() {
+  const SUPABASE_URL = requireEnv("SUPABASE_URL");
+  const SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 }
 
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json; charset=utf-8" },
-  });
+function clampInt(v: any, def: number, min: number, max: number) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  const i = Math.trunc(n);
+  return Math.max(min, Math.min(max, i));
 }
 
-/** ======================================================
- *  Clients
- * ====================================================== */
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
-
-const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
-
-/** ======================================================
- *  Auth helpers (mismo patrón “bueno”)
- * ====================================================== */
-async function requireJwtUser(req: Request) {
-  const sb = userClient(req);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
-
-function readSessionToken(req: Request) {
-  return (req.headers.get("x-session-token") ?? "").trim();
-}
-
-async function requireEvalSession(token: string) {
-  const { data: session, error } = await admin
-    .from("debacu_eval_sessions")
-    .select("customer_id, app_code, expires_at, revoked_at")
-    .eq("token", token)
-    .maybeSingle();
-
-  if (error || !session) throw new Error("SESSION_INVALID");
-  if (session.app_code !== APP_CODE) throw new Error("SESSION_INVALID_APP");
-  if (session.revoked_at) throw new Error("SESSION_REVOKED");
-  if (session.expires_at && new Date(session.expires_at).getTime() < Date.now()) throw new Error("SESSION_EXPIRED");
-  return session.customer_id as string;
-}
-
-async function requireOrgMember(customer_id: string, user_id: string) {
-  const { data: org, error: orgErr } = await admin
-    .from("debacu_eval_organizations")
-    .select("id")
-    .eq("customer_id", customer_id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-  if (!org?.id) throw new Error("FORBIDDEN_NO_ORG");
-
-  const { data: mem, error: memErr } = await admin
-    .from("debacu_eval_org_members")
-    .select("id, role")
-    .eq("org_id", org.id)
-    .eq("user_id", user_id)
-    .maybeSingle();
-
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.id) throw new Error("FORBIDDEN");
-
-  return { org_id: org.id as string, role: mem.role ?? null };
-}
-
-/** ======================================================
- *  Types
- * ====================================================== */
 type ReqBody = {
   export_id?: string;
-  expires_in_seconds?: number; // opcional, default 30min
+  org_id?: string; // opcional: si el user pertenece a varias orgs, pásalo desde UI
+  expires_in_seconds?: number; // default 30min
 };
 
-export default Deno.serve(async (req: Request) => {
-  const origin = req.headers.get("origin");
+async function resolveOrgIdForUser(sb: ReturnType<typeof supabaseServiceClient>, user_id: string, org_id?: string | null) {
+  // Si viene org_id, validar membership
+  if (org_id) {
+    const { data: mem, error: memErr } = await sb
+      .from("debacu_eval_org_members")
+      .select("org_id, status")
+      .eq("org_id", org_id)
+      .eq("user_id", user_id)
+      .maybeSingle();
 
-  if (req.method === "OPTIONS") return new Response("ok", { status: 200, headers: corsHeaders(origin) });
-  if (req.method !== "POST") return json(origin, 405, { ok: false, error: "method_not_allowed" });
+    if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
+    if (!mem?.org_id) throw new Error("FORBIDDEN");
+    if ((mem as any).status && String((mem as any).status) !== "ACTIVE") throw new Error("FORBIDDEN");
+    return String(mem.org_id);
+  }
+
+  // Si NO viene org_id, coger la primera org ACTIVE del usuario
+  const { data: mems, error } = await sb
+    .from("debacu_eval_org_members")
+    .select("org_id, status, created_at")
+    .eq("user_id", user_id)
+    .order("created_at", { ascending: true })
+    .limit(50);
+
+  if (error) throw new Error(`MEMBERSHIP_LIST_FAILED:${error.message}`);
+
+  const active = (mems ?? []).find((m: any) => !m?.status || String(m.status) === "ACTIVE");
+  if (!active?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+
+  return String(active.org_id);
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
   try {
-    // 1) JWT user
-    const user = await requireJwtUser(req);
+    // 1) JWT user (Supabase Auth)
+    const user = await requireUser(req); // devuelve { id, user_id, email }
+    const user_id = user.user_id;
+    const user_email = user.email ?? null;
 
-    // 2) Eval session
-    const sessionToken = readSessionToken(req);
-    if (!sessionToken) return json(origin, 401, { ok: false, error: "missing_session_token" });
-
-    const customer_id = await requireEvalSession(sessionToken);
-
-    // 3) membership (y org_id)
-    const { org_id } = await requireOrgMember(customer_id, user.id);
-
-    // 4) input
+    // 2) input
     const body = (await req.json().catch(() => ({}))) as ReqBody;
-    const export_id = String(body.export_id ?? "").trim();
-    const expiresIn = Number(body.expires_in_seconds ?? 60 * 30);
 
-    if (!export_id) return json(origin, 400, { ok: false, error: "missing_export_id" });
-    if (!Number.isFinite(expiresIn) || expiresIn < 60 || expiresIn > 60 * 60 * 24) {
-      return json(origin, 400, { ok: false, error: "invalid_expires_in" });
-    }
+    const export_id = String(body?.export_id ?? "").trim();
+    const org_id_in = body?.org_id ? String(body.org_id).trim() : null;
+    const expiresIn = clampInt(body?.expires_in_seconds, 60 * 30, 60, 60 * 60 * 24);
 
-    // 5) load export row (scoped por org + app)
-    const { data: exp, error: expErr } = await admin
+    if (!export_id) return json(req, 400, { ok: false, error: "missing_export_id" });
+
+    const sb = supabaseServiceClient();
+
+    // 3) org scope (membership)
+    const org_id = await resolveOrgIdForUser(sb, user_id, org_id_in);
+
+    // 4) load export row (scoped)
+    const { data: exp, error: expErr } = await sb
       .from("customer_audit_exports")
       .select(
-        "id, org_id, app_id, export_type, export_scope, period_from, period_to, row_count, sha256, file_size_bytes, storage_bucket, storage_path, status, created_at"
+        [
+          "id",
+          "org_id",
+          "app_id",
+          "export_type",
+          "export_scope",
+          "period_from",
+          "period_to",
+          "row_count",
+          "sha256",
+          "file_size_bytes",
+          "storage_bucket",
+          "storage_path",
+          "status",
+          "created_at",
+        ].join(","),
       )
       .eq("id", export_id)
       .eq("org_id", org_id)
@@ -153,77 +116,84 @@ export default Deno.serve(async (req: Request) => {
       .maybeSingle();
 
     if (expErr) throw new Error(`EXPORT_LOOKUP_FAILED:${expErr.message}`);
-    if (!exp?.id) return json(origin, 404, { ok: false, error: "export_not_found" });
+    if (!exp?.id) return json(req, 404, { ok: false, error: "export_not_found" });
 
-    if (exp.status !== "READY") {
-      return json(origin, 409, { ok: false, error: "export_not_ready", status: exp.status });
+    if (String((exp as any).status ?? "") !== "READY") {
+      return json(req, 409, { ok: false, error: "export_not_ready", status: (exp as any).status ?? null });
     }
 
-    const bucket = String(exp.storage_bucket ?? "").trim();
-    const path = String(exp.storage_path ?? "").trim();
+    const bucket = String((exp as any).storage_bucket ?? "").trim();
+    const path = String((exp as any).storage_path ?? "").trim();
     if (!bucket || !path) throw new Error("EXPORT_MISSING_STORAGE_FIELDS");
 
-    // 6) signed url (admin)
-    const { data: signed, error: sErr } = await admin.storage.from(bucket).createSignedUrl(path, expiresIn);
-    if (sErr) throw new Error(`SIGNED_URL_FAILED:${sErr.message}`);
+    // 5) signed url (service role)
+    const { data: signed, error: sErr } = await sb.storage.from(bucket).createSignedUrl(path, expiresIn);
+    if (sErr || !signed?.signedUrl) throw new Error(`SIGNED_URL_FAILED:${sErr?.message ?? "no_signed_url"}`);
 
-    // 7) (opcional) audit log “EXPORT_DOWNLOADED”
-    await admin.from("debacu_eval_audit_log").insert({
-      actor_user_id: user.id,
-      action: "EXPORT_DOWNLOADED",
-      entity: "AUDIT_EXPORT",
-      entity_id: export_id,
-      meta: {
-        export_id,
+    // 6) audit log (best effort, NO bloquea)
+    try {
+      await sb.from("debacu_eval_audit_log").insert({
+        actor_user_id: user_id,
+        action: "EXPORT_DOWNLOADED",
+        entity: "AUDIT_EXPORT",
+        entity_id: export_id,
+        meta: {
+          export_id,
+          org_id,
+          storage_bucket: bucket,
+          storage_path: path,
+          expires_in_seconds: expiresIn,
+        },
+        customer_id: null, // si aquí guardas customer_id, cámbialo por tu campo real
+        app_id: APP_ID,
+        event_type: "AUDIT_EXPORT",
+        evaluation_id: null,
+        search_kind: null,
+        search_value_masked: null,
+        search_value_hash: null,
+        result_count: null,
+        actor_email: user_email, // si tu tabla NO tiene actor_email, quita esta línea
+      } as any);
+    } catch {
+      // ignore
+    }
+
+    return json(req, 200, {
+      ok: true,
+      data: {
+        export_id: String((exp as any).id),
+        org_id,
+        signed_url: signed.signedUrl,
+        expires_in_seconds: expiresIn,
+
+        export_type: (exp as any).export_type ?? null,
+        export_scope: (exp as any).export_scope ?? null,
+        period_from: (exp as any).period_from ?? null,
+        period_to: (exp as any).period_to ?? null,
+        row_count: (exp as any).row_count ?? null,
+        sha256: (exp as any).sha256 ?? null,
+        file_size_bytes: (exp as any).file_size_bytes ?? null,
         storage_bucket: bucket,
         storage_path: path,
-        expires_in_seconds: expiresIn,
+        created_at: (exp as any).created_at ?? null,
       },
-      customer_id: String(customer_id),
-      app_id: APP_ID,
-      event_type: "AUDIT_EXPORT",
-      evaluation_id: null,
-      search_kind: null,
-      search_value_masked: null,
-      search_value_hash: null,
-      result_count: null,
-    });
-
-    return json(origin, 200, {
-      ok: true,
-      export_id: exp.id,
-      signed_url: signed?.signedUrl ?? null,
-      expires_in_seconds: expiresIn,
-      // metadata útil
-      export_type: exp.export_type,
-      export_scope: exp.export_scope,
-      period_from: exp.period_from,
-      period_to: exp.period_to,
-      row_count: exp.row_count,
-      sha256: exp.sha256,
-      file_size_bytes: exp.file_size_bytes,
-      storage_bucket: bucket,
-      storage_path: path,
-      created_at: exp.created_at,
     });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
-    const code =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("SESSION_")
-        ? 401
-        : msg.startsWith("FORBIDDEN")
-        ? 403
-        : msg.startsWith("missing_") || msg.startsWith("invalid_")
-        ? 400
-        : msg.startsWith("EXPORT_LOOKUP_FAILED") || msg.startsWith("SIGNED_URL_FAILED")
-        ? 500
-        : msg === "EXPORT_MISSING_STORAGE_FIELDS"
-        ? 500
-        : 500;
 
-    console.error("client_audit_export_download error:", e);
-    return json(origin, code, { ok: false, error: "request_failed", detail: msg });
+    if (msg === "UNAUTHORIZED" || msg === "missing_bearer" || msg === "invalid_token") {
+      return json(req, 401, { ok: false, error: "unauthorized" });
+    }
+    if (msg.startsWith("FORBIDDEN")) {
+      return json(req, 403, { ok: false, error: "forbidden", detail: msg });
+    }
+    if (msg.startsWith("EXPORT_LOOKUP_FAILED") || msg.startsWith("SIGNED_URL_FAILED")) {
+      return json(req, 500, { ok: false, error: "server_error", detail: msg });
+    }
+    if (msg === "EXPORT_MISSING_STORAGE_FIELDS") {
+      return json(req, 500, { ok: false, error: "server_error", detail: msg });
+    }
+
+    return json(req, 500, { ok: false, error: "unexpected", detail: msg });
   }
 });

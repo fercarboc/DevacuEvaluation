@@ -1,84 +1,25 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// supabase/functions/admin_list_exports/index.ts
+// deno-lint-ignore-file no-explicit-any
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+import { json, preflight } from "../_shared/cors.ts";
+import { requireAdmin } from "../_shared/auth.ts";
 
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "*";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Max-Age": "86400",
-  };
+/* =======================
+ * Env + helpers
+ * ======================= */
+function requireEnv(name: string) {
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`Missing env ${name}`);
+  return v;
 }
 
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json; charset=utf-8", ...corsHeaders(req) },
-  });
-}
-
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-
-function getBearer(req: Request) {
-  const h = req.headers.get("Authorization") || "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m?.[1] ?? null;
-}
-
-function supabaseUserClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: auth } },
-    auth: { persistSession: false },
-  });
-}
-
-function supabaseServiceClient() {
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
-}
-
-function parseAllowedEmails(csv: string | null) {
-  const raw = (csv ?? "").trim();
-  if (!raw) return ["admin@debacu.com"];
-  return raw
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-async function requireAdmin(req: Request) {
-  const token = getBearer(req);
-  if (!token) {
-    return { ok: false as const, status: 401, error: "missing_bearer" as const };
-  }
-
-  const sbUser = supabaseUserClient(req);
-  const { data: userData, error: userErr } = await sbUser.auth.getUser();
-
-  if (userErr || !userData?.user) {
-    return { ok: false as const, status: 401, error: "invalid_token" as const };
-  }
-
-  const allowed = parseAllowedEmails(Deno.env.get("ADMIN_EMAILS"));
-  const email = (userData.user.email ?? "").toLowerCase().trim();
-
-  if (!allowed.includes(email)) {
-    return { ok: false as const, status: 403, error: "forbidden" as const };
-  }
-
-  return { ok: true as const, user: userData.user };
+function clampInt(v: any, def: number, min: number, max: number) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  const i = Math.trunc(n);
+  return Math.max(min, Math.min(max, i));
 }
 
 function cleanStr(v: any) {
@@ -86,38 +27,54 @@ function cleanStr(v: any) {
   return s ? s : null;
 }
 
+function isYmd(s: any) {
+  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
 function escapeIlike(s: string) {
+  // minimiza comodines accidentales en ilike
   return s.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 }
 
+function supabaseServiceClient() {
+  const SUPABASE_URL = requireEnv("SUPABASE_URL");
+  const SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  });
+}
+
+/* =======================
+ * Main
+ * ======================= */
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
+  if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
-  const admin = await requireAdmin(req);
-  if (!admin.ok) return json(req, admin.status, { ok: false, error: admin.error });
-
   try {
+    // ✅ JWT-only + admin gate centralizado
+    await requireAdmin(req);
+
     const body = await req.json().catch(() => ({}));
 
     // ✅ app_id decide de dónde sale la lista
     const appId = cleanStr(body?.app_id) ?? "SYSTEM";
 
-    // filtros comunes (pero OJO: los campos cambian según origen)
-    const q = cleanStr(body?.q);
+    // filtros comunes
+    const qRaw = cleanStr(body?.q);
     const source = cleanStr(body?.source);
     const customer = cleanStr(body?.customer_id);
     const type = cleanStr(body?.type);
     const format = cleanStr(body?.format);
-    const from = cleanStr(body?.from);
-    const to = cleanStr(body?.to);
 
-    const limit = Math.min(Number(body?.limit ?? 50), 200);
-    const offset = Math.max(Number(body?.offset ?? 0), 0);
+    const from = isYmd(body?.from) ? String(body.from) : null;
+    const to = isYmd(body?.to) ? String(body.to) : null;
+
+    const limit = clampInt(body?.limit, 50, 1, 200);
+    const offset = clampInt(body?.offset, 0, 0, 1_000_000);
 
     const sb = supabaseServiceClient();
 
-    // ✅ Query según appId
     let query: any;
 
     if (appId === "SYSTEM") {
@@ -155,8 +112,7 @@ Deno.serve(async (req) => {
           { count: "exact" }
         )
         .eq("app_id", "SYSTEM")
-        .order("created_at", { ascending: false })
-        .range(offset, offset + limit - 1);
+        .order("created_at", { ascending: false });
 
       // filtros (campos reales en audit_exports)
       if (source) query = query.eq("source", source);
@@ -164,11 +120,15 @@ Deno.serve(async (req) => {
       if (type) query = query.eq("type", type);
       if (format) query = query.eq("format", format);
 
-      if (from) query = query.gte("created_at", `${from}T00:00:00Z`);
-      if (to) query = query.lte("created_at", `${to}T23:59:59Z`);
+      if (from) query = query.gte("created_at", `${from}T00:00:00.000Z`);
+      if (to) {
+        const d = new Date(`${to}T00:00:00.000Z`);
+        d.setUTCDate(d.getUTCDate() + 1);
+        query = query.lt("created_at", d.toISOString());
+      }
 
-      if (q) {
-        const qq = escapeIlike(q);
+      if (qRaw) {
+        const qq = escapeIlike(qRaw);
         query = query.or(
           [
             `generated_by_email.ilike.%${qq}%`,
@@ -211,8 +171,7 @@ Deno.serve(async (req) => {
           ].join(","),
           { count: "exact" }
         )
-        .order("created_at", { ascending: false })
-        .range(offset, offset + limit - 1);
+        .order("created_at", { ascending: false });
 
       // filtros (campos filter_* de la vista)
       if (source) query = query.eq("filter_source", source);
@@ -220,11 +179,15 @@ Deno.serve(async (req) => {
       if (type) query = query.eq("filter_type", type);
       if (format) query = query.eq("format", format);
 
-      if (from) query = query.gte("created_at", `${from}T00:00:00Z`);
-      if (to) query = query.lte("created_at", `${to}T23:59:59Z`);
+      if (from) query = query.gte("created_at", `${from}T00:00:00.000Z`);
+      if (to) {
+        const d = new Date(`${to}T00:00:00.000Z`);
+        d.setUTCDate(d.getUTCDate() + 1);
+        query = query.lt("created_at", d.toISOString());
+      }
 
-      if (q) {
-        const qq = escapeIlike(q);
+      if (qRaw) {
+        const qq = escapeIlike(qRaw);
         query = query.or(
           [
             `generated_by_email.ilike.%${qq}%`,
@@ -238,7 +201,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    const { data, error, count } = await query;
+    const { data, error, count } = await query.range(offset, offset + limit - 1);
     if (error) return json(req, 500, { ok: false, error: "db_error", detail: error.message });
 
     // ✅ Shape unificado para la UI (ExportRow)
@@ -251,13 +214,11 @@ Deno.serve(async (req) => {
           generated_by_user_id: r.generated_by ?? null,
           generated_by_email: r.generated_by_email ?? null,
 
-          // UI usa delivered_*; en SYSTEM vienen de provided_*
           delivered_to_name: r.provided_to_name ?? null,
           delivered_to_org: null,
           delivered_to_reason: r.purpose ?? null,
           delivered_to_reference: r.provided_to_ref ?? null,
 
-          // UI usa filter_*; en SYSTEM vienen de source/type/date_*
           filter_source: r.source ?? null,
           filter_customer: r.customer_id ?? null,
           filter_type: r.type ?? null,
@@ -270,13 +231,11 @@ Deno.serve(async (req) => {
           storage_bucket: r.storage_bucket,
           storage_path: r.storage_path,
 
-          // de momento, descargas para SYSTEM = 0 (si luego lo quieres, se conecta con audit_export_downloads)
           download_count: 0,
           last_download_at: null,
         };
       }
 
-      // vista app
       return {
         id: r.id,
         created_at: r.created_at,
@@ -312,6 +271,15 @@ Deno.serve(async (req) => {
       meta: { limit, offset, count: count ?? rows.length },
     });
   } catch (e: any) {
-    return json(req, 500, { ok: false, error: "unexpected", detail: e?.message ?? String(e) });
+    const msg = e?.message ?? String(e);
+
+    if (msg === "UNAUTHORIZED" || msg === "missing_bearer" || msg === "invalid_token") {
+      return json(req, 401, { ok: false, error: "unauthorized" });
+    }
+    if (msg === "FORBIDDEN" || msg === "forbidden_admin_only") {
+      return json(req, 403, { ok: false, error: "forbidden" });
+    }
+
+    return json(req, 500, { ok: false, error: "unexpected", detail: msg });
   }
 });

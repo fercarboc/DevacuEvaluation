@@ -2,8 +2,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-/* ======================================================
- * CORS (JWT-only)
+const FN = "debacu_eval_catalog_manage";
+const APP_ID = "DEBACU_EVAL";
+
+/** ======================================================
+ * CORS (shared-like, pero inline)
  * ====================================================== */
 const ALLOWED_ORIGINS = new Set([
   "http://localhost:3000",
@@ -17,7 +20,7 @@ function corsHeaders(origin: string | null) {
   const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
   return {
     "Access-Control-Allow-Origin": allowOrigin,
-    Vary: "Origin",
+    "Vary": "Origin",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Max-Age": "86400",
@@ -27,81 +30,119 @@ function corsHeaders(origin: string | null) {
 function json(origin: string | null, status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
+    headers: { ...corsHeaders(origin), "Content-Type": "application/json; charset=utf-8" },
   });
 }
 
-/* ======================================================
+/** ======================================================
  * ENV
  * ====================================================== */
 function mustEnv(name: string) {
   const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env var ${name}`);
+  if (!v) throw new Error(`MISSING_ENV:${name}`);
   return v;
 }
 
 const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SERVICE_ROLE = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
 
-/* ======================================================
- * AUTH (JWT-only)
+/** ======================================================
+ * Clients
  * ====================================================== */
-function getBearer(req: Request) {
-  const h = req.headers.get("authorization") || "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m?.[1] ?? "";
-}
-
-function getServiceClient() {
-  return createClient(SUPABASE_URL, SERVICE_ROLE, {
-    auth: { persistSession: false },
-    global: { headers: { Authorization: `Bearer ${SERVICE_ROLE}` } },
+function userClient(req: Request) {
+  const auth = req.headers.get("Authorization") ?? "";
+  return createClient(SUPABASE_URL, ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: auth } },
   });
 }
 
-/**
- * requireJwtCustomer
- * - JWT válido
- * - org_members ACTIVE por auth_user_id
- * - org_id -> customer_id vía organizations
- */
-async function requireJwtCustomer(supabase: ReturnType<typeof createClient>, jwt: string) {
-  // 1) validar JWT (usuario logado)
-  const { data: u, error: uErr } = await supabase.auth.getUser(jwt);
-  if (uErr || !u?.user) throw new Error("Invalid Supabase JWT");
-
-  const authUserId = u.user.id;
-
-  // 2) membership ACTIVE por usuario
-  const { data: mem, error: mErr } = await supabase
-    .from("debacu_eval_org_members")
-    .select("org_id, role, status, user_id, auth_user_id")
-    .eq("auth_user_id", authUserId)
-    .eq("status", "ACTIVE")
-    .maybeSingle();
-
-  if (mErr) throw new Error(mErr.message);
-  if (!mem?.org_id) throw new Error("User has no ACTIVE org membership");
-
-  const orgId = String(mem.org_id);
-
-  // 3) resolver customer_id desde organizations
-  const { data: org, error: oErr } = await supabase
-    .from("debacu_eval_organizations")
-    .select("id, customer_id")
-    .eq("id", orgId)
-    .maybeSingle();
-
-  if (oErr) throw new Error(oErr.message);
-  if (!org?.customer_id) throw new Error("Organization has no customer_id");
-
-  const customerId = String(org.customer_id);
-
-  return { authUserId, orgId, customerId, role: mem.role as string };
+function serviceClient() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 }
 
-/* ======================================================
- * TYPES
+/** ======================================================
+ * AuthN (JWT)
+ * ====================================================== */
+async function requireUser(req: Request) {
+  const sbUser = userClient(req);
+  const { data, error } = await sbUser.auth.getUser();
+  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
+  return data.user;
+}
+
+/** ======================================================
+ * Tenant (Org -> Customer)
+ * - Permite org_id opcional (recomendado que UI lo mande)
+ * - Si no viene, usa la primera membership ACTIVE (determinista)
+ * ====================================================== */
+function safeStr(v: unknown) {
+  return typeof v === "string" ? v.trim() : "";
+}
+
+async function resolveOrgAndCustomer(params: {
+  sb: ReturnType<typeof createClient>;
+  user_id: string;
+  org_id?: string | null;
+}) {
+  const { sb, user_id } = params;
+  const org_id_in = safeStr(params.org_id ?? "");
+
+  if (org_id_in) {
+    const { data: mem, error: memErr } = await sb
+      .from("debacu_eval_org_members")
+      .select("org_id,status,role,created_at")
+      .eq("user_id", user_id)
+      .eq("org_id", org_id_in)
+      .eq("status", "ACTIVE")
+      .maybeSingle();
+
+    if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
+    if (!mem?.org_id) throw new Error("FORBIDDEN_NO_MEMBERSHIP");
+
+    const { data: org, error: orgErr } = await sb
+      .from("debacu_eval_organizations")
+      .select("id, customer_id")
+      .eq("id", org_id_in)
+      .maybeSingle();
+
+    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
+    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+
+    return { org_id: org_id_in, customer_id: String(org.customer_id), role: String(mem.role ?? "STAFF") };
+  }
+
+  const { data: mem1, error: mem1Err } = await sb
+    .from("debacu_eval_org_members")
+    .select("org_id,status,role,created_at")
+    .eq("user_id", user_id)
+    .eq("status", "ACTIVE")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (mem1Err) throw new Error(`MEMBERSHIP_FAILED:${mem1Err.message}`);
+  if (!mem1?.org_id) throw new Error("FORBIDDEN_NO_MEMBERSHIP");
+
+  const org_id = String(mem1.org_id);
+
+  const { data: org, error: orgErr } = await sb
+    .from("debacu_eval_organizations")
+    .select("id, customer_id")
+    .eq("id", org_id)
+    .maybeSingle();
+
+  if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
+  if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+
+  return { org_id, customer_id: String(org.customer_id), role: String(mem1.role ?? "STAFF") };
+}
+
+/** ======================================================
+ * Types
  * ====================================================== */
 type ManageAction =
   | "ITEM_OVERRIDE_UPSERT"
@@ -111,17 +152,22 @@ type ManageAction =
   | "INC_CUSTOM_UPSERT"
   | "INC_CUSTOM_DISABLE";
 
-/* ======================================================
- * HELPERS
+type Body = {
+  action: ManageAction;
+  payload?: any;
+  org_id?: string; // recomendado
+};
+
+/** ======================================================
+ * Helpers
  * ====================================================== */
 function toUpperSnake(input: string) {
   const raw = (input ?? "").trim().toUpperCase();
-  const normalized = raw
+  return raw
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^A-Z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
-  return normalized;
 }
 
 function asBool(v: any, fallback: boolean) {
@@ -146,60 +192,59 @@ function clampInt(v: any, min: number, max: number) {
   return Math.max(min, Math.min(max, Math.trunc(n)));
 }
 
-/* ======================================================
+/** ======================================================
  * MAIN
  * ====================================================== */
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
 
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(origin) });
-  }
-  if (req.method !== "POST") {
-    return json(origin, 405, { ok: false, error: "Method not allowed" });
-  }
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(origin) });
+  if (req.method !== "POST") return json(origin, 405, { ok: false, error: "method_not_allowed" });
 
   try {
-    const jwt = getBearer(req);
-    if (!jwt) return json(origin, 401, { ok: false, error: "Missing Authorization Bearer token" });
+    const body = (await req.json().catch(() => ({}))) as Partial<Body>;
+    const action = (body?.action ?? "") as ManageAction;
+    const payload = body?.payload ?? {};
+    const org_id = safeStr(body?.org_id);
 
-    let body: any = {};
-    try {
-      body = await req.json();
-    } catch {
-      body = {};
-    }
+    if (!action) return json(origin, 400, { ok: false, error: "missing_action" });
 
-    const action: ManageAction | "" = body?.action ?? "";
-    const payload: any = body?.payload ?? {};
+    // 1) AuthN: JWT real
+    const user = await requireUser(req);
 
-    if (!action) return json(origin, 400, { ok: false, error: "Missing action" });
+    // 2) Service role para leer/escribir tablas + tenant resolution
+    const sb = serviceClient();
 
-    const supabase = getServiceClient();
+    // 3) Tenant -> customer_id
+    const tenant = await resolveOrgAndCustomer({ sb, user_id: user.id, org_id: org_id || null });
+    const customerId = tenant.customer_id;
 
-    // ✅ tenant real: customerId (no orgId)
-    const { customerId } = await requireJwtCustomer(supabase, jwt);
+    // ======================================================
+    // ACTIONS
+    // ======================================================
 
-    /** ======================================================
-     *  ACTIONS
-     * ====================================================== */
+    // ----------------------
+    // ITEMS: override global (hotel)
+    // tabla destino: debacu_hotel_item_catalog
+    // ----------------------
     if (action === "ITEM_OVERRIDE_UPSERT") {
       const item_code = toUpperSnake(payload?.item_code ?? "");
-      if (!item_code) return json(origin, 400, { ok: false, error: "Missing item_code" });
+      if (!item_code) return json(origin, 400, { ok: false, error: "missing_item_code" });
 
       const is_active = asBool(payload?.is_active, true);
       const unit_price = asNumOrNull(payload?.unit_price);
 
-      const { data: g, error: gErr } = await supabase
+      // leer base global
+      const { data: g, error: gErr } = await sb
         .from("debacu_item_catalog")
         .select("item_code,title,category,currency,description")
         .eq("item_code", item_code)
         .maybeSingle();
 
-      if (gErr) return json(origin, 500, { ok: false, error: gErr.message });
-      if (!g) return json(origin, 400, { ok: false, error: `Global item_code not found: ${item_code}` });
+      if (gErr) return json(origin, 500, { ok: false, error: "db_error", detail: gErr.message });
+      if (!g) return json(origin, 400, { ok: false, error: `global_item_not_found:${item_code}` });
 
-      const upsertRow = {
+      const row = {
         customer_id: customerId,
         item_code,
         title: g.title ?? null,
@@ -211,25 +256,29 @@ Deno.serve(async (req) => {
         updated_at: new Date().toISOString(),
       };
 
-      const { error: uErr } = await supabase
+      const { error: uErr } = await sb
         .from("debacu_hotel_item_catalog")
-        .upsert(upsertRow, { onConflict: "customer_id,item_code" });
+        .upsert(row, { onConflict: "customer_id,item_code" });
 
-      if (uErr) return json(origin, 500, { ok: false, error: uErr.message });
+      if (uErr) return json(origin, 500, { ok: false, error: "db_error", detail: uErr.message });
 
       return json(origin, 200, { ok: true, action, customerId, item_code });
     }
 
+    // ----------------------
+    // ITEMS: custom hotel item (creado por hotel)
+    // tabla destino: debacu_hotel_item_catalog
+    // (sí: misma tabla, porque ahí conviven override y custom; la vista effective distingue por source)
+    // ----------------------
     if (action === "ITEM_CUSTOM_UPSERT") {
       const item_code = toUpperSnake(payload?.item_code ?? "");
       const title = clampText(payload?.title ?? "", 120);
-      if (!item_code) return json(origin, 400, { ok: false, error: "Missing item_code" });
-      if (!title) return json(origin, 400, { ok: false, error: "Missing title" });
+
+      if (!item_code) return json(origin, 400, { ok: false, error: "missing_item_code" });
+      if (!title) return json(origin, 400, { ok: false, error: "missing_title" });
 
       const unit_price = asNumOrNull(payload?.unit_price);
-      if (unit_price === null) {
-        return json(origin, 400, { ok: false, error: "Missing/invalid unit_price" });
-      }
+      if (unit_price === null) return json(origin, 400, { ok: false, error: "missing_or_invalid_unit_price" });
 
       const row = {
         customer_id: customerId,
@@ -243,42 +292,46 @@ Deno.serve(async (req) => {
         updated_at: new Date().toISOString(),
       };
 
-      const { error: uErr } = await supabase
+      const { error: uErr } = await sb
         .from("debacu_hotel_item_catalog")
         .upsert(row, { onConflict: "customer_id,item_code" });
 
-      if (uErr) return json(origin, 500, { ok: false, error: uErr.message });
+      if (uErr) return json(origin, 500, { ok: false, error: "db_error", detail: uErr.message });
 
       return json(origin, 200, { ok: true, action, customerId, item_code });
     }
 
     if (action === "ITEM_CUSTOM_DISABLE") {
       const item_code = toUpperSnake(payload?.item_code ?? "");
-      if (!item_code) return json(origin, 400, { ok: false, error: "Missing item_code" });
+      if (!item_code) return json(origin, 400, { ok: false, error: "missing_item_code" });
 
-      const { error: uErr } = await supabase
+      const { error: uErr } = await sb
         .from("debacu_hotel_item_catalog")
         .update({ is_active: false, updated_at: new Date().toISOString() })
         .eq("customer_id", customerId)
         .eq("item_code", item_code);
 
-      if (uErr) return json(origin, 500, { ok: false, error: uErr.message });
+      if (uErr) return json(origin, 500, { ok: false, error: "db_error", detail: uErr.message });
 
       return json(origin, 200, { ok: true, action, customerId, item_code });
     }
 
+    // ----------------------
+    // INCIDENTS: override global (hotel)
+    // tabla destino: debacu_hotel_incident_overrides
+    // ----------------------
     if (action === "INC_OVERRIDE_UPSERT") {
       const incident_type = toUpperSnake(payload?.incident_type ?? "");
-      if (!incident_type) return json(origin, 400, { ok: false, error: "Missing incident_type" });
+      if (!incident_type) return json(origin, 400, { ok: false, error: "missing_incident_type" });
 
-      const { data: g, error: gErr } = await supabase
+      const { data: g, error: gErr } = await sb
         .from("debacu_incident_catalog")
         .select("incident_type")
         .eq("incident_type", incident_type)
         .maybeSingle();
 
-      if (gErr) return json(origin, 500, { ok: false, error: gErr.message });
-      if (!g) return json(origin, 400, { ok: false, error: `Global incident_type not found: ${incident_type}` });
+      if (gErr) return json(origin, 500, { ok: false, error: "db_error", detail: gErr.message });
+      if (!g) return json(origin, 400, { ok: false, error: `global_incident_not_found:${incident_type}` });
 
       const row = {
         customer_id: customerId,
@@ -286,9 +339,7 @@ Deno.serve(async (req) => {
         is_active: asBool(payload?.is_active, true),
 
         title_override: payload?.title_override ? clampText(payload.title_override, 120) : null,
-        description_override: payload?.description_override
-          ? clampText(payload.description_override, 300)
-          : null,
+        description_override: payload?.description_override ? clampText(payload.description_override, 300) : null,
         severity_override: clampInt(payload?.severity_override, 1, 5),
 
         default_gross_min_override: asNumOrNull(payload?.default_gross_min_override),
@@ -302,20 +353,25 @@ Deno.serve(async (req) => {
         updated_at: new Date().toISOString(),
       };
 
-      const { error: uErr } = await supabase
+      const { error: uErr } = await sb
         .from("debacu_hotel_incident_overrides")
         .upsert(row, { onConflict: "customer_id,incident_type" });
 
-      if (uErr) return json(origin, 500, { ok: false, error: uErr.message });
+      if (uErr) return json(origin, 500, { ok: false, error: "db_error", detail: uErr.message });
 
       return json(origin, 200, { ok: true, action, customerId, incident_type });
     }
 
+    // ----------------------
+    // INCIDENTS: custom hotel incident
+    // tabla destino: debacu_hotel_incident_custom
+    // ----------------------
     if (action === "INC_CUSTOM_UPSERT") {
       const incident_type = toUpperSnake(payload?.incident_type ?? "");
       const title = clampText(payload?.title ?? "", 120);
-      if (!incident_type) return json(origin, 400, { ok: false, error: "Missing incident_type" });
-      if (!title) return json(origin, 400, { ok: false, error: "Missing title" });
+
+      if (!incident_type) return json(origin, 400, { ok: false, error: "missing_incident_type" });
+      if (!title) return json(origin, 400, { ok: false, error: "missing_title" });
 
       const sevRaw = payload?.severity;
       const sev =
@@ -337,41 +393,40 @@ Deno.serve(async (req) => {
         updated_at: new Date().toISOString(),
       };
 
-      const { error: uErr } = await supabase
+      const { error: uErr } = await sb
         .from("debacu_hotel_incident_custom")
         .upsert(row, { onConflict: "customer_id,incident_type" });
 
-      if (uErr) return json(origin, 500, { ok: false, error: uErr.message });
+      if (uErr) return json(origin, 500, { ok: false, error: "db_error", detail: uErr.message });
 
       return json(origin, 200, { ok: true, action, customerId, incident_type });
     }
 
     if (action === "INC_CUSTOM_DISABLE") {
       const incident_type = toUpperSnake(payload?.incident_type ?? "");
-      if (!incident_type) return json(origin, 400, { ok: false, error: "Missing incident_type" });
+      if (!incident_type) return json(origin, 400, { ok: false, error: "missing_incident_type" });
 
-      const { error: uErr } = await supabase
+      const { error: uErr } = await sb
         .from("debacu_hotel_incident_custom")
         .update({ is_active: false, updated_at: new Date().toISOString() })
         .eq("customer_id", customerId)
         .eq("incident_type", incident_type);
 
-      if (uErr) return json(origin, 500, { ok: false, error: uErr.message });
+      if (uErr) return json(origin, 500, { ok: false, error: "db_error", detail: uErr.message });
 
       return json(origin, 200, { ok: true, action, customerId, incident_type });
     }
 
-    return json(origin, 400, { ok: false, error: `Unknown action: ${action}` });
+    return json(origin, 400, { ok: false, error: `unknown_action:${action}` });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
-    const isClient =
-      msg.includes("Missing") ||
-      msg.includes("Invalid") ||
-      msg.includes("expired") ||
-      msg.includes("revoked") ||
-      msg.includes("not found") ||
-      msg.includes("no ACTIVE org");
 
-    return json(origin, isClient ? 400 : 500, { ok: false, error: msg });
+    const status =
+      msg === "UNAUTHENTICATED" ? 401 :
+      msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED") ? 403 :
+      msg.startsWith("MISSING_ENV:") ? 500 :
+      500;
+
+    return json(origin, status, { ok: false, error: "request_failed", detail: msg, fn: FN });
   }
 });

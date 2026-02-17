@@ -1,0 +1,6 @@
+# Mantener LF en Edge Functions (Deno) y scripts
+supabase/functions/** text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.sql text eol=lf
+*.md text eol=lf

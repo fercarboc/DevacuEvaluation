@@ -1,139 +1,53 @@
 // supabase/functions/admin_list_export_downloads/index.ts
 // deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+
+import { json, preflight } from "../_shared/cors.ts";
+import { requireAdmin } from "../_shared/auth.ts";
 
 /* =======================
-   CORS
-======================= */
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "*";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
+ * Env + helpers
+ * ======================= */
+function requireEnv(name: string) {
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`Missing env ${name}`);
+  return v;
 }
 
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      ...corsHeaders(req),
-    },
-  });
-}
-
-/* =======================
-   ENV
-======================= */
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-const SUPABASE_SERVICE_ROLE_KEY =
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-
-/* =======================
-   HELPERS
-======================= */
-function getBearer(req: Request) {
-  const h =
-    req.headers.get("authorization") ??
-    req.headers.get("Authorization") ??
-    "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m?.[1] ?? null;
-}
-
-function supabaseUserClient(token: string) {
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-    auth: { persistSession: false },
-  });
+function clampInt(v: any, def: number, min: number, max: number) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  const i = Math.trunc(n);
+  return Math.max(min, Math.min(max, i));
 }
 
 function supabaseServiceClient() {
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  const SUPABASE_URL = requireEnv("SUPABASE_URL");
+  const SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
   });
 }
 
-function parseAllowedEmails(csv: string | null) {
-  const raw = (csv ?? "").trim();
-  if (!raw) return ["admin@debacu.com"];
-  return raw
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-async function requireAdmin(req: Request) {
-  const token = getBearer(req);
-  if (!token) {
-    return { ok: false as const, status: 401, error: "missing_bearer" };
-  }
-
-  const sbUser = supabaseUserClient(token);
-  const { data: userData, error } = await sbUser.auth.getUser();
-
-  if (error || !userData?.user) {
-    return { ok: false as const, status: 401, error: "invalid_token" };
-  }
-
-  const allowed = parseAllowedEmails(Deno.env.get("ADMIN_EMAILS"));
-  const email = (userData.user.email ?? "").toLowerCase().trim();
-
-  if (!allowed.includes(email)) {
-    return { ok: false as const, status: 403, error: "forbidden" };
-  }
-
-  return { ok: true as const, user: userData.user };
-}
-
-function cleanInt(v: any, fallback: number) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-
 /* =======================
-   MAIN
-======================= */
+ * Main
+ * ======================= */
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(req) });
-  }
-
-  if (req.method !== "POST") {
-    return json(req, 405, { ok: false, error: "method_not_allowed" });
-  }
-
-  const admin = await requireAdmin(req);
-  if (!admin.ok) {
-    return json(req, admin.status, { ok: false, error: admin.error });
-  }
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
   try {
+    // ✅ JWT-only + admin gate centralizado (sin ADMIN_EMAILS aquí)
+    await requireAdmin(req);
+
     const body = await req.json().catch(() => ({}));
 
     const export_id = String(body?.export_id ?? "").trim();
-    if (!export_id) {
-      return json(req, 400, { ok: false, error: "missing_export_id" });
-    }
+    if (!export_id) return json(req, 400, { ok: false, error: "missing_export_id" });
 
-    const limit = Math.min(
-      Math.max(cleanInt(body?.limit, 200), 1),
-      500
-    );
-    const offset = Math.max(cleanInt(body?.offset, 0), 0);
+    const limit = clampInt(body?.limit, 200, 1, 500);
+    const offset = clampInt(body?.offset, 0, 0, 1_000_000);
 
     const sb = supabaseServiceClient();
 
@@ -141,14 +55,14 @@ Deno.serve(async (req) => {
       .from("debacu_eval_audit_export_downloads")
       .select(
         `
-        id,
-        created_at,
-        export_id,
-        downloaded_by,
-        downloaded_by_email,
-        ip,
-        user_agent
-      `,
+          id,
+          created_at,
+          export_id,
+          downloaded_by,
+          downloaded_by_email,
+          ip,
+          user_agent
+        `,
         { count: "exact" }
       )
       .eq("export_id", export_id)
@@ -156,11 +70,7 @@ Deno.serve(async (req) => {
       .range(offset, offset + limit - 1);
 
     if (error) {
-      return json(req, 500, {
-        ok: false,
-        error: "db_error",
-        detail: error.message,
-      });
+      return json(req, 500, { ok: false, error: "db_error", detail: error.message });
     }
 
     return json(req, 200, {
@@ -174,10 +84,15 @@ Deno.serve(async (req) => {
       },
     });
   } catch (e: any) {
-    return json(req, 500, {
-      ok: false,
-      error: "unexpected",
-      detail: e?.message ?? String(e),
-    });
+    const msg = e?.message ?? String(e);
+
+    if (msg === "UNAUTHORIZED" || msg === "missing_bearer" || msg === "invalid_token") {
+      return json(req, 401, { ok: false, error: "unauthorized" });
+    }
+    if (msg === "FORBIDDEN" || msg === "forbidden_admin_only") {
+      return json(req, 403, { ok: false, error: "forbidden" });
+    }
+
+    return json(req, 500, { ok: false, error: "unexpected", detail: msg });
   }
 });

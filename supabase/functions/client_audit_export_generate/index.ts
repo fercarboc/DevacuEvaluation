@@ -1,123 +1,101 @@
 // supabase/functions/client_audit_export_generate/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { PDFDocument, StandardFonts } from "https://esm.sh/pdf-lib@1.17.1";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
+
+function requireEnv(name: string) {
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`Missing env ${name}`);
+  return v;
+}
 
 const APP_ID = "DEBACU_EVAL";
 const EXPORT_BUCKET_DEFAULT = "customer-exports";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    // ✅ JWT-only: fuera x-session-token
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json; charset=utf-8" },
-  });
+/** ======================================================
+ *  Service client
+ * ====================================================== */
+function supabaseServiceClient() {
+  const SUPABASE_URL = requireEnv("SUPABASE_URL");
+  const SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 }
 
 /** ======================================================
- *  Clients
+ *  ORG + ENTITLEMENTS
  * ====================================================== */
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
+async function resolveOrgIdForUserOrThrow(sb: ReturnType<typeof supabaseServiceClient>, user_id: string, org_id?: string | null) {
+  // Si viene org_id, validar membership
+  if (org_id) {
+    const { data: mem, error: memErr } = await sb
+      .from("debacu_eval_org_members")
+      .select("org_id, status")
+      .eq("org_id", org_id)
+      .eq("user_id", user_id)
+      .maybeSingle();
 
-function adminClient() {
-  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
+    if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
+    if (!mem?.org_id) throw new Error("FORBIDDEN");
+    if ((mem as any).status && String((mem as any).status) !== "ACTIVE") throw new Error("FORBIDDEN");
+    return { org_id: String(mem.org_id), role: null as string | null };
+  }
 
-/** ======================================================
- *  Auth helpers (JWT-only)
- * ====================================================== */
-async function requireJwtUser(req: Request) {
-  const sb = userClient(req);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
-
-/** ======================================================
- *  ORG + ENTITLEMENTS (JWT-only)
- * ====================================================== */
-async function resolveOrgIdForUserOrThrow(admin: ReturnType<typeof adminClient>, userId: string) {
-  const { data, error } = await admin
+  // Si NO viene org_id: primera membresía ACTIVE (determinista, pero si estás en varios hoteles mejor pasar org_id desde UI)
+  const { data, error } = await sb
     .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", userId)
+    .select("org_id, role, status, created_at")
+    .eq("user_id", user_id)
     .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+    .limit(50);
 
   if (error) throw new Error(`MEMBERSHIP_LOOKUP_FAILED:${error.message}`);
-  if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
 
-  return { org_id: String(data.org_id), role: (data.role ?? null) as string | null };
+  const active = (data ?? []).find((m: any) => !m?.status || String(m.status) === "ACTIVE");
+  if (!active?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+
+  return { org_id: String((active as any).org_id), role: ((active as any).role ?? null) as string | null };
 }
 
 type EntitlementsRow = {
   org_id: string;
   customer_id: string | null;
-  subscription_status: string | null; // en tu view hoy: ACTIVE o null
+  subscription_status: string | null;
   plan_code: string | null;
   max_users: number | null;
   seats_used: number;
-  org_name: string | null; // si tu view lo tiene; si no, se ignora
+  org_name?: string | null;
 };
 
-async function loadEntitlementsOrThrow(admin: ReturnType<typeof adminClient>, orgId: string) {
-  // Nota: si tu view NO tiene org_name, quita del select.
-  const { data, error } = await admin
+async function loadEntitlementsOrThrow(sb: ReturnType<typeof supabaseServiceClient>, org_id: string) {
+  // Intento con org_name; si no existe, reintento sin él.
+  const first = await sb
     .from("debacu_eval_org_entitlements_v")
     .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used, org_name")
-    .eq("org_id", orgId)
+    .eq("org_id", org_id)
     .maybeSingle();
 
-  if (error) {
-    // fallback si org_name no existe en la view
-    const msg = String(error.message ?? "");
+  if (first.error) {
+    const msg = String(first.error.message ?? "");
     if (msg.toLowerCase().includes("org_name")) {
-      const { data: d2, error: e2 } = await admin
+      const second = await sb
         .from("debacu_eval_org_entitlements_v")
         .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used")
-        .eq("org_id", orgId)
+        .eq("org_id", org_id)
         .maybeSingle();
-      if (e2) throw new Error(`ENTITLEMENTS_FAILED:${e2.message}`);
-      if (!d2) throw new Error("FORBIDDEN_NO_ENTITLEMENTS");
-      return { ...(d2 as any), org_name: null } as EntitlementsRow;
+
+      if (second.error) throw new Error(`ENTITLEMENTS_FAILED:${second.error.message}`);
+      if (!second.data) throw new Error("FORBIDDEN_NO_ENTITLEMENTS");
+      return { ...(second.data as any), org_name: null } as EntitlementsRow;
     }
-    throw new Error(`ENTITLEMENTS_FAILED:${error.message}`);
+    throw new Error(`ENTITLEMENTS_FAILED:${first.error.message}`);
   }
 
-  if (!data) throw new Error("FORBIDDEN_NO_ENTITLEMENTS");
-  return data as EntitlementsRow;
+  if (!first.data) throw new Error("FORBIDDEN_NO_ENTITLEMENTS");
+  return first.data as EntitlementsRow;
 }
 
 function assertOrgActiveOrThrow(ent: EntitlementsRow) {
@@ -128,7 +106,7 @@ function assertOrgActiveOrThrow(ent: EntitlementsRow) {
 /** ======================================================
  *  Utils
  * ====================================================== */
-function mustISODate(s: unknown): string {
+function mustYmd(s: unknown): string {
   if (typeof s !== "string") throw new Error("INVALID_DATE");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error("INVALID_DATE");
   return s;
@@ -173,7 +151,14 @@ function winAnsiSafe(s: string) {
     .replaceAll("”", '"')
     .replaceAll("’", "'")
     .replaceAll("…", "...")
-    .replaceAll("\u00A0", " "); // NBSP
+    .replaceAll("\u00A0", " ");
+}
+
+function clampInt(v: any, def: number, min: number, max: number) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  const i = Math.trunc(n);
+  return Math.max(min, Math.min(max, i));
 }
 
 /** ======================================================
@@ -186,48 +171,51 @@ type ReqBody = {
   period_to?: string; // YYYY-MM-DD
   filters?: { q?: string; event_type?: string };
   source_audit_id?: string | null;
+  org_id?: string | null; // ✅ muy recomendable si el user está en varios hoteles
 };
 
-export default Deno.serve(async (req: Request) => {
-  const origin = req.headers.get("origin");
-  const admin = adminClient();
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
-  if (req.method === "OPTIONS") return new Response("ok", { status: 200, headers: corsHeaders(origin) });
-  if (req.method !== "POST") return json(origin, 405, { ok: false, error: "method_not_allowed" });
-
+  const sb = supabaseServiceClient();
   let export_id: string | null = null;
+  let storage_bucket: string | null = null;
+  let storage_path: string | null = null;
 
   try {
-    // 1) JWT user
-    const user = await requireJwtUser(req);
+    // 1) JWT user (shared)
+    const user = await requireUser(req); // { id, email }
+    const user_id = user.id;
+    const user_email = user.email ?? null;
 
-    // 2) org + entitlements (JWT-only)
-    const { org_id, role } = await resolveOrgIdForUserOrThrow(admin, user.id);
-    const ent = await loadEntitlementsOrThrow(admin, org_id);
+    // 2) org + entitlements
+    const body = (await req.json().catch(() => ({}))) as ReqBody;
+
+    const { org_id, role } = await resolveOrgIdForUserOrThrow(sb, user_id, body?.org_id ?? null);
+    const ent = await loadEntitlementsOrThrow(sb, org_id);
     assertOrgActiveOrThrow(ent);
 
     const customer_id = String(ent.customer_id);
-    const org_name = ent.org_name ?? null;
+    const org_name = (ent as any).org_name ?? null;
 
-    // 3) body
-    const body = (await req.json().catch(() => ({}))) as ReqBody;
-
+    // 3) body fields
     const export_type = (body.export_type ?? "PDF") as "PDF" | "CSV";
     const export_scope = (body.export_scope ?? "AUDIT_LOG") as string;
-    const period_from = mustISODate(body.period_from);
-    const period_to = mustISODate(body.period_to);
+    const period_from = mustYmd(body.period_from);
+    const period_to = mustYmd(body.period_to);
     const filters = (body.filters ?? {}) as any;
     const source_audit_id = (body.source_audit_id ?? null) as string | null;
 
     if (export_type !== "PDF" && export_type !== "CSV") {
-      return json(origin, 400, { ok: false, error: "invalid_export_type" });
+      return json(req, 400, { ok: false, error: "invalid_export_type" });
     }
 
     const q = typeof filters?.q === "string" ? String(filters.q).trim() : "";
     const event_type_filter = typeof filters?.event_type === "string" ? String(filters.event_type).trim() : "";
 
-    // 4) fetch rows (admin)
-    let query = admin
+    // 4) fetch rows (service role) — LIMIT duro para no morir con 25 hoteles / 250 sesiones/día
+    let query = sb
       .from("debacu_eval_audit_log")
       .select("id, created_at, event_type, search_value_masked, result_count, meta, actor_user_id, action, entity")
       .eq("customer_id", customer_id)
@@ -245,11 +233,11 @@ export default Deno.serve(async (req: Request) => {
 
     const row_count = Array.isArray(rows) ? rows.length : 0;
 
-    // 5) Build bytes
+    // 5) build bytes
     export_id = crypto.randomUUID();
     const ext = export_type === "PDF" ? "pdf" : "csv";
-    const storage_bucket = EXPORT_BUCKET_DEFAULT;
-    const storage_path = `debacu_eval/org/${org_id}/exports/${export_id}.${ext}`;
+    storage_bucket = EXPORT_BUCKET_DEFAULT;
+    storage_path = `debacu_eval/org/${org_id}/exports/${export_id}.${ext}`;
 
     let fileU8: Uint8Array;
     let contentType: string;
@@ -266,6 +254,7 @@ export default Deno.serve(async (req: Request) => {
         "match_strength",
         "actor_user_id",
       ];
+
       const csvLines: string[] = [];
       csvLines.push(header.map(csvEscape).join(","));
 
@@ -309,12 +298,10 @@ export default Deno.serve(async (req: Request) => {
       };
 
       draw("Debacu Evaluation360 - Exportación de Auditoría", { bold: true, size: 16 });
-
       draw(`Org: ${safeString(org_name ?? "", 60)} (${org_id})`, { size: 10 });
       draw(`Customer: ${customer_id}`, { size: 10 });
       draw(`Periodo: ${period_from} -> ${period_to}`, { size: 10 });
       draw(`Filtro: event_type=${event_type_filter || "-"} | q=${q || "-"}`, { size: 10 });
-
       draw(`Export ID: ${export_id}`, { size: 10 });
       draw("");
 
@@ -361,111 +348,132 @@ export default Deno.serve(async (req: Request) => {
     const hash = await sha256(fileU8);
     const file_size_bytes = fileU8.byteLength;
 
-    // 7) upload (admin)
-    const { error: upErr } = await admin.storage
+    // 7) upload (NO upsert: el path es único)
+    const { error: upErr } = await sb.storage
       .from(storage_bucket)
-      .upload(storage_path, fileU8, { contentType, upsert: true });
+      .upload(storage_path, fileU8, { contentType, upsert: false });
 
     if (upErr) throw new Error(`UPLOAD_FAILED:${upErr.message}`);
 
-    // 8) insert export row
-    const { error: insErr } = await admin.from("customer_audit_exports").insert({
-      id: export_id,
-      org_id,
-      app_id: APP_ID,
-      requested_by_user_id: user.id,
-      requested_by_role: role,
-      requested_by_email: user.email ?? null,
-      export_type,
-      export_scope,
-      period_from,
-      period_to,
-      filters,
-      row_count,
-      sha256: hash,
-      file_size_bytes,
-      storage_bucket,
-      storage_path,
-      status: "READY",
-      error_code: null,
-      error_message: null,
-    });
+    // 8) insert export row (si falla, limpiamos storage)
+    const { data: inserted, error: insErr } = await sb
+      .from("customer_audit_exports")
+      .insert({
+        id: export_id,
+        org_id,
+        app_id: APP_ID,
+        requested_by_user_id: user_id,
+        requested_by_role: role,
+        requested_by_email: user_email,
 
-    if (insErr) throw new Error(`EXPORT_INSERT_FAILED:${insErr.message}`);
-
-    // 9) signed url (para descargar YA)
-    const { data: signed, error: sErr } = await admin.storage
-      .from(storage_bucket)
-      .createSignedUrl(storage_path, 60 * 30);
-
-    if (sErr) throw new Error(`SIGNED_URL_FAILED:${sErr.message}`);
-
-    // 10) audit log (no tumbes todo si falla)
-    await admin.from("debacu_eval_audit_log").insert({
-      actor_user_id: user.id,
-      action: export_type === "PDF" ? "PDF_ISSUED" : "CSV_ISSUED",
-      entity: "AUDIT_EXPORT",
-      entity_id: export_id,
-      meta: {
         export_type,
         export_scope,
         period_from,
         period_to,
         filters,
+
+        row_count,
         sha256: hash,
         file_size_bytes,
         storage_bucket,
         storage_path,
-        row_count,
-        source_audit_id,
-      },
-      customer_id: String(customer_id),
-      app_id: APP_ID,
-      event_type: "AUDIT_EXPORT",
-      evaluation_id: null,
-      search_kind: null,
-      search_value_masked: null,
-      search_value_hash: null,
-      result_count: null,
-    });
+        status: "READY",
+        error_code: null,
+        error_message: null,
+      })
+      .select("id, created_at")
+      .maybeSingle();
 
-    return json(origin, 200, {
+    if (insErr) {
+      // cleanup best-effort
+      try {
+        await sb.storage.from(storage_bucket).remove([storage_path]);
+      } catch {
+        // ignore
+      }
+      throw new Error(`EXPORT_INSERT_FAILED:${insErr.message}`);
+    }
+
+    // 9) signed url (para descargar YA)
+    const { data: signed, error: sErr } = await sb.storage
+      .from(storage_bucket)
+      .createSignedUrl(storage_path, 60 * 30);
+
+    if (sErr) throw new Error(`SIGNED_URL_FAILED:${sErr.message}`);
+
+    // 10) audit log (best effort)
+    try {
+      await sb.from("debacu_eval_audit_log").insert({
+        actor_user_id: user_id,
+        action: export_type === "PDF" ? "PDF_ISSUED" : "CSV_ISSUED",
+        entity: "AUDIT_EXPORT",
+        entity_id: export_id,
+        meta: {
+          export_type,
+          export_scope,
+          period_from,
+          period_to,
+          filters,
+          sha256: hash,
+          file_size_bytes,
+          storage_bucket,
+          storage_path,
+          row_count,
+          source_audit_id,
+          org_id,
+        },
+        customer_id,
+        app_id: APP_ID,
+        event_type: "AUDIT_EXPORT",
+        evaluation_id: null,
+        search_kind: null,
+        search_value_masked: null,
+        search_value_hash: null,
+        result_count: null,
+      } as any);
+    } catch {
+      // ignore
+    }
+
+    return json(req, 200, {
       ok: true,
-      export_id,
-      status: "READY",
-      org_id,
-      app_id: APP_ID,
-      export_type,
-      export_scope,
-      period_from,
-      period_to,
-      storage_bucket,
-      storage_path,
-      sha256: hash,
-      file_size_bytes,
-      row_count,
-      signed_url: signed?.signedUrl ?? null,
-      created_at: new Date().toISOString(),
+      data: {
+        export_id,
+        status: "READY",
+        org_id,
+        app_id: APP_ID,
+        export_type,
+        export_scope,
+        period_from,
+        period_to,
+        storage_bucket,
+        storage_path,
+        sha256: hash,
+        file_size_bytes,
+        row_count,
+        signed_url: signed?.signedUrl ?? null,
+        created_at: inserted?.created_at ?? new Date().toISOString(),
+      },
     });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
+
     const code =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("FORBIDDEN")
-        ? 403
-        : msg.startsWith("PLAN_NOT_ACTIVE")
-        ? 402
-        : msg.startsWith("INVALID_") || msg === "INVALID_DATE"
-        ? 400
-        : 500;
+      msg === "UNAUTHORIZED" || msg === "UNAUTHENTICATED" ? 401
+      : msg.startsWith("FORBIDDEN") ? 403
+      : msg === "PLAN_NOT_ACTIVE" ? 402
+      : msg === "INVALID_DATE" || msg.startsWith("INVALID_") ? 400
+      : 500;
 
     console.error("client_audit_export_generate error:", e);
-    return json(origin, code, {
+
+    return json(req, code, {
       ok: false,
       error: "request_failed",
       detail: msg,
       export_id,
+      storage_bucket,
+      storage_path,
     });
   }
 });

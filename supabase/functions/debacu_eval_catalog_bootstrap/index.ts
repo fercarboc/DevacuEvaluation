@@ -1,219 +1,321 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
+import { supabaseServiceClient } from "../_shared/supabase.ts";
 
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    Vary: "Origin",
-    // ✅ JWT-only: quitado x-session-token
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
+type Body = {
+  org_id?: string; // recomendado: UI siempre manda org_id
+};
+
+function safeStr(v: unknown) {
+  return typeof v === "string" ? v.trim() : "";
 }
 
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
-  });
+function isMissingRelation(err: any) {
+  const msg = String(err?.message ?? "");
+  return /relation .* does not exist|does not exist|undefined table/i.test(msg);
 }
 
-function mustEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env var ${name}`);
-  return v;
-}
+async function resolveOrgAndCustomer(params: {
+  sb: ReturnType<typeof createClient>;
+  user_id: string;
+  org_id?: string | null;
+}) {
+  const { sb, user_id } = params;
+  const org_id_in = safeStr(params.org_id ?? "");
 
-const SUPABASE_URL = mustEnv("SUPABASE_URL");
-const SERVICE_ROLE = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+  // 1) si viene org_id: validar membership ACTIVE para ese org
+  if (org_id_in) {
+    const { data: mem, error: memErr } = await sb
+      .from("debacu_eval_org_members")
+      .select("org_id, status")
+      .eq("user_id", user_id)
+      .eq("org_id", org_id_in)
+      .eq("status", "ACTIVE")
+      .maybeSingle();
 
-const DEFAULT_APP_ID = "DEBACU_EVAL";
+    if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
+    if (!mem?.org_id) throw new Error("FORBIDDEN");
 
-function getBearer(req: Request) {
-  const h = req.headers.get("authorization") || "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m?.[1] ?? "";
+    const { data: org, error: orgErr } = await sb
+      .from("debacu_eval_organizations")
+      .select("id, customer_id")
+      .eq("id", org_id_in)
+      .maybeSingle();
+
+    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
+    if (!org?.customer_id) throw new Error("FORBIDDEN");
+
+    return { org_id: org_id_in, customer_id: String(org.customer_id) };
+  }
+
+  // 2) fallback determinista: primera membership ACTIVE
+  const { data: mem1, error: mem1Err } = await sb
+    .from("debacu_eval_org_members")
+    .select("org_id, status, created_at")
+    .eq("user_id", user_id)
+    .eq("status", "ACTIVE")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (mem1Err) throw new Error(`MEMBERSHIP_FAILED:${mem1Err.message}`);
+  if (!mem1?.org_id) throw new Error("FORBIDDEN");
+
+  const org_id = String(mem1.org_id);
+
+  const { data: org, error: orgErr } = await sb
+    .from("debacu_eval_organizations")
+    .select("id, customer_id")
+    .eq("id", org_id)
+    .maybeSingle();
+
+  if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
+  if (!org?.customer_id) throw new Error("FORBIDDEN");
+
+  return { org_id, customer_id: String(org.customer_id) };
 }
 
 /**
- * JWT-only:
- * - valida JWT con auth.getUser(jwt)
- * - resuelve org/customer desde debacu_eval_org_members (auth_user_id)
- *   (esto fuerza que el usuario pertenezca a una org activa)
+ * Inserta seeds en una tabla, pero solo si ese customer_id no tiene filas.
+ * OJO: NO usamos upsert. Idempotencia por "si está vacío".
  */
-async function requireJwtOrg(
-  supabase: ReturnType<typeof createClient>,
-  jwt: string,
-  appId: string
-) {
-  const { data: u, error: uErr } = await supabase.auth.getUser(jwt);
-  if (uErr || !u?.user) throw new Error("Invalid Supabase JWT");
+async function seedIfEmpty(params: {
+  sb: ReturnType<typeof createClient>;
+  table: string;
+  customer_id: string;
+  countSelectColumn: string; // una columna existente en esa tabla
+  rows: any[];
+}) {
+  const { sb, table, customer_id, countSelectColumn, rows } = params;
 
-  const userId = u.user.id;
+  const { count, error: cErr } = await sb
+    .from(table)
+    .select(countSelectColumn, { count: "exact", head: true })
+    .eq("customer_id", customer_id);
 
-  // Ajusta este lookup si tus columnas difieren:
-  const { data: mem, error: mErr } = await supabase
-    .from("debacu_eval_org_members")
-    .select("org_id, status, app_code, role")
-    .eq("auth_user_id", userId)
-    .eq("status", "ACTIVE")
-    .eq("app_code", appId)
-    .maybeSingle();
+  if (cErr) {
+    if (isMissingRelation(cErr)) return { ok: false as const, reason: "missing_table" as const };
+    throw new Error(`DB_COUNT_FAILED:${table}:${cErr.message}`);
+  }
 
-  if (mErr) throw new Error(mErr.message);
-  if (!mem?.org_id) throw new Error("User has no ACTIVE org membership");
+  if ((count ?? 0) > 0) return { ok: true as const, seeded: 0 };
 
-  return { userId, customerId: String(mem.org_id), role: String(mem.role ?? "STAFF") };
+  const { error: insErr } = await sb.from(table).insert(rows);
+  if (insErr) throw new Error(`DB_INSERT_FAILED:${table}:${insErr.message}`);
+
+  return { ok: true as const, seeded: rows.length };
 }
 
 Deno.serve(async (req) => {
-  const origin = req.headers.get("origin");
-
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(origin) });
-  }
-  if (req.method !== "POST") return json(origin, 405, { ok: false, error: "Method not allowed" });
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "request_failed", detail: "method_not_allowed" });
 
   try {
-    const jwt = getBearer(req);
-    if (!jwt) return json(origin, 401, { ok: false, error: "Missing Authorization Bearer token" });
+    const user = await requireUser(req);
 
-    const body = await req.json().catch(() => ({}));
-    const appId = body?.appId ? String(body.appId) : DEFAULT_APP_ID;
+    const body = (await req.json().catch(() => ({}))) as Body;
+    const org_id = safeStr(body?.org_id);
 
-    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
-      auth: { persistSession: false },
-      global: { headers: { Authorization: `Bearer ${SERVICE_ROLE}` } },
+    const sb = supabaseServiceClient();
+
+    // tenant
+    const { customer_id, org_id: resolved_org_id } = await resolveOrgAndCustomer({
+      sb,
+      user_id: user.id,
+      org_id: org_id || null,
     });
 
-    // ✅ obliga a que el usuario sea válido y pertenezca a una org activa
-    // (aunque para seed global realmente no hace falta customerId)
-    await requireJwtOrg(supabase, jwt, appId);
+    // =========================
+    // Seeds por customer/hotel
+    // =========================
 
-    // 1) Incidents: si está vacío, sembramos base
-    const { count: incCount, error: e0 } = await supabase
-      .from("debacu_incident_catalog")
-      .select("incident_type", { count: "exact", head: true });
+    // Incidents
+    const incidentSeeds = [
+      {
+        customer_id,
+        incident_type: "MISSING_ITEMS",
+        title: "Missing items",
+        description: "Objetos faltantes (toallas, albornoces, etc.)",
+        severity: 3,
+        default_gross_min: null,
+        default_gross_max: null,
+        default_recovery_pct: null,
+        suggested_actions: "Revisar habitación y registrar item faltante",
+        is_active: true,
+      },
+      {
+        customer_id,
+        incident_type: "PROPERTY_DAMAGE",
+        title: "Daños materiales",
+        description: "Daños en habitación o zonas comunes",
+        severity: 4,
+        default_gross_min: 50,
+        default_gross_max: 500,
+        default_recovery_pct: null,
+        suggested_actions: "Fotos + parte interno + comunicación a cliente",
+        is_active: true,
+      },
+      {
+        customer_id,
+        incident_type: "PAYMENT_ISSUE",
+        title: "Problema de pago",
+        description: "Impago, tarjeta rechazada, disputa",
+        severity: 4,
+        default_gross_min: null,
+        default_gross_max: null,
+        default_recovery_pct: 100,
+        suggested_actions: "Intentar cobro / contactar / registrar disputa",
+        is_active: true,
+      },
+      {
+        customer_id,
+        incident_type: "NO_SHOW",
+        title: "No show",
+        description: "No presentación",
+        severity: 3,
+        default_gross_min: null,
+        default_gross_max: null,
+        default_recovery_pct: 100,
+        suggested_actions: "Aplicar política no-show y registrar",
+        is_active: true,
+      },
+    ];
 
-    if (e0) return json(origin, 500, { ok: false, error: e0.message });
+    // Items
+    const itemSeeds = [
+      {
+        customer_id,
+        item_code: "TOWEL",
+        title: "Toalla",
+        category: "Linen",
+        unit_price: 12,
+        currency: "EUR",
+        description: null,
+        is_active: true,
+      },
+      {
+        customer_id,
+        item_code: "BATHROBE",
+        title: "Albornoz",
+        category: "Linen",
+        unit_price: 35,
+        currency: "EUR",
+        description: null,
+        is_active: true,
+      },
+      {
+        customer_id,
+        item_code: "PILLOW",
+        title: "Almohada",
+        category: "Room",
+        unit_price: 20,
+        currency: "EUR",
+        description: null,
+        is_active: true,
+      },
+    ];
 
+    // =========================
+    // TABLAS: intentamos customer-scoped primero
+    // (si no existen, fallback)
+    // =========================
+
+    // incidents
     let seededIncidents = 0;
-    if ((incCount ?? 0) === 0) {
-      const seedInc = [
-        {
-          incident_type: "MISSING_ITEMS",
-          title: "Missing items",
-          description: "Objetos faltantes (toallas, albornoces, etc.)",
-          severity: 3,
-          default_gross_min: null,
-          default_gross_max: null,
-          default_recovery_pct: null,
-          suggested_actions: "Revisar habitación y registrar item faltante",
-          is_active: true,
-        },
-        {
-          incident_type: "PROPERTY_DAMAGE",
-          title: "Daños materiales",
-          description: "Daños en habitación o zonas comunes",
-          severity: 4,
-          default_gross_min: 50,
-          default_gross_max: 500,
-          default_recovery_pct: null,
-          suggested_actions: "Fotos + parte interno + comunicación a cliente",
-          is_active: true,
-        },
-        {
-          incident_type: "PAYMENT_ISSUE",
-          title: "Problema de pago",
-          description: "Impago, tarjeta rechazada, disputa",
-          severity: 4,
-          default_gross_min: null,
-          default_gross_max: null,
-          default_recovery_pct: 100,
-          suggested_actions: "Intentar cobro / contactar / registrar disputa",
-          is_active: true,
-        },
-        {
-          incident_type: "NO_SHOW",
-          title: "No show",
-          description: "No presentación",
-          severity: 3,
-          default_gross_min: null,
-          default_gross_max: null,
-          default_recovery_pct: 100,
-          suggested_actions: "Aplicar política no-show y registrar",
-          is_active: true,
-        },
-      ];
+    {
+      const r1 = await seedIfEmpty({
+        sb,
+        table: "debacu_incident_catalog_customer",
+        customer_id,
+        countSelectColumn: "incident_type",
+        rows: incidentSeeds,
+      });
 
-      const { error: eIns } = await supabase.from("debacu_incident_catalog").insert(seedInc);
-      if (eIns) return json(origin, 500, { ok: false, error: eIns.message });
-      seededIncidents = seedInc.length;
+      if (r1.ok) {
+        seededIncidents = r1.seeded;
+      } else {
+        // fallback
+        const r2 = await seedIfEmpty({
+          sb,
+          table: "debacu_incident_catalog",
+          customer_id,
+          countSelectColumn: "incident_type",
+          rows: incidentSeeds,
+        });
+
+        if (!r2.ok) {
+          return json(req, 500, {
+            ok: false,
+            error: "request_failed",
+            detail: "missing_catalog_tables: incidents",
+          });
+        }
+
+        seededIncidents = r2.seeded;
+      }
     }
 
-    // 2) Items globales: si está vacío, sembramos unos básicos
-    const { count: itemCount, error: e1 } = await supabase
-      .from("debacu_item_catalog")
-      .select("item_code", { count: "exact", head: true });
-
-    if (e1) return json(origin, 500, { ok: false, error: e1.message });
-
+    // items
     let seededItems = 0;
-    if ((itemCount ?? 0) === 0) {
-      const seedItems = [
-        {
-          item_code: "TOWEL",
-          title: "Toalla",
-          category: "Linen",
-          unit_price: 12,
-          currency: "EUR",
-          description: null,
-          is_active: true,
-        },
-        {
-          item_code: "BATHROBE",
-          title: "Albornoz",
-          category: "Linen",
-          unit_price: 35,
-          currency: "EUR",
-          description: null,
-          is_active: true,
-        },
-        {
-          item_code: "PILLOW",
-          title: "Almohada",
-          category: "Room",
-          unit_price: 20,
-          currency: "EUR",
-          description: null,
-          is_active: true,
-        },
-      ];
+    {
+      const r1 = await seedIfEmpty({
+        sb,
+        table: "debacu_item_catalog_customer",
+        customer_id,
+        countSelectColumn: "item_code",
+        rows: itemSeeds,
+      });
 
-      const { error: eIns2 } = await supabase.from("debacu_item_catalog").insert(seedItems);
-      if (eIns2) return json(origin, 500, { ok: false, error: eIns2.message });
-      seededItems = seedItems.length;
+      if (r1.ok) {
+        seededItems = r1.seeded;
+      } else {
+        // fallback
+        const r2 = await seedIfEmpty({
+          sb,
+          table: "debacu_item_catalog",
+          customer_id,
+          countSelectColumn: "item_code",
+          rows: itemSeeds,
+        });
+
+        if (!r2.ok) {
+          return json(req, 500, {
+            ok: false,
+            error: "request_failed",
+            detail: "missing_catalog_tables: items",
+          });
+        }
+
+        seededItems = r2.seeded;
+      }
     }
 
-    return json(origin, 200, { ok: true, seededIncidents, seededItems });
+    return json(req, 200, {
+      ok: true,
+      data: {
+        org_id: resolved_org_id,
+        customer_id,
+        seededIncidents,
+        seededItems,
+      },
+    });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
-    const isClient =
-      msg.includes("Missing") ||
-      msg.includes("Invalid") ||
-      msg.includes("membership") ||
-      msg.includes("org");
 
-    return json(origin, isClient ? 400 : 500, { ok: false, error: msg });
+    const status =
+      msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED" ? 401 :
+      msg === "FORBIDDEN" || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED") ? 403 :
+      msg.startsWith("DB_") ? 500 :
+      500;
+
+    const detail =
+      status === 403 ? "FORBIDDEN" :
+      status === 401 ? "UNAUTHENTICATED" :
+      msg;
+
+    return json(req, status, { ok: false, error: "request_failed", detail });
   }
 });

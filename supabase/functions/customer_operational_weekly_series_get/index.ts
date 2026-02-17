@@ -1,43 +1,14 @@
+// supabase/functions/debacu_eval_weekly_series_get/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
+
 /* ======================================================
- * ENV
+ * CONST
  * ====================================================== */
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const DEFAULT_APP_CODE = "DEBACU_EVAL";
-
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-/* ======================================================
- * CORS + RESP
- * ====================================================== */
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    // ✅ JWT-only: quitamos x-session-token
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(req), "Content-Type": "application/json" },
-  });
-}
 
 /* ======================================================
  * TYPES
@@ -45,10 +16,13 @@ function json(req: Request, status: number, body: unknown) {
 type PeriodField = "evaluation_date" | "created_at";
 
 type BuildReq = {
+  org_id?: string | null;
+
   period_from: string; // YYYY-MM-DD
   period_to: string; // YYYY-MM-DD
+
   period_field?: PeriodField; // preferred
-  filters?: { period_field?: PeriodField }; // compat con front legacy
+  filters?: { period_field?: PeriodField }; // compat front legacy
 };
 
 type EvalRow = {
@@ -78,18 +52,19 @@ export type WeeklySeriesRow = {
 
 type EntitlementsRow = {
   org_id: string;
-  customer_id: string;
-  seats_used: number;
+  customer_id: string | null;
+  subscription_status: string | null; // ACTIVE | null
   plan_code: string | null;
   max_users: number | null;
-  subscription_status: string | null; // ACTIVE | null
+  seats_used: number | null;
+  app_code?: string | null;
 };
 
 /* ======================================================
  * HELPERS
  * ====================================================== */
-function assertDate(s: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error("invalid_date_format");
+function assertDate(s: string, name: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error(`invalid_${name}`);
 }
 
 function toNumber(v: unknown) {
@@ -147,73 +122,92 @@ function fillMissingDays(rows: WeeklySeriesRow[], from: string, to: string): Wee
 }
 
 /* ======================================================
- * SUPABASE CLIENTS
- * ====================================================== */
-function sbAdmin() {
-  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
-}
-
-// ✅ JWT-only: user client con ANON + Authorization del request
-function sbUser(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
-
-async function getAuthUserIdOrThrow(sb: ReturnType<typeof sbUser>) {
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user?.id) throw new Error("UNAUTHENTICATED");
-  return data.user.id;
-}
-
-/* ======================================================
- * AUTH CONTEXT: user -> org -> entitlements -> customer_id
+ * MULTI-ORG + ENTITLEMENTS
  * ====================================================== */
 async function resolveOrgIdForUserOrThrow(
-  admin: ReturnType<typeof sbAdmin>,
-  userId: string
+  admin: ReturnType<typeof createClient>,
+  userId: string,
+  requestedOrgId?: string | null
 ): Promise<string> {
-  const { data, error } = await admin
-    .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+  if (requestedOrgId) {
+    // prefer ACTIVE si existe status
+    try {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id")
+        .eq("org_id", requestedOrgId)
+        .eq("user_id", userId)
+        .eq("status", "ACTIVE")
+        .maybeSingle();
 
-  if (error) throw new Error(error.message);
-  if (!data?.org_id) throw new Error("NO_ORG_MEMBERSHIP");
-  return String(data.org_id);
+      if (error) throw error;
+      if (!data?.org_id) throw new Error("FORBIDDEN");
+      return String(data.org_id);
+    } catch {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id")
+        .eq("org_id", requestedOrgId)
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (error) throw new Error("FORBIDDEN");
+      if (!data?.org_id) throw new Error("FORBIDDEN");
+      return String(data.org_id);
+    }
+  }
+
+  // fallback determinista: primera ACTIVE si existe, si no primera
+  try {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, created_at")
+      .eq("user_id", userId)
+      .eq("status", "ACTIVE")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data?.org_id) throw new Error("FORBIDDEN");
+    return String(data.org_id);
+  } catch {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw new Error("FORBIDDEN");
+    if (!data?.org_id) throw new Error("FORBIDDEN");
+    return String(data.org_id);
+  }
 }
 
-async function getEntitlementsForOrgOrThrow(
-  admin: ReturnType<typeof sbAdmin>,
-  orgId: string
-): Promise<EntitlementsRow> {
+async function loadEntitlementsOrThrow(admin: ReturnType<typeof createClient>, orgId: string) {
   const { data, error } = await admin
     .from("debacu_eval_org_entitlements_v")
-    .select("org_id, customer_id, seats_used, plan_code, max_users, subscription_status")
+    .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used, app_code")
     .eq("org_id", orgId)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
-  if (!data?.org_id || !data?.customer_id) throw new Error("ORG_NOT_FOUND");
-  return data as unknown as EntitlementsRow;
+  if (error) throw new Error("FORBIDDEN");
+  if (!data?.org_id) throw new Error("FORBIDDEN");
+  return data as EntitlementsRow;
 }
 
-function assertSubscriptionActiveOrThrow(ent: EntitlementsRow) {
-  // Tu view hoy devuelve ACTIVE o null. Si mañana metes TRIAL_ACTIVE, aquí lo adaptas.
+function assertPlanActiveOrThrow(ent: EntitlementsRow) {
   if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
-  if (!ent.plan_code || !Number.isFinite(Number(ent.max_users))) throw new Error("PLAN_LIMITS_MISSING");
+  if (!ent.customer_id) throw new Error("FORBIDDEN");
 }
 
 /* ======================================================
  * FETCH
  * ====================================================== */
 async function fetchEvaluationsForRange(
-  admin: ReturnType<typeof sbAdmin>,
+  admin: ReturnType<typeof createClient>,
   customerId: string,
   periodField: PeriodField,
   from: string,
@@ -230,31 +224,31 @@ async function fetchEvaluationsForRange(
     "customer_id",
   ].join(",");
 
-  // filtro robusto: algunos inserts pueden usar customer_id, otros creator_customer_uuid
-  const base = admin
+  // filtro robusto (compat): algunos registros usan customer_id, otros creator_customer_uuid
+  let q = admin
     .from("debacu_evaluations")
     .select(selectCols)
     .or(`customer_id.eq.${customerId},creator_customer_uuid.eq.${customerId}`);
 
   if (periodField === "evaluation_date") {
-    const { data, error } = await base
+    const { data, error } = await q
       .gte("evaluation_date", from)
       .lte("evaluation_date", to)
       .order("evaluation_date", { ascending: true });
 
-    if (error) throw new Error(`QUERY_FAILED:${error.message}`);
+    if (error) throw new Error("request_failed");
     return (data ?? []) as any;
   }
 
   const fromTs = `${from}T00:00:00.000Z`;
   const toTs = `${to}T23:59:59.999Z`;
 
-  const { data, error } = await base
+  const { data, error } = await q
     .gte("created_at", fromTs)
     .lte("created_at", toTs)
     .order("created_at", { ascending: true });
 
-  if (error) throw new Error(`QUERY_FAILED:${error.message}`);
+  if (error) throw new Error("request_failed");
   return (data ?? []) as any;
 }
 
@@ -303,89 +297,90 @@ function buildDailySeries(rows: EvalRow[], periodField: PeriodField): WeeklySeri
 }
 
 /* ======================================================
+ * ERRORS (STRICT)
+ * ====================================================== */
+function mapErrorToHttp(e: unknown): { status: number; detail: string } {
+  const msg = String((e as any)?.message ?? e ?? "request_failed");
+
+  if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return { status: 401, detail: "UNAUTHENTICATED" };
+  if (msg === "PLAN_NOT_ACTIVE") return { status: 402, detail: "PLAN_NOT_ACTIVE" };
+  if (msg === "FORBIDDEN") return { status: 403, detail: "FORBIDDEN" };
+  if (msg.startsWith("invalid_")) return { status: 400, detail: msg };
+  if (msg === "unsupported_period_field") return { status: 400, detail: "invalid_period_field" };
+
+  return { status: 500, detail: "request_failed" };
+}
+
+/* ======================================================
  * MAIN
  * ====================================================== */
 export default Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "request_failed", detail: "method_not_allowed" });
+  }
+
+  const admin = supabaseServiceClient();
 
   try {
-    // ✅ JWT-only: exigir Authorization
-    const auth = req.headers.get("Authorization") ?? "";
-    if (!auth.toLowerCase().startsWith("bearer ")) {
-      return json(req, 401, { ok: false, error: "missing_authorization" });
-    }
+    const user = await requireUser(req);
 
     let body: BuildReq;
     try {
       body = (await req.json()) as BuildReq;
     } catch {
-      return json(req, 400, { ok: false, error: "invalid_json" });
+      return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_json" });
     }
 
-    const periodFrom = String(body.period_from ?? "");
-    const periodTo = String(body.period_to ?? "");
+    const periodFrom = String(body.period_from ?? "").trim();
+    const periodTo = String(body.period_to ?? "").trim();
 
-    const periodField: PeriodField =
-      (body.period_field as any) || ((body as any)?.filters?.period_field as any) || "evaluation_date";
+    const periodFieldRaw =
+      (body.period_field as PeriodField | undefined) ??
+      ((body.filters?.period_field as PeriodField | undefined) ?? "evaluation_date");
 
-    assertDate(periodFrom);
-    assertDate(periodTo);
-    if (periodFrom > periodTo) return json(req, 400, { ok: false, error: "invalid_period_range" });
+    if (periodFieldRaw !== "evaluation_date" && periodFieldRaw !== "created_at") {
+      throw new Error("unsupported_period_field");
+    }
 
-    // clientes
-    const userSb = sbUser(req);
-    const adminSb = sbAdmin();
+    assertDate(periodFrom, "period_from");
+    assertDate(periodTo, "period_to");
+    if (periodFrom > periodTo) {
+      return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_period_range" });
+    }
 
-    // 1) userId desde JWT
-    const userId = await getAuthUserIdOrThrow(userSb);
+    // multi-org
+    const orgId = await resolveOrgIdForUserOrThrow(admin, user.id, body.org_id ? String(body.org_id) : null);
 
-    // 2) orgId desde membership
-    const orgId = await resolveOrgIdForUserOrThrow(adminSb, userId);
+    // entitlements + plan gate
+    const ent = await loadEntitlementsOrThrow(admin, orgId);
+    assertPlanActiveOrThrow(ent);
 
-    // 3) entitlements (customer_id + plan + seats)
-    const ent = await getEntitlementsForOrgOrThrow(adminSb, orgId);
-    assertSubscriptionActiveOrThrow(ent);
+    const customerId = String(ent.customer_id);
+    const app_code = String(ent.app_code ?? DEFAULT_APP_CODE);
 
-    // 4) data
-    const evalRows = await fetchEvaluationsForRange(
-      adminSb,
-      ent.customer_id,
-      periodField,
-      periodFrom,
-      periodTo
-    );
+    const evalRows = await fetchEvaluationsForRange(admin, customerId, periodFieldRaw, periodFrom, periodTo);
 
-    const seriesRaw = buildDailySeries(evalRows, periodField);
+    const seriesRaw = buildDailySeries(evalRows, periodFieldRaw);
     const series = fillMissingDays(seriesRaw, periodFrom, periodTo);
 
     return json(req, 200, {
       ok: true,
-      app_code: DEFAULT_APP_CODE,
+      app_code,
       org_id: orgId,
-      customer_id: ent.customer_id,
-      plan_code: ent.plan_code,
-      max_users: ent.max_users,
-      seats_used: ent.seats_used,
+      customer_id: customerId,
+      plan_code: ent.plan_code ?? null,
+      max_users: ent.max_users ?? null,
+      seats_used: ent.seats_used ?? null,
 
       period_from: periodFrom,
       period_to: periodTo,
-      period_field: periodField,
+      period_field: periodFieldRaw,
       total_rows: evalRows.length,
       series,
     });
-  } catch (e: any) {
-    // devuelve error “limpio” y útil
-    const msg = String(e?.message ?? e);
-
-    // map rápido a 401/403 cuando aplica
-    if (msg === "UNAUTHENTICATED" || msg === "missing_authorization") {
-      return json(req, 401, { ok: false, error: msg });
-    }
-    if (msg === "NO_ORG_MEMBERSHIP" || msg === "PLAN_NOT_ACTIVE" || msg === "PLAN_LIMITS_MISSING") {
-      return json(req, 403, { ok: false, error: msg });
-    }
-
-    return json(req, 500, { ok: false, error: "request_failed", detail: msg });
+  } catch (e) {
+    const mapped = mapErrorToHttp(e);
+    return json(req, mapped.status, { ok: false, error: "request_failed", detail: mapped.detail });
   }
 });

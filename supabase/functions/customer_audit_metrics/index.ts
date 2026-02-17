@@ -1,63 +1,37 @@
+// supabase/functions/debacu_eval_economic_metrics_get/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
+
 /* ======================================================
- * ENV
+ * CONST
  * ====================================================== */
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const DEFAULT_APP_CODE = "DEBACU_EVAL";
-
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-/* ======================================================
- * CORS + RESP
- * ====================================================== */
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(req), "Content-Type": "application/json" },
-  });
-}
 
 /* ======================================================
  * TYPES
  * ====================================================== */
 type PeriodField = "evaluation_date" | "created_at";
 
-type Metric =
-  | "ECONOMIC_IMPACT_DAILY"
-  | "ECONOMIC_IMPACT_MONTHLY";
+type Metric = "ECONOMIC_IMPACT_DAILY" | "ECONOMIC_IMPACT_MONTHLY";
 
 type MetricsReq = {
+  org_id?: string | null;
+
   metric: Metric;
   period_from: string; // YYYY-MM-DD
   period_to: string; // YYYY-MM-DD
-  period_field?: PeriodField;
+  period_field?: PeriodField; // default evaluation_date
 };
 
-type SessionResolved = {
-  customer_id: string;
-  customer_name: string;
-  app_code: string;
+type EntitlementsRow = {
+  org_id: string;
+  customer_id: string | null;
+  org_name?: string | null;
+  subscription_status: string | null;
+  app_code?: string | null;
 };
 
 type EvalRow = {
@@ -69,10 +43,10 @@ type EvalRow = {
 };
 
 /* ======================================================
- * Helpers
+ * HELPERS
  * ====================================================== */
-function assertDate(s: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error("invalid_date_format");
+function assertDate(s: string, name: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error(`invalid_${name}`);
 }
 
 function toNumber(v: unknown) {
@@ -115,33 +89,90 @@ function getRowDateKey(r: EvalRow, periodField: PeriodField): string {
 }
 
 /* ======================================================
- * SESSION RESOLVE (x-session-token)
+ * MULTI-ORG + ENTITLEMENTS
  * ====================================================== */
-async function resolveSessionCustomer(
-  sb: ReturnType<typeof createClient>,
-  token: string
-): Promise<SessionResolved> {
-  const { data, error } = await sb
-    .from("debacu_eval_sessions")
-    .select("id, customer_id, customer_name, app_code, revoked_at, expires_at")
-    .eq("token", token)
+async function resolveOrgForUserOrThrow(
+  admin: ReturnType<typeof createClient>,
+  userId: string,
+  requestedOrgId?: string | null
+): Promise<string> {
+  if (requestedOrgId) {
+    // prefer ACTIVE si existe status
+    try {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id")
+        .eq("org_id", requestedOrgId)
+        .eq("user_id", userId)
+        .eq("status", "ACTIVE")
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!data?.org_id) throw new Error("FORBIDDEN_NOT_MEMBER");
+      return String(data.org_id);
+    } catch {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id")
+        .eq("org_id", requestedOrgId)
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (error) throw new Error("membership_lookup_failed");
+      if (!data?.org_id) throw new Error("FORBIDDEN_NOT_MEMBER");
+      return String(data.org_id);
+    }
+  }
+
+  // fallback determinista: primera ACTIVE, si no, primera
+  try {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, created_at")
+      .eq("user_id", userId)
+      .eq("status", "ACTIVE")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+    return String(data.org_id);
+  } catch {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw new Error("membership_lookup_failed");
+    if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+    return String(data.org_id);
+  }
+}
+
+async function loadEntitlementsOrThrow(admin: ReturnType<typeof createClient>, orgId: string) {
+  // intenta vista (source of truth)
+  const { data, error } = await admin
+    .from("debacu_eval_org_entitlements_v")
+    .select("org_id, customer_id, org_name, subscription_status, app_code")
+    .eq("org_id", orgId)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("invalid_session_token");
-  if (data.revoked_at) throw new Error("session_revoked");
-  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now())
-    throw new Error("session_expired");
+  if (error) throw new Error("entitlements_failed");
+  if (!data?.org_id) throw new Error("FORBIDDEN_NO_ENTITLEMENTS");
+  return data as EntitlementsRow;
+}
 
-  return {
-    customer_id: String(data.customer_id),
-    customer_name: String(data.customer_name ?? ""),
-    app_code: String(data.app_code ?? DEFAULT_APP_CODE),
-  };
+function assertOrgActiveOrThrow(ent: EntitlementsRow) {
+  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+  if (!ent.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
 }
 
 /* ======================================================
- * Fetch evaluations in range
+ * FETCH evaluations in range
  * ====================================================== */
 async function fetchEvaluationsForRange(
   sb: ReturnType<typeof createClient>,
@@ -150,24 +181,24 @@ async function fetchEvaluationsForRange(
   from: string,
   to: string
 ): Promise<EvalRow[]> {
+  const cols = [
+    "evaluation_date",
+    "created_at",
+    "economic_impact_gross",
+    "economic_recovered",
+    "economic_net_loss",
+  ].join(",");
+
   if (periodField === "evaluation_date") {
     const { data, error } = await sb
       .from("debacu_evaluations")
-      .select(
-        [
-          "evaluation_date",
-          "created_at",
-          "economic_impact_gross",
-          "economic_recovered",
-          "economic_net_loss",
-        ].join(",")
-      )
+      .select(cols)
       .eq("creator_customer_uuid", creatorCustomerUuid)
       .gte("evaluation_date", from)
       .lte("evaluation_date", to)
       .order("evaluation_date", { ascending: true });
 
-    if (error) throw new Error(`QUERY_FAILED:${error.message}`);
+    if (error) throw new Error("query_failed");
     return (data ?? []) as any;
   }
 
@@ -176,26 +207,18 @@ async function fetchEvaluationsForRange(
 
   const { data, error } = await sb
     .from("debacu_evaluations")
-    .select(
-      [
-        "evaluation_date",
-        "created_at",
-        "economic_impact_gross",
-        "economic_recovered",
-        "economic_net_loss",
-      ].join(",")
-    )
+    .select(cols)
     .eq("creator_customer_uuid", creatorCustomerUuid)
     .gte("created_at", fromTs)
     .lte("created_at", toTs)
     .order("created_at", { ascending: true });
 
-  if (error) throw new Error(`QUERY_FAILED:${error.message}`);
+  if (error) throw new Error("query_failed");
   return (data ?? []) as any;
 }
 
 /* ======================================================
- * Aggregations
+ * AGGREGATIONS
  * ====================================================== */
 type EconPointDaily = {
   day: string; // YYYY-MM-DD
@@ -216,7 +239,7 @@ type EconPointMonthly = {
 function buildEconomicImpactDaily(rows: EvalRow[], periodField: PeriodField, from: string, to: string) {
   const map = new Map<string, EconPointDaily>();
 
-  // 1) Pre-fill all days (important for “línea continua”)
+  // pre-fill todos los días
   const a = parseISODateOnly(from);
   const b = parseISODateOnly(to);
   for (let d = new Date(a.getTime()); d <= b; d = addDaysUTC(d, 1)) {
@@ -224,7 +247,6 @@ function buildEconomicImpactDaily(rows: EvalRow[], periodField: PeriodField, fro
     map.set(key, { day: key, incidents: 0, gross: 0, recovered: 0, net: 0 });
   }
 
-  // 2) Aggregate
   for (const r of rows) {
     const day = getRowDateKey(r, periodField);
     if (!map.has(day)) continue;
@@ -292,41 +314,76 @@ function buildEconomicImpactMonthly(rows: EvalRow[], periodField: PeriodField) {
 }
 
 /* ======================================================
+ * ERROR MAP (STRICT)
+ * ====================================================== */
+function mapError(e: unknown): { status: number; detail: string } {
+  const msg = String((e as any)?.message ?? e ?? "request_failed");
+
+  if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return { status: 401, detail: "UNAUTHENTICATED" };
+  if (msg === "PLAN_NOT_ACTIVE") return { status: 402, detail: "PLAN_NOT_ACTIVE" };
+
+  if (msg.startsWith("FORBIDDEN") || msg === "membership_lookup_failed" || msg === "entitlements_failed") {
+    return { status: 403, detail: "FORBIDDEN" };
+  }
+
+  if (msg.startsWith("invalid_")) return { status: 400, detail: msg };
+  if (msg === "unsupported_metric") return { status: 400, detail: "invalid_metric" };
+  if (msg === "query_failed") return { status: 500, detail: "INTERNAL" };
+
+  return { status: 500, detail: "INTERNAL" };
+}
+
+/* ======================================================
  * MAIN
  * ====================================================== */
 export default Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "method_not_allowed", detail: "method_not_allowed" });
+  }
+
+  const admin = supabaseServiceClient();
 
   try {
-    const sessionToken = req.headers.get("x-session-token") ?? "";
-    if (!sessionToken) return json(req, 401, { ok: false, error: "missing_session_token" });
+    const user = await requireUser(req);
 
-    let body: MetricsReq;
+    let body: MetricsReq | null = null;
     try {
       body = (await req.json()) as MetricsReq;
     } catch {
-      return json(req, 400, { ok: false, error: "invalid_json" });
+      return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_json" });
     }
 
     const metric = body.metric as Metric;
-    const periodFrom = String(body.period_from ?? "");
-    const periodTo = String(body.period_to ?? "");
+    const periodFrom = String(body.period_from ?? "").trim();
+    const periodTo = String(body.period_to ?? "").trim();
     const periodField = (body.period_field as PeriodField) || "evaluation_date";
 
-    assertDate(periodFrom);
-    assertDate(periodTo);
-    if (periodFrom > periodTo) return json(req, 400, { ok: false, error: "invalid_period_range" });
+    if (metric !== "ECONOMIC_IMPACT_DAILY" && metric !== "ECONOMIC_IMPACT_MONTHLY") {
+      throw new Error("unsupported_metric");
+    }
 
-    const sb = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
-    const sess = await resolveSessionCustomer(sb, sessionToken);
+    assertDate(periodFrom, "period_from");
+    assertDate(periodTo, "period_to");
+    if (periodFrom > periodTo) return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_period_range" });
 
-    const rows = await fetchEvaluationsForRange(sb, sess.customer_id, periodField, periodFrom, periodTo);
+    const org_id = await resolveOrgForUserOrThrow(admin, user.id, body.org_id ? String(body.org_id) : null);
+
+    const ent = await loadEntitlementsOrThrow(admin, org_id);
+    assertOrgActiveOrThrow(ent);
+
+    const customer_id = String(ent.customer_id);
+    const app_code = String(ent.app_code ?? DEFAULT_APP_CODE);
+
+    const rows = await fetchEvaluationsForRange(admin, customer_id, periodField, periodFrom, periodTo);
 
     if (metric === "ECONOMIC_IMPACT_DAILY") {
       const { series, totals } = buildEconomicImpactDaily(rows, periodField, periodFrom, periodTo);
       return json(req, 200, {
         ok: true,
+        app_code,
+        org_id,
+        customer_id,
         metric,
         period_from: periodFrom,
         period_to: periodTo,
@@ -336,21 +393,21 @@ export default Deno.serve(async (req: Request) => {
       });
     }
 
-    if (metric === "ECONOMIC_IMPACT_MONTHLY") {
-      const { series, totals } = buildEconomicImpactMonthly(rows, periodField);
-      return json(req, 200, {
-        ok: true,
-        metric,
-        period_from: periodFrom,
-        period_to: periodTo,
-        period_field: periodField,
-        totals,
-        series,
-      });
-    }
-
-    return json(req, 400, { ok: false, error: "unsupported_metric" });
-  } catch (e: any) {
-    return json(req, 500, { ok: false, error: "request_failed", detail: String(e?.message ?? e) });
+    const { series, totals } = buildEconomicImpactMonthly(rows, periodField);
+    return json(req, 200, {
+      ok: true,
+      app_code,
+      org_id,
+      customer_id,
+      metric,
+      period_from: periodFrom,
+      period_to: periodTo,
+      period_field: periodField,
+      totals,
+      series,
+    });
+  } catch (e) {
+    const mapped = mapError(e);
+    return json(req, mapped.status, { ok: false, error: "request_failed", detail: mapped.detail });
   }
 });

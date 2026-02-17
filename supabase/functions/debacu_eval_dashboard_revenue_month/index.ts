@@ -1,58 +1,16 @@
 // supabase/functions/debacu_eval_dashboard_revenue_month/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-/* ======================================================
- * ENV
- * ====================================================== */
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
 /* ======================================================
- * CLIENTS
- * ====================================================== */
-const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
-
-/* ======================================================
- * CORS
- * ====================================================== */
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function cors(origin: string | null) {
-  const o = origin ?? "";
-  const allow = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allow,
-    "Vary": "Origin",
-    // ✅ JWT-only
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...cors(origin), "Content-Type": "application/json; charset=utf-8" },
-  });
-}
-
-/* ======================================================
- * Helpers
+ * Helpers (fechas / números)
  * ====================================================== */
 function startOfMonthISO(d = new Date()): string {
   const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0));
-  return x.toISOString().slice(0, 10); // YYYY-MM-DD
+  return x.toISOString().slice(0, 10);
 }
 
 function addMonthsStartISO(monthsBack: number): string {
@@ -71,104 +29,178 @@ function asNumber(v: unknown): number {
   return 0;
 }
 
+function isUuid(v: unknown): v is string {
+  if (typeof v !== "string") return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+
 /* ======================================================
- * JWT auth + tenant resolution (no session legacy)
+ * Multi-org resolution (membership)
  * ====================================================== */
-function userClient(req: Request) {
-  const auth = req.headers.get("authorization") ?? "";
-  return createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
+async function resolveOrgIdForUser(
+  sbAdmin: ReturnType<typeof createClient>,
+  userId: string,
+  requestedOrgId?: string,
+): Promise<{ ok: true; org_id: string } | { ok: false; status: number; detail: string }> {
+  // Si viene org_id, lo validamos por membership (y no “a ojo”)
+  if (requestedOrgId) {
+    const { data, error } = await sbAdmin
+      .from("debacu_eval_org_members")
+      .select("org_id")
+      .eq("user_id", userId)
+      .eq("org_id", requestedOrgId)
+      .limit(1)
+      .maybeSingle();
 
-async function requireJwtUser(req: Request) {
-  const sb = userClient(req);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user?.id) return { ok: false as const, status: 401, detail: "invalid_jwt" };
-  return { ok: true as const, user_id: data.user.id };
-}
+    if (error) return { ok: false, status: 500, detail: "request_failed" };
+    if (!data?.org_id) return { ok: false, status: 403, detail: "FORBIDDEN" };
+    return { ok: true, org_id: String(data.org_id) };
+  }
 
-async function requireOrgMemberAndCustomerId(user_id: string) {
-  const { data: mem, error: memErr } = await supabaseAdmin
+  // Fallback determinista: primera membership por created_at asc
+  const { data, error } = await sbAdmin
     .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", user_id)
+    .select("org_id, created_at")
+    .eq("user_id", userId)
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
-  if (memErr) return { ok: false as const, status: 403, detail: `membership_failed:${memErr.message}` };
-  if (!mem?.org_id) return { ok: false as const, status: 403, detail: "forbidden_no_org" };
+  if (error) return { ok: false, status: 500, detail: "request_failed" };
+  if (!data?.org_id) return { ok: false, status: 403, detail: "FORBIDDEN" };
+  return { ok: true, org_id: String(data.org_id) };
+}
 
-  const org_id = String(mem.org_id);
+async function loadEntitlements(
+  sbAdmin: ReturnType<typeof createClient>,
+  orgId: string,
+): Promise<
+  | {
+      ok: true;
+      ent: {
+        org_id: string;
+        customer_id: string | null;
+        seats_used: number | null;
+        plan_code: string | null;
+        max_users: number | null;
+        subscription_status: string | null;
+      };
+    }
+  | { ok: false; status: number; detail: string }
+> {
+  const { data, error } = await sbAdmin
+    .from("debacu_eval_org_entitlements_v")
+    .select("org_id, customer_id, seats_used, plan_code, max_users, subscription_status")
+    .eq("org_id", orgId)
+    .maybeSingle();
 
-  // customer_id: prefer entitlements view if exists
-  let customer_id: string | null = null;
+  if (error) return { ok: false, status: 500, detail: "request_failed" };
+  if (!data) return { ok: false, status: 403, detail: "FORBIDDEN" };
 
-  try {
-    const { data: ent, error: entErr } = await supabaseAdmin
-      .from("debacu_eval_org_entitlements_v")
-      .select("customer_id")
-      .eq("org_id", org_id)
-      .maybeSingle();
+  return { ok: true, ent: data as any };
+}
 
-    if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
-  } catch {
-    // view may not exist; ignore
+function assertPlanActiveOrThrow(ent: {
+  plan_code: string | null;
+  max_users: number | null;
+  subscription_status: string | null;
+}) {
+  // En tu VIEW actual solo sale ACTIVE; si mañana amplías estados, ajustas aquí.
+  if (!ent.plan_code || !ent.max_users || ent.subscription_status !== "ACTIVE") {
+    // 402 estándar que pediste
+    throw new Error("PLAN_NOT_ACTIVE");
   }
-
-  if (!customer_id) {
-    const { data: org, error: orgErr } = await supabaseAdmin
-      .from("debacu_eval_organizations")
-      .select("customer_id")
-      .eq("id", org_id)
-      .maybeSingle();
-
-    if (orgErr) return { ok: false as const, status: 403, detail: `org_lookup_failed:${orgErr.message}` };
-    if (!org?.customer_id) return { ok: false as const, status: 403, detail: "forbidden_no_customer" };
-
-    customer_id = String(org.customer_id);
-  }
-
-  return { ok: true as const, customer_id };
 }
 
 /* ======================================================
  * Handler
  * ====================================================== */
-serve(async (req) => {
-  const origin = req.headers.get("origin");
-
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: cors(origin) });
-  }
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
 
   if (req.method !== "POST") {
-    return json(origin, 405, { ok: false, detail: "method_not_allowed" });
+    return json(req, 405, {
+      ok: false,
+      error: "request_failed",
+      detail: "method_not_allowed",
+    });
   }
 
-  // 1) JWT
-  const jwt = await requireJwtUser(req);
-  if (!jwt.ok) return json(origin, jwt.status, { ok: false, detail: jwt.detail });
+  // Auth (JWT-only)
+  const user = await requireUser(req); // debe lanzar/retornar error estándar desde shared
 
-  // 2) tenant
-  const tenant = await requireOrgMemberAndCustomerId(jwt.user_id);
-  if (!tenant.ok) return json(origin, tenant.status, { ok: false, detail: tenant.detail });
-
-  const customer_id = tenant.customer_id;
+  // Service-role para consistencia (lecturas privadas)
+  const sbAdmin = supabaseServiceClient();
 
   try {
-    const month_from = startOfMonthISO();
-    const trend_from = addMonthsStartISO(5); // incluye mes actual => 6 meses (0..5)
+    const body = await req.json().catch(() => ({} as any));
+    const requestedOrgId = body?.org_id;
 
-    const { data: rows, error } = await supabaseAdmin
+    if (requestedOrgId != null && !isUuid(requestedOrgId)) {
+      return json(req, 400, {
+        ok: false,
+        error: "request_failed",
+        detail: "invalid_org_id",
+      });
+    }
+
+    // Resolve org (multi-org)
+    const orgRes = await resolveOrgIdForUser(sbAdmin, user.id, requestedOrgId);
+    if (!orgRes.ok) {
+      return json(req, orgRes.status, {
+        ok: false,
+        error: "request_failed",
+        detail: orgRes.detail,
+      });
+    }
+
+    // Entitlements (customer_id + plan)
+    const entRes = await loadEntitlements(sbAdmin, orgRes.org_id);
+    if (!entRes.ok) {
+      return json(req, entRes.status, {
+        ok: false,
+        error: "request_failed",
+        detail: entRes.detail,
+      });
+    }
+
+    // Plan enforcement
+    try {
+      assertPlanActiveOrThrow(entRes.ent);
+    } catch {
+      return json(req, 402, {
+        ok: false,
+        error: "request_failed",
+        detail: "PLAN_NOT_ACTIVE",
+      });
+    }
+
+    const customerId = entRes.ent.customer_id;
+    if (!customerId) {
+      return json(req, 403, {
+        ok: false,
+        error: "request_failed",
+        detail: "FORBIDDEN",
+      });
+    }
+
+    // Business logic (misma salida que tenías)
+    const month_from = startOfMonthISO();
+    const trend_from = addMonthsStartISO(5); // 6 meses (incluye el actual)
+
+    const { data: rows, error } = await sbAdmin
       .from("debacu_evaluations")
       .select("evaluation_date, platform, economic_impact_gross, economic_recovered, economic_net_loss")
-      .eq("customer_id", customer_id)
+      .eq("customer_id", customerId)
       .gte("evaluation_date", trend_from);
 
-    if (error) throw error;
+    if (error) {
+      return json(req, 500, {
+        ok: false,
+        error: "request_failed",
+        detail: "request_failed",
+      });
+    }
 
     const list = Array.isArray(rows) ? rows : [];
 
@@ -205,7 +237,6 @@ serve(async (req) => {
       trendMap.set(k, (trendMap.get(k) ?? 0) + asNumber(r.economic_net_loss));
     }
 
-    // Serie ordenada (últimos 6 meses)
     const now = new Date();
     const keys: string[] = [];
     for (let i = 5; i >= 0; i--) {
@@ -218,9 +249,11 @@ serve(async (req) => {
       net_loss: Number((trendMap.get(k) ?? 0).toFixed(2)),
     }));
 
-    return json(origin, 200, {
+    return json(req, 200, {
       ok: true,
       data: {
+        org_id: orgRes.org_id,
+        customer_id: customerId,
         month: month_from.slice(0, 7),
         impact: {
           incidents_count: month_incidents,
@@ -232,8 +265,12 @@ serve(async (req) => {
         trends: { last_6_months },
       },
     });
-  } catch (e: any) {
-    console.error("debacu_eval_dashboard_revenue_month error:", e);
-    return json(origin, 500, { ok: false, detail: "internal_error" });
+  } catch (_e) {
+    // No filtramos stack traces ni mensajes internos
+    return json(req, 500, {
+      ok: false,
+      error: "request_failed",
+      detail: "internal_error",
+    });
   }
 });

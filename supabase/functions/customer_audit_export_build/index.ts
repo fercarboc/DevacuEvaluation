@@ -3,50 +3,14 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { PDFDocument, StandardFonts, rgb } from "https://esm.sh/pdf-lib@1.17.1";
 
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
+
 /* ======================================================
  * ENV
  * ====================================================== */
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-
 const DEFAULT_BUCKET = Deno.env.get("EXPORTS_BUCKET") || "audit-exports";
 const DEFAULT_APP_CODE = "DEBACU_EVAL";
-
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-/* ======================================================
- * CORS + RESP (JWT-only)
- * ====================================================== */
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8" },
-  });
-}
-
-function mustEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env var ${name}`);
-  return v;
-}
 
 /* ======================================================
  * TYPES
@@ -63,6 +27,9 @@ type ExportScope =
 type PeriodField = "evaluation_date" | "created_at";
 
 type BuildReq = {
+  // ✅ multi-org: recomendado obligatorio en UI
+  org_id?: string | null;
+
   export_type: ExportType;
   export_scope: ExportScope;
   period_from: string; // YYYY-MM-DD
@@ -75,88 +42,19 @@ type BuildReq = {
 
 type TenantResolved = {
   org_id: string;
-  customer_id: string; // hotel uuid
+  customer_id: string;
   customer_name: string;
   app_code: string;
 };
 
-/* ======================================================
- * JWT helpers
- * ====================================================== */
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
-
-function adminClient() {
-  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
-
-async function requireJwtUser(req: Request) {
-  const sb = userClient(req);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
-
-async function resolveTenant(admin: ReturnType<typeof createClient>, user_id: string): Promise<TenantResolved> {
-  const { data: mem, error: memErr } = await admin
-    .from("debacu_eval_org_members")
-    .select("org_id, created_at")
-    .eq("user_id", user_id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
-
-  const org_id = String(mem.org_id);
-
-  // customer_id + customer_name
-  let customer_id: string | null = null;
-  let customer_name: string | null = null;
-
-  // 1) view entitlements (si existe)
-  try {
-    const { data: ent, error: entErr } = await admin
-      .from("debacu_eval_org_entitlements_v")
-      .select("customer_id, org_name")
-      .eq("org_id", org_id)
-      .maybeSingle();
-
-    if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
-    if (!entErr && ent?.org_name) customer_name = String(ent.org_name);
-  } catch {
-    // ignore
-  }
-
-  // 2) fallback organizations table
-  if (!customer_id || !customer_name) {
-    const { data: org, error: orgErr } = await admin
-      .from("debacu_eval_organizations")
-      .select("customer_id, name")
-      .eq("id", org_id)
-      .maybeSingle();
-
-    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
-    customer_id = String(org.customer_id);
-    if (!customer_name) customer_name = String(org.name ?? "");
-  }
-
-  return {
-    org_id,
-    customer_id: customer_id!,
-    customer_name: customer_name ?? "",
-    app_code: DEFAULT_APP_CODE,
-  };
-}
+type EntitlementsRow = {
+  org_id: string;
+  customer_id: string;
+  seats_used: number | null;
+  plan_code: string | null;
+  max_users: number | null;
+  subscription_status: string | null; // ACTIVE | null
+};
 
 /* ======================================================
  * HELPERS (dates, numbers, csv)
@@ -198,14 +96,123 @@ async function sha256Hex(bytes: Uint8Array) {
 }
 
 /* ======================================================
+ * MULTI-ORG RESOLUTION
+ * ====================================================== */
+async function resolveOrgId(
+  admin: ReturnType<typeof createClient>,
+  userId: string,
+  requestedOrgId?: string | null
+): Promise<string> {
+  // 1) si viene org_id, validar membership (preferido)
+  if (requestedOrgId) {
+    // Intento con status=ACTIVE si existe la columna; si no, fallback sin status.
+    try {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id")
+        .eq("org_id", requestedOrgId)
+        .eq("user_id", userId)
+        // si existe status, esto valida “activa”
+        // (si no existe, saltará error y caemos al catch)
+        .eq("status", "ACTIVE")
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!data?.org_id) throw new Error("FORBIDDEN_NOT_MEMBER");
+      return String(data.org_id);
+    } catch {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id")
+        .eq("org_id", requestedOrgId)
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (error) throw new Error(`MEMBERSHIP_FAILED:${error.message}`);
+      if (!data?.org_id) throw new Error("FORBIDDEN_NOT_MEMBER");
+      return String(data.org_id);
+    }
+  }
+
+  // 2) fallback determinista: primera membership (idealmente ACTIVE)
+  try {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, created_at")
+      .eq("user_id", userId)
+      .eq("status", "ACTIVE")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+    return String(data.org_id);
+  } catch {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw new Error(`MEMBERSHIP_FAILED:${error.message}`);
+    if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+    return String(data.org_id);
+  }
+}
+
+async function resolveTenant(
+  admin: ReturnType<typeof createClient>,
+  orgId: string
+): Promise<TenantResolved> {
+  const { data: org, error: orgErr } = await admin
+    .from("debacu_eval_organizations")
+    .select("id, customer_id, name")
+    .eq("id", orgId)
+    .maybeSingle();
+
+  if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
+  if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+
+  return {
+    org_id: String(org.id),
+    customer_id: String(org.customer_id),
+    customer_name: String(org.name ?? ""),
+    app_code: DEFAULT_APP_CODE,
+  };
+}
+
+async function requirePlanActiveForOrg(
+  admin: ReturnType<typeof createClient>,
+  orgId: string
+): Promise<EntitlementsRow> {
+  // ✅ usa la vista (sin RPC) que ya creaste
+  const { data, error } = await admin
+    .from("debacu_eval_org_entitlements_v")
+    .select("org_id, customer_id, seats_used, plan_code, max_users, subscription_status")
+    .eq("org_id", orgId)
+    .maybeSingle();
+
+  if (error) throw new Error(`ENTITLEMENTS_FAILED:${error.message}`);
+  if (!data?.org_id || !data?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+
+  // Regla estricta: si no hay ACTIVE, no hay export
+  if (data.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+
+  return data as EntitlementsRow;
+}
+
+/* ======================================================
  * DATA FETCH
  * ====================================================== */
 type EvalRow = {
   platform: string | null;
   incident_type: string | null;
-  rating: number | null; // int
-  evaluation_date: string | null; // date
-  created_at: string; // timestamptz
+  rating: number | null;
+  evaluation_date: string | null;
+  created_at: string;
   economic_impact_gross: string | number | null;
   economic_recovered: string | number | null;
   economic_net_loss: string | number | null;
@@ -218,8 +225,9 @@ async function fetchEvaluationsForRange(
   from: string,
   to: string
 ): Promise<EvalRow[]> {
-  // ⚠️ Si tu tabla real es "debacu_eval_evaluations" cambia aquí.
-  const TABLE = "debacu_evaluations";
+  // Preferimos debacu_eval_evaluations, pero soportamos fallback por si tu entorno aún tiene debacu_evaluations.
+  const primary = Deno.env.get("EVALUATIONS_TABLE") || "debacu_eval_evaluations";
+  const fallback = "debacu_evaluations";
 
   const cols = [
     "platform",
@@ -232,32 +240,43 @@ async function fetchEvaluationsForRange(
     "economic_net_loss",
   ].join(",");
 
-  if (periodField === "evaluation_date") {
+  async function run(table: string) {
+    if (periodField === "evaluation_date") {
+      const { data, error } = await sb
+        .from(table)
+        .select(cols)
+        .eq("creator_customer_uuid", creatorCustomerUuid)
+        .gte("evaluation_date", from)
+        .lte("evaluation_date", to)
+        .order("evaluation_date", { ascending: true });
+      if (error) throw error;
+      return (data ?? []) as any;
+    }
+
+    const fromTs = `${from}T00:00:00.000Z`;
+    const toTs = `${to}T23:59:59.999Z`;
+
     const { data, error } = await sb
-      .from(TABLE)
+      .from(table)
       .select(cols)
       .eq("creator_customer_uuid", creatorCustomerUuid)
-      .gte("evaluation_date", from)
-      .lte("evaluation_date", to)
-      .order("evaluation_date", { ascending: true });
-
-    if (error) throw new Error(`QUERY_FAILED:${error.message}`);
+      .gte("created_at", fromTs)
+      .lte("created_at", toTs)
+      .order("created_at", { ascending: true });
+    if (error) throw error;
     return (data ?? []) as any;
   }
 
-  const fromTs = `${from}T00:00:00.000Z`;
-  const toTs = `${to}T23:59:59.999Z`;
-
-  const { data, error } = await sb
-    .from(TABLE)
-    .select(cols)
-    .eq("creator_customer_uuid", creatorCustomerUuid)
-    .gte("created_at", fromTs)
-    .lte("created_at", toTs)
-    .order("created_at", { ascending: true });
-
-  if (error) throw new Error(`QUERY_FAILED:${error.message}`);
-  return (data ?? []) as any;
+  try {
+    return await run(primary);
+  } catch (e: any) {
+    const msg = String(e?.message ?? "");
+    // fallback solo si el error apunta a tabla inexistente
+    if (msg.toLowerCase().includes("does not exist") || msg.toLowerCase().includes("relation")) {
+      return await run(fallback);
+    }
+    throw new Error(`QUERY_FAILED:${msg}`);
+  }
 }
 
 /* ======================================================
@@ -565,9 +584,13 @@ function toCsvEconMonthly(rows: EconMonthlyRow[]) {
   const lines = [header.join(",")];
   for (const r of rows) {
     lines.push(
-      [csvEscape(r.month), csvEscape(r.incidents), csvEscape(asMoney(r.gross)), csvEscape(asMoney(r.recovered)), csvEscape(asMoney(r.net))].join(
-        ","
-      )
+      [
+        csvEscape(r.month),
+        csvEscape(r.incidents),
+        csvEscape(asMoney(r.gross)),
+        csvEscape(asMoney(r.recovered)),
+        csvEscape(asMoney(r.net)),
+      ].join(",")
     );
   }
   return lines.join("\n");
@@ -839,68 +862,129 @@ async function buildPdfLandscape(table: PdfTable): Promise<Uint8Array> {
 }
 
 /* ======================================================
- * STORAGE UPLOAD + SIGNED URL
+ * STORAGE UPLOAD + SIGNED URL (higiene: no orphan)
  * ====================================================== */
-async function uploadAndSign(
+async function uploadBytes(
   sb: ReturnType<typeof createClient>,
   bucket: string,
   path: string,
   bytes: Uint8Array,
   contentType: string
 ) {
-  const { error: upErr } = await sb.storage.from(bucket).upload(path, bytes, {
+  const { error } = await sb.storage.from(bucket).upload(path, bytes, {
     contentType,
-    upsert: true,
+    // ✅ sin upsert:true (path lleva UUID, no debe pisarse)
+    upsert: false,
   });
-  if (upErr) throw new Error(`STORAGE_UPLOAD_FAILED:${upErr.message}`);
+  if (error) throw new Error(`STORAGE_UPLOAD_FAILED:${error.message}`);
+}
 
-  const { data: signed, error: signErr } = await sb.storage.from(bucket).createSignedUrl(path, 60 * 15);
-  if (signErr) throw new Error(`SIGNED_URL_FAILED:${signErr.message}`);
+async function signUrl(sb: ReturnType<typeof createClient>, bucket: string, path: string) {
+  const { data, error } = await sb.storage.from(bucket).createSignedUrl(path, 60 * 15);
+  if (error) throw new Error(`SIGNED_URL_FAILED:${error.message}`);
+  return data?.signedUrl ?? null;
+}
 
-  return signed?.signedUrl ?? null;
+async function deletePathBestEffort(sb: ReturnType<typeof createClient>, bucket: string, path: string) {
+  try {
+    await sb.storage.from(bucket).remove([path]);
+  } catch {
+    // best-effort: no throw
+  }
+}
+
+/* ======================================================
+ * ERROR MAPPING (no stack traces)
+ * ====================================================== */
+function mapError(e: unknown): { status: number; detail: string } {
+  const msg = String((e as any)?.message ?? e ?? "request_failed");
+
+  // 401
+  if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED" || msg.includes("JWT")) {
+    return { status: 401, detail: "UNAUTHENTICATED" };
+  }
+
+  // 402
+  if (msg === "PLAN_NOT_ACTIVE") {
+    return { status: 402, detail: "PLAN_NOT_ACTIVE" };
+  }
+
+  // 403
+  if (
+    msg.startsWith("FORBIDDEN") ||
+    msg.startsWith("MEMBERSHIP_FAILED") ||
+    msg.startsWith("ORG_LOOKUP_FAILED") ||
+    msg.startsWith("ENTITLEMENTS_FAILED")
+  ) {
+    return { status: 403, detail: msg.startsWith("FORBIDDEN") ? msg : "FORBIDDEN" };
+  }
+
+  // 400
+  if (
+    msg.startsWith("missing_") ||
+    msg.startsWith("invalid_") ||
+    msg === "invalid_json" ||
+    msg === "method_not_allowed"
+  ) {
+    return { status: 400, detail: msg };
+  }
+
+  // 500 genérico (sin stack)
+  return { status: 500, detail: "INTERNAL" };
 }
 
 /* ======================================================
  * MAIN (JWT-only)
  * ====================================================== */
 export default Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed", detail: "method_not_allowed" });
+
+  let storageUploaded = false;
+  let storagePath = "";
+  let exportId = "";
+  const admin = supabaseServiceClient(); // ✅ service role centralizado
 
   try {
-    // 1) JWT required
-    const user = await requireJwtUser(req);
+    // 1) JWT required (no x-session-token)
+    const user = await requireUser(req);
 
-    // 2) tenant
-    const sbAdmin = adminClient();
-    const tenant = await resolveTenant(sbAdmin, user.id);
-
-    // 3) parse body
+    // 2) parse body
     let body: BuildReq;
     try {
       body = (await req.json()) as BuildReq;
     } catch {
-      return json(req, 400, { ok: false, error: "invalid_json" });
+      throw new Error("invalid_json");
     }
 
+    const orgIdInput = body.org_id ? String(body.org_id) : null;
+
+    // 3) org resolve + tenant
+    const org_id = await resolveOrgId(admin, user.id, orgIdInput);
+    const tenant = await resolveTenant(admin, org_id);
+
+    // 4) plan gate (ACTIVE obligatorio para export)
+    await requirePlanActiveForOrg(admin, org_id);
+
+    // 5) validar request
     const exportType = body.export_type;
     const exportScope = body.export_scope;
     const periodFrom = String(body.period_from ?? "");
     const periodTo = String(body.period_to ?? "");
 
-    if (exportType !== "PDF" && exportType !== "CSV") return json(req, 400, { ok: false, error: "invalid_export_type" });
-    if (!exportScope) return json(req, 400, { ok: false, error: "missing_export_scope" });
+    if (exportType !== "PDF" && exportType !== "CSV") throw new Error("invalid_export_type");
+    if (!exportScope) throw new Error("missing_export_scope");
 
     assertDate(periodFrom);
     assertDate(periodTo);
-    if (periodFrom > periodTo) return json(req, 400, { ok: false, error: "invalid_period_range" });
+    if (periodFrom > periodTo) throw new Error("invalid_period_range");
 
     const filters = body.filters ?? {};
     const periodField: PeriodField =
       (filters?.period_field as PeriodField) || (filters?.use_created_at ? "created_at" : "evaluation_date");
 
-    // 4) fetch raw rows (scoped by customer_id)
-    const evalRows = await fetchEvaluationsForRange(sbAdmin, tenant.customer_id, periodField, periodFrom, periodTo);
+    // 6) fetch raw rows (scoped by customer_id)
+    const evalRows = await fetchEvaluationsForRange(admin, tenant.customer_id, periodField, periodFrom, periodTo);
 
     let fileBytes: Uint8Array;
     let contentType: string;
@@ -910,7 +994,7 @@ export default Deno.serve(async (req: Request) => {
       new Date()
     )}`;
 
-    // 5) build export
+    // 7) build export
     if (exportScope === "INCIDENTS_BY_PLATFORM_MONTHLY") {
       const agg = buildIncidentsByPlatformMonthly(evalRows, periodField);
       rowCount = agg.length;
@@ -1065,25 +1149,32 @@ export default Deno.serve(async (req: Request) => {
         contentType = "application/pdf";
       }
     } else {
-      return json(req, 400, { ok: false, error: "unsupported_scope" });
+      throw new Error("unsupported_scope");
     }
 
-    // 6) storage path
-    const exportId = crypto.randomUUID();
+    // 8) storage path
+    exportId = crypto.randomUUID();
     const ext = exportType === "PDF" ? "pdf" : "csv";
     const dateFolder = isoDate(new Date());
-    const safeScope = exportScope.toLowerCase();
+    const safeScope = String(exportScope).toLowerCase();
     const safeHotel = (tenant.customer_name || "hotel").toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const storagePath = `${dateFolder}/export_${dateFolder}_${safeScope}_${safeHotel}_${periodFrom}_${periodTo}_${exportId}.${ext}`;
+    storagePath = `${dateFolder}/export_${dateFolder}_${safeScope}_${safeHotel}_${periodFrom}_${periodTo}_${exportId}.${ext}`;
 
     const sha = await sha256Hex(fileBytes);
     const sizeBytes = fileBytes.byteLength;
 
-    const downloadUrl = await uploadAndSign(sbAdmin, DEFAULT_BUCKET, storagePath, fileBytes, contentType);
+    // 9) upload + sign (si falla luego el insert => borrar)
+    await uploadBytes(admin, DEFAULT_BUCKET, storagePath, fileBytes, contentType);
+    storageUploaded = true;
 
-    // 7) audit insert (JWT identity)
+    const downloadUrl = await signUrl(admin, DEFAULT_BUCKET, storagePath);
+
+    // 10) audit insert + devolver created_at real
     const insertRow = {
       id: exportId,
+
+      org_id: tenant.org_id, // si existe la columna en tu tabla, útil; si no, quítalo
+      customer_id: tenant.customer_id, // si existe; si no, quítalo
 
       generated_by_user_id: user.id,
       generated_by_email: user.email ?? null,
@@ -1117,13 +1208,21 @@ export default Deno.serve(async (req: Request) => {
       },
     };
 
-    const { error: insErr } = await sbAdmin.from("debacu_eval_audit_exports").insert(insertRow as any);
+    // ⚠️ Si tu tabla debacu_eval_audit_exports NO tiene org_id/customer_id como columnas,
+    // elimina esas dos propiedades del insertRow.
+    const { data: ins, error: insErr } = await admin
+      .from("debacu_eval_audit_exports")
+      .insert(insertRow as any)
+      .select("id, created_at")
+      .maybeSingle();
+
     if (insErr) throw new Error(`EXPORT_INSERT_FAILED:${insErr.message}`);
 
     return json(req, 200, {
       ok: true,
       export_id: exportId,
       status: "READY",
+      created_at: ins?.created_at ?? null,
       row_count: rowCount,
       sha256: sha,
       file_size_bytes: sizeBytes,
@@ -1131,16 +1230,14 @@ export default Deno.serve(async (req: Request) => {
       storage_path: storagePath,
       download_url: downloadUrl,
     });
-  } catch (e: any) {
-    const msg = String(e?.message ?? e);
-    const status =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED")
-          ? 403
-          : 500;
+  } catch (e) {
+    // higiene: si ya subiste a storage y luego falló DB/sign => borrar best-effort
+    if (storageUploaded && storagePath) {
+      await deletePathBestEffort(admin, DEFAULT_BUCKET, storagePath);
+    }
 
-    console.error("debacu_eval_audit_exports_build ERROR", e);
-    return json(req, status, { ok: false, error: "request_failed", detail: msg });
+    const mapped = mapError(e);
+    // ✅ no stack traces al cliente
+    return json(req, mapped.status, { ok: false, error: "request_failed", detail: mapped.detail });
   }
 });
