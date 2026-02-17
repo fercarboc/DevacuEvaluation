@@ -300,17 +300,33 @@ export default Deno.serve(async (req: Request) => {
     }
 
     // 5) createdThisMonth (best-effort, mantengo TU tabla/campos tal cual; si falla, 0)
-    let createdThisMonth = 0;
-    try {
-      const { count } = await admin
-        .from("debacu_evaluations")
-        .select("id", { count: "exact", head: true })
-        .eq("creator_customer_id", customerId)
-        .gte("created_at", monthStart);
-      createdThisMonth = count ?? 0;
-    } catch {
-      createdThisMonth = 0;
-    }
+ let createdThisMonth = 0;
+
+try {
+  // esquema nuevo
+  const { count } = await admin
+    .from("debacu_evaluations")
+    .select("id", { count: "exact", head: true })
+    .eq("customer_id", customerId)
+    .gte("created_at", monthStart);
+
+  createdThisMonth = count ?? 0;
+} catch (e: any) {
+  // fallback esquema antiguo
+  try {
+    const { count } = await admin
+      .from("debacu_evaluations")
+      .select("id", { count: "exact", head: true })
+      .eq("creator_customer_id", customerId)
+      .gte("created_at", monthStart);
+
+    createdThisMonth = count ?? 0;
+  } catch {
+    createdThisMonth = 0;
+  }
+}
+
+
 
     // 6) activity (best-effort)
     let activity: Array<{

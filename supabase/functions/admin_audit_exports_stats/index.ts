@@ -1,87 +1,80 @@
 // supabase/functions/admin_audit_exports_stats/index.ts
 // deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const corsHeaders: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Max-Age": "86400",
-};
-
-function json(res: any, status = 200) {
-  return new Response(JSON.stringify(res), {
-    status,
-    headers: { ...corsHeaders, "content-type": "application/json; charset=utf-8" },
-  });
-}
-
-function requireEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env ${name}`);
-  return v;
-}
+import { json, preflight } from "../_shared/cors.ts";
+import { requireAdmin, supabaseServiceClient } from "../_shared/auth.ts";
 
 type Body = { export_id: string };
 
-async function isAdmin(sb: any, userId: string, email: string) {
-  const { data } = await sb
-    .from("debacu_eval_admin_users")
-    .select("active")
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (data?.active === true) return true;
-  return email === "admin@debacu.com";
+function cleanStr(v: any) {
+  const s = String(v ?? "").trim();
+  return s ? s : null;
 }
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  // ✅ CORS
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "method_not_allowed" });
+  }
 
   try {
-    if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+    // ✅ ADMIN (JWT-only real; sin RPC)
+    await requireAdmin(req);
 
-    const SUPABASE_URL = requireEnv("SUPABASE_URL");
-    const SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+    const body = (await req.json().catch(() => ({}))) as Partial<Body>;
+    const export_id = cleanStr(body?.export_id);
+    if (!export_id) return json(req, 400, { ok: false, error: "export_id_required" });
 
-    const authHeader = req.headers.get("authorization") || "";
-    const jwt = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-    if (!jwt) return json({ ok: false, error: "Missing Bearer token" }, 401);
+    const sb = supabaseServiceClient();
 
-    const sbUser = createClient(SUPABASE_URL, SERVICE_KEY, {
-      global: { headers: { Authorization: `Bearer ${jwt}` } },
-    });
+    // 1) count SIN traer filas (head: true)
+    const { count, error: countErr } = await sb
+      .from("debacu_eval_audit_export_downloads")
+      .select("id", { count: "exact", head: true })
+      .eq("export_id", export_id);
 
-    const { data: userData, error: userErr } = await sbUser.auth.getUser();
-    if (userErr || !userData?.user) return json({ ok: false, error: "Invalid auth" }, 401);
+    if (countErr) {
+      return json(req, 500, {
+        ok: false,
+        error: "db_error",
+        detail: `count: ${countErr.message}`,
+      });
+    }
 
-    const sb = createClient(SUPABASE_URL, SERVICE_KEY);
-    const email = (userData.user.email || "").toLowerCase();
-    if (!(await isAdmin(sb, userData.user.id, email))) return json({ ok: false, error: "Forbidden" }, 403);
-
-    const body = (await req.json()) as Body;
-    if (!body?.export_id) return json({ ok: false, error: "export_id required" }, 400);
-
-    // 1) total + last
-    const { data: rows, error } = await sb
+    // 2) last (solo 1 fila)
+    const { data: lastRow, error: lastErr } = await sb
       .from("debacu_eval_audit_export_downloads")
       .select("created_at, downloaded_by_email")
-      .eq("export_id", body.export_id)
-      .order("created_at", { ascending: false });
+      .eq("export_id", export_id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    if (error) return json({ ok: false, error: error.message }, 400);
+    if (lastErr) {
+      return json(req, 500, {
+        ok: false,
+        error: "db_error",
+        detail: `last: ${lastErr.message}`,
+      });
+    }
 
-    const download_count = rows?.length ?? 0;
-    const last = rows?.[0];
-
-    return json({
+    return json(req, 200, {
       ok: true,
       data: {
-        download_count,
-        last_downloaded_at: last?.created_at ?? null,
-        last_downloaded_by_email: last?.downloaded_by_email ?? null,
+        export_id,
+        download_count: count ?? 0,
+        last_downloaded_at: lastRow?.created_at ?? null,
+        last_downloaded_by_email: lastRow?.downloaded_by_email ?? null,
       },
     });
   } catch (e: any) {
-    return json({ ok: false, error: e?.message || "Unexpected error" }, 500);
+    const msg = e?.message ?? String(e);
+
+    if (msg === "UNAUTHORIZED") return json(req, 401, { ok: false, error: "unauthorized" });
+    if (msg === "FORBIDDEN") return json(req, 403, { ok: false, error: "forbidden" });
+    if (msg === "ADMIN_CHECK_FAILED") return json(req, 500, { ok: false, error: "admin_check_failed" });
+
+    return json(req, 500, { ok: false, error: "unexpected", detail: msg });
   }
 });

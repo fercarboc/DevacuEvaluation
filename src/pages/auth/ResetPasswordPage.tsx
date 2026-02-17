@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/services/supabase";
+import { orgInviteFinalize } from "@/services/orgInviteFinalize.service";
 
 export default function ResetPasswordPage() {
   const nav = useNavigate();
@@ -16,7 +17,7 @@ export default function ResetPasswordPage() {
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
-  // Si quieres: permitir reenviar desde aquí
+  // Permitir reenviar desde aquí
   const [recoverEmail, setRecoverEmail] = useState("");
 
   useEffect(() => {
@@ -32,6 +33,9 @@ export default function ResetPasswordPage() {
 
       setSessionOk(true);
       setEmail(s.user?.email ?? null);
+
+      // UX: si no han escrito nada aún, pre-rellena reenviar
+      if (s.user?.email) setRecoverEmail(s.user.email);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -51,14 +55,30 @@ export default function ResetPasswordPage() {
 
     setLoading(true);
     try {
+      // 1) Guardar password en Supabase Auth
       const { error } = await supabase.auth.updateUser({ password: p1 });
       if (error) throw error;
 
+      // 2) FINALIZAR INVITED → ACTIVE (si procede)
+      //    - Idempotente: si ya estaba ACTIVE no rompe
+      try {
+        await orgInviteFinalize();
+      } catch (e: any) {
+        // No bloqueamos el reset por esto, pero lo mostramos claro
+        // (si falla aquí, luego el postlogin podría no encontrar org)
+        console.error("orgInviteFinalize failed:", e);
+        setErr(
+          `Contraseña guardada, pero no se pudo activar la membresía del hotel: ${
+            e?.message ?? "error"
+          }`
+        );
+      }
+
       setOk("Contraseña actualizada. Ya puedes iniciar sesión.");
-      // recomendable: cerrar sesión tras el cambio
+
+      // Recomendable: cerrar sesión tras el cambio
       await supabase.auth.signOut();
 
-      // manda al login con flag
       setTimeout(() => nav("/login?pw=ok"), 800);
     } catch (e: any) {
       setErr(e?.message ?? "No se pudo actualizar la contraseña.");
@@ -80,7 +100,8 @@ export default function ResetPasswordPage() {
     setLoading(true);
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(to, {
-        redirectTo: `${window.location.origin}/reset-password`,
+        // ✅ Ruta estándar de este proyecto
+        redirectTo: `${window.location.origin}/auth/reset`,
       });
       if (error) throw error;
 
@@ -139,10 +160,7 @@ export default function ResetPasswordPage() {
                 {loading ? "Guardando…" : "Guardar contraseña"}
               </button>
 
-              <button
-                onClick={() => nav("/login")}
-                className="w-full px-4 py-2 rounded-lg border text-sm"
-              >
+              <button onClick={() => nav("/login")} className="w-full px-4 py-2 rounded-lg border text-sm">
                 Volver al login
               </button>
             </div>
@@ -175,20 +193,17 @@ export default function ResetPasswordPage() {
                 {loading ? "Enviando…" : "Reenviar email de recuperación"}
               </button>
 
-              <button
-                onClick={() => nav("/login")}
-                className="w-full px-4 py-2 rounded-lg border text-sm"
-              >
+              <button onClick={() => nav("/login")} className="w-full px-4 py-2 rounded-lg border text-sm">
                 Volver al login
               </button>
             </div>
           </>
         )}
 
-        {/* si quieres leer flags del login */}
         {sp.get("debug") === "1" ? (
           <pre className="mt-4 text-xs bg-slate-50 border rounded p-2 overflow-auto">
             origin: {window.location.origin}
+            {"\n"}reset_redirect: {`${window.location.origin}/auth/reset`}
           </pre>
         ) : null}
       </div>

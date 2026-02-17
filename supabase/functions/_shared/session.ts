@@ -23,7 +23,7 @@ export async function requireSession(req: Request): Promise<SessionCtx> {
   const sb = getServiceClient();
 
   const { data, error } = await sb
-    .from("debacu_evalsessions")
+    .from("debacu_eval_sessions")
     .select("id, token, customer_id, customer_name, app_code, expires_at, revoked_at")
     .eq("token", token)
     .maybeSingle();

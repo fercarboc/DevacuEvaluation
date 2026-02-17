@@ -1,0 +1,164 @@
+# Revenue Audit Intelligence (Debacu Evaluation360)
+
+Versión: 1.0  
+Objetivo: Permitir que hoteles sin departamento de revenue suban su histórico (CSV/Excel) para obtener analítica, auditoría de fugas y recomendaciones tipo “RMS-lite” **sin integración por API**.
+
+---
+
+## 1) Qué es y qué NO es
+
+### Qué es
+- Un **motor de auditoría de revenue** basado en el histórico de reservas.
+- Un **RMS-lite** (sugerencias y alertas simples) apoyado en patrones históricos, estacionalidad y reglas.
+- Un módulo que puede cruzar revenue con **costes operativos e incidencias** (diferencial Debacu).
+
+### Qué NO es (para evitar expectativas irreales)
+- No es un RMS “enterprise” con demanda externa, comp-set real-time, eventos, channel manager y optimización perfecta.
+- Sin API es **batch**: análisis al subir dataset, con refrescos manuales o programados por carga.
+
+---
+
+## 2) Fuentes de datos y formato
+
+### Fuente principal (sin API)
+- Exportación de PMS en CSV/Excel (reportes de reservas).
+
+### Alternativas
+- Channel Manager (si exporta producción).
+- Motor de reservas web (export de bookings).
+- ERP/Facturación (para validación de ingresos).
+
+### Reglas base
+- **No solicitar PII** (nombre, email, DNI, teléfono).  
+- Aceptar identificadores internos: `reservation_id`, `guest_id` (si existe), o `guest_hash`.
+
+---
+
+## 3) Campos por nivel (lo que pedimos al hotel)
+
+### NIVEL 1 — Mínimo viable (imprescindible)
+1. `reservation_id` (ID reserva)
+2. `created_at` (fecha creación reserva)
+3. `checkin_date` (fecha entrada)
+4. `checkout_date` (fecha salida)
+5. `channel` (canal)
+6. `total_amount` (importe total)
+7. `currency` (moneda)
+8. `status` (confirmada/cancelada/no-show)
+
+**Recomendados (mejoran precisión):**
+9. `room_type` (tipo habitación)
+10. `rate_code` (tarifa / rate plan)
+11. `rooms_count` (nº habitaciones)
+12. `guests_count` (nº huéspedes)
+
+---
+
+### NIVEL 2 — Margen (para “fugas EBITDA”)
+13. `market_segment` (leisure/corporate/grupo)
+14. `country` (país origen)
+15. `payment_method` (tarjeta/transferencia/efectivo)
+16. `company_code` (si corporate)
+17. `tax_included` o `vat_amount` (si existe)
+
+> Nota: Comisiones por canal normalmente NO vienen en PMS.  
+> Se parametrizan en Debacu (wizard de políticas) y se recalcula **net revenue**.
+
+---
+
+### NIVEL 3 — Diferencial Debacu (riesgo/operativa)
+18. `incident_flag` (si hubo incidencia)
+19. `incident_cost` (coste asociado)
+20. `extra_cleaning_cost` (limpieza extra)
+21. `damage_cost` (roturas)
+22. `chargeback_flag` (contracargo si existe)
+23. `internal_risk_score` (si el hotel lo tiene)
+
+> Recomendación: Si el PMS no lo trae, capturar estos campos dentro de Debacu (módulo Evaluation/Incidents).
+
+---
+
+## 4) ¿Se puede sacar de un PMS? (realista)
+- **Sí**: la mayoría de PMS exportan reportes de reservas con fechas, canal, importe y estado.
+- Lo que a veces cuesta:
+  - `created_at` (booking date) en PMS antiguos.
+  - `rate_code` y `room_type` si el hotel no lo usa bien.
+  - “canal” puede venir como texto libre → se normaliza con wizard.
+
+**Conclusión práctica:** Con NIVEL 1 + recomendados ya hay valor suficiente para vender.
+
+---
+
+## 5) Normalización (Wizard recomendado)
+Paso 1. Subida CSV/Excel  
+Paso 2. Mapeo de columnas (field mapping)  
+Paso 3. Normalización de canales (Booking, Expedia, Directo, B2B, Walk-in, etc.)  
+Paso 4. Políticas por canal (comisión %, coste fijo/variable, limpieza extra por incidente)  
+Paso 5. Validación dataset (quality score + detección de valores anómalos)  
+Paso 6. Activación del motor (cálculos + generación de insights)
+
+---
+
+## 6) KPIs que salen SOLO con NIVEL 1
+- Ingresos por día/mes
+- ADR (si `total_amount` / noches; mejor si trae ADR)
+- LOS (length of stay)
+- Lead time (checkin - created_at)
+- Mix de canal (% y revenue)
+- Cancelaciones y no-show rate
+- Producción por tipo de habitación (si existe `room_type`)
+- Distribución ADR por canal / día semana
+- Curva estacional simple (mes/año)
+
+---
+
+## 7) KPIs “Premium” (NIVEL 2 + políticas)
+- Net Revenue por canal (aplicando comisión y costes)
+- Net ADR estimado por canal
+- Erosión de margen (EBITDA proxy) por canal
+- Alertas por “desviación de política”:
+  - ADR anómalo vs histórico comparable
+  - descuentos fuera de rango
+  - canal con margen neto inferior al directo
+
+---
+
+## 8) Desviaciones (detecciones recomendadas)
+Top 10 checks iniciales:
+1. ADR canal X >20% por debajo de la mediana comparable
+2. Reservas con LOS extremo (muy corto o muy largo)
+3. Reservas con lead time anómalo (muy alto o muy bajo)
+4. Cancelaciones concentradas por canal
+5. No-show concentrado por canal
+6. Tipo habitación vendido a precio inferior a baseline histórico
+7. Canales con net revenue inferior a un umbral
+8. Picos de reservas con importes “redondos” repetidos (posibles errores)
+9. Reservas con fechas incoherentes (checkout <= checkin)
+10. Moneda inconsistente o importes negativos/0
+
+---
+
+## 9) Privacidad y compliance (mensaje para hoteles)
+- No se solicitan datos personales.
+- Se aceptan IDs internos y/o hashing.
+- El dataset se usa para analítica y auditoría de revenue.
+- Posibilidad de anonimización/mascarado en exportes y vistas “GLOBAL”.
+
+---
+
+## 10) Roadmap (sin API → con API)
+Fase A (ahora): CSV wizard + auditoría + alertas  
+Fase B: carga recurrente (mensual/semanal) + comparación periodos  
+Fase C: conectores API (Mews/Cloudbeds/Opera/etc.) para premium  
+Fase D: optimización dinámica (RMS más completo) con datos externos
+
+---
+
+## 11) Plantilla de petición al hotel (resumen)
+“Necesitamos un CSV/Excel de reservas de los últimos 12–24 meses SIN datos personales.  
+Campos mínimos: ID reserva, fecha creación, entrada, salida, canal, importe total, moneda y estado (confirmada/cancelada/no-show).  
+Con esto generamos auditoría de revenue por canal y detectamos desviaciones de precio y fugas de margen.”
+
+---
+
+Fin del documento.

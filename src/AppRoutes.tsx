@@ -8,6 +8,7 @@ import SolicitarAccesoPage from "@/pages/public/SolicitarAccesoPage";
 
 import LoginPage from "@/pages/auth/LoginPage";
 import ResetPasswordPage from "@/pages/auth/ResetPasswordPage";
+import ActivateAccountPage from "@/pages/auth/ActivateAccountPage"; // 👈 NUEVO
 
 import AuthedApp from "@/pages/app/AuthedApp";
 
@@ -31,16 +32,31 @@ import { RequireAdmin } from "@/components/auth/RequireAdmin";
 export function AppRoutes() {
   return (
     <Routes>
-      {/* landing */}
+      {/* =========================================================
+          LANDING
+      ========================================================== */}
       <Route path="/" element={<PublicLanding />} />
 
-      {/* públicas */}
+      {/* =========================================================
+          PÚBLICAS AUTH
+      ========================================================== */}
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/reset-password" element={<ResetPasswordPage />} />
+
+      {/* 🔹 NUEVA RUTA ESTÁNDAR RESET */}
+      <Route path="/auth/reset" element={<ResetPasswordPage />} />
+
+      {/* 🔹 NUEVA RUTA PARA INVITE (ACTIVATE) */}
+      <Route path="/auth/activate" element={<ActivateAccountPage />} />
+
+      {/* 🔹 Alias legacy por compatibilidad */}
+      <Route path="/reset-password" element={<Navigate to="/auth/reset" replace />} />
+
       <Route path="/solicitar-acceso" element={<SolicitarAccesoPage />} />
       <Route path="/solicitud-enviada" element={<SolicitudEnviadaPage />} />
 
-      {/* app (protegida) */}
+      {/* =========================================================
+          APP PROTEGIDA
+      ========================================================== */}
       <Route
         path="/app/*"
         element={
@@ -50,7 +66,9 @@ export function AppRoutes() {
         }
       />
 
-      {/* admin (subruta protegida) */}
+      {/* =========================================================
+          ADMIN PROTEGIDO
+      ========================================================== */}
       <Route
         path="/app/admin/*"
         element={
@@ -76,7 +94,9 @@ export function AppRoutes() {
         <Route path="*" element={<Navigate to="/app/admin/dashboard" replace />} />
       </Route>
 
-      {/* fallback */}
+      {/* =========================================================
+          FALLBACK GLOBAL
+      ========================================================== */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

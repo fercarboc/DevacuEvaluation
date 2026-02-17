@@ -22,7 +22,7 @@ function corsHeaders(origin: string | null) {
   const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
   return {
     "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
+    Vary: "Origin",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Max-Age": "86400",
@@ -76,12 +76,13 @@ async function requireJwtUser(sbUser: ReturnType<typeof createClient>) {
  * AuthZ (tenant context)
  * ====================================================== */
 async function requireOrgMemberAndCustomerId(admin: ReturnType<typeof createClient>, userId: string) {
-  // 1) membership
+  // 1) membership (coge el más reciente ACTIVE)
   const { data: mem, error: memErr } = await admin
     .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
+    .select("org_id, role, status, created_at")
     .eq("user_id", userId)
-    .order("created_at", { ascending: true })
+    .eq("status", "ACTIVE")
+    .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
 
@@ -159,10 +160,12 @@ function seasonMultiplier(season: string | null, profile: any) {
 /* ======================================================
  * Data fetchers
  * ====================================================== */
+
+/** ✅ TABLA CORRECTA: debacu_eval_hotel_profile */
 async function getHotelProfile(admin: ReturnType<typeof createClient>, customer_id: string) {
   const { data, error } = await admin
-    .from("debacu_hotel_profile")
-    .select("customer_id, hotel_category, adr_real, season_mult_high, season_mult_low")
+    .from("debacu_eval_hotel_profile")
+    .select("customer_id, hotel_category, adr_real, season_mult_high, season_mult_low, profile_completed")
     .eq("customer_id", customer_id)
     .maybeSingle();
 
@@ -196,11 +199,7 @@ async function getIncidentCatalog(admin: ReturnType<typeof createClient>, incide
   return data;
 }
 
-async function getIncidentOverride(
-  admin: ReturnType<typeof createClient>,
-  customer_id: string,
-  incident_type: string,
-) {
+async function getIncidentOverride(admin: ReturnType<typeof createClient>, customer_id: string, incident_type: string) {
   const { data, error } = await admin
     .from("debacu_hotel_incident_overrides")
     .select(
@@ -283,13 +282,23 @@ serve(async (req) => {
       app_id: ctx.app_id,
     });
 
-    // 4) perfil
+    // 4) perfil (✅ ahora mira debacu_eval_hotel_profile)
     const profile = await getHotelProfile(admin, ctx.customer_id);
-    if (!profile || profile.hotel_category === null || profile.hotel_category === undefined) {
+
+    const hotelCategoryOk = profile?.hotel_category !== null && profile?.hotel_category !== undefined;
+    const profileCompletedOk = profile?.profile_completed === true;
+
+    if (!profile || !hotelCategoryOk || !profileCompletedOk) {
       return json(origin, 409, {
         ok: false,
         error: "ONBOARDING_REQUIRED",
-        detail: "Perfil de hotel incompleto (falta hotel_category o profile).",
+        detail: "Perfil de hotel incompleto (falta hotel_category o profile_completed).",
+        debug: {
+          customer_id: ctx.customer_id,
+          has_profile_row: !!profile,
+          hotel_category: profile?.hotel_category ?? null,
+          profile_completed: profile?.profile_completed ?? null,
+        },
       });
     }
 
@@ -408,11 +417,7 @@ serve(async (req) => {
 
     if (error) {
       logLine({ fn: FN, stage: "insert_err", detail: error.message, code: (error as any).code });
-      return json(origin, 500, {
-        ok: false,
-        error: "insert_failed",
-        detail: error.message,
-      });
+      return json(origin, 500, { ok: false, error: "insert_failed", detail: error.message });
     }
 
     logLine({

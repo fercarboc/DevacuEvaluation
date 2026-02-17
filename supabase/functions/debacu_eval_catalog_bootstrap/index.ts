@@ -13,9 +13,9 @@ function corsHeaders(origin: string | null) {
   const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
   return {
     "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-session-token",
+    Vary: "Origin",
+    // ✅ JWT-only: quitado x-session-token
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Max-Age": "86400",
   };
@@ -37,30 +37,43 @@ function mustEnv(name: string) {
 const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SERVICE_ROLE = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-async function assertEvalSession(
+const DEFAULT_APP_ID = "DEBACU_EVAL";
+
+function getBearer(req: Request) {
+  const h = req.headers.get("authorization") || "";
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return m?.[1] ?? "";
+}
+
+/**
+ * JWT-only:
+ * - valida JWT con auth.getUser(jwt)
+ * - resuelve org/customer desde debacu_eval_org_members (auth_user_id)
+ *   (esto fuerza que el usuario pertenezca a una org activa)
+ */
+async function requireJwtOrg(
   supabase: ReturnType<typeof createClient>,
-  sessionToken: string,
-  customerIdFromBody?: string | null
+  jwt: string,
+  appId: string
 ) {
-  const { data, error } = await supabase
-    .from("debacu_eval_sessions")
-    .select("customer_id, expires_at, revoked_at")
-    .eq("token", sessionToken)
+  const { data: u, error: uErr } = await supabase.auth.getUser(jwt);
+  if (uErr || !u?.user) throw new Error("Invalid Supabase JWT");
+
+  const userId = u.user.id;
+
+  // Ajusta este lookup si tus columnas difieren:
+  const { data: mem, error: mErr } = await supabase
+    .from("debacu_eval_org_members")
+    .select("org_id, status, app_code, role")
+    .eq("auth_user_id", userId)
+    .eq("status", "ACTIVE")
+    .eq("app_code", appId)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Invalid session token");
-  if (data.revoked_at) throw new Error("Session revoked");
-  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) {
-    throw new Error("Session expired");
-  }
+  if (mErr) throw new Error(mErr.message);
+  if (!mem?.org_id) throw new Error("User has no ACTIVE org membership");
 
-  const tokenCustomerId = String(data.customer_id);
-  if (customerIdFromBody && String(customerIdFromBody) !== tokenCustomerId) {
-    throw new Error("customerId mismatch vs session token");
-  }
-
-  return { customerId: tokenCustomerId };
+  return { userId, customerId: String(mem.org_id), role: String(mem.role ?? "STAFF") };
 }
 
 Deno.serve(async (req) => {
@@ -69,27 +82,30 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders(origin) });
   }
-  if (req.method !== "POST") return json(origin, 405, { error: "Method not allowed" });
+  if (req.method !== "POST") return json(origin, 405, { ok: false, error: "Method not allowed" });
 
   try {
-    const sessionToken = req.headers.get("x-session-token") || "";
-    if (!sessionToken) return json(origin, 401, { error: "Missing x-session-token" });
+    const jwt = getBearer(req);
+    if (!jwt) return json(origin, 401, { ok: false, error: "Missing Authorization Bearer token" });
 
     const body = await req.json().catch(() => ({}));
-    const customerId = body?.customerId ? String(body.customerId) : null;
+    const appId = body?.appId ? String(body.appId) : DEFAULT_APP_ID;
 
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
       auth: { persistSession: false },
+      global: { headers: { Authorization: `Bearer ${SERVICE_ROLE}` } },
     });
 
-    await assertEvalSession(supabase, sessionToken, customerId);
+    // ✅ obliga a que el usuario sea válido y pertenezca a una org activa
+    // (aunque para seed global realmente no hace falta customerId)
+    await requireJwtOrg(supabase, jwt, appId);
 
     // 1) Incidents: si está vacío, sembramos base
     const { count: incCount, error: e0 } = await supabase
       .from("debacu_incident_catalog")
       .select("incident_type", { count: "exact", head: true });
 
-    if (e0) return json(origin, 500, { error: e0.message });
+    if (e0) return json(origin, 500, { ok: false, error: e0.message });
 
     let seededIncidents = 0;
     if ((incCount ?? 0) === 0) {
@@ -141,7 +157,7 @@ Deno.serve(async (req) => {
       ];
 
       const { error: eIns } = await supabase.from("debacu_incident_catalog").insert(seedInc);
-      if (eIns) return json(origin, 500, { error: eIns.message });
+      if (eIns) return json(origin, 500, { ok: false, error: eIns.message });
       seededIncidents = seedInc.length;
     }
 
@@ -150,23 +166,54 @@ Deno.serve(async (req) => {
       .from("debacu_item_catalog")
       .select("item_code", { count: "exact", head: true });
 
-    if (e1) return json(origin, 500, { error: e1.message });
+    if (e1) return json(origin, 500, { ok: false, error: e1.message });
 
     let seededItems = 0;
     if ((itemCount ?? 0) === 0) {
       const seedItems = [
-        { item_code: "TOWEL", title: "Toalla", category: "Linen", unit_price: 12, currency: "EUR", description: null, is_active: true },
-        { item_code: "BATHROBE", title: "Albornoz", category: "Linen", unit_price: 35, currency: "EUR", description: null, is_active: true },
-        { item_code: "PILLOW", title: "Almohada", category: "Room", unit_price: 20, currency: "EUR", description: null, is_active: true },
+        {
+          item_code: "TOWEL",
+          title: "Toalla",
+          category: "Linen",
+          unit_price: 12,
+          currency: "EUR",
+          description: null,
+          is_active: true,
+        },
+        {
+          item_code: "BATHROBE",
+          title: "Albornoz",
+          category: "Linen",
+          unit_price: 35,
+          currency: "EUR",
+          description: null,
+          is_active: true,
+        },
+        {
+          item_code: "PILLOW",
+          title: "Almohada",
+          category: "Room",
+          unit_price: 20,
+          currency: "EUR",
+          description: null,
+          is_active: true,
+        },
       ];
 
       const { error: eIns2 } = await supabase.from("debacu_item_catalog").insert(seedItems);
-      if (eIns2) return json(origin, 500, { error: eIns2.message });
+      if (eIns2) return json(origin, 500, { ok: false, error: eIns2.message });
       seededItems = seedItems.length;
     }
 
     return json(origin, 200, { ok: true, seededIncidents, seededItems });
   } catch (e: any) {
-    return json(origin, 500, { error: String(e?.message ?? e) });
+    const msg = String(e?.message ?? e);
+    const isClient =
+      msg.includes("Missing") ||
+      msg.includes("Invalid") ||
+      msg.includes("membership") ||
+      msg.includes("org");
+
+    return json(origin, isClient ? 400 : 500, { ok: false, error: msg });
   }
 });

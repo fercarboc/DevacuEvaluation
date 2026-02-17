@@ -1,4 +1,3 @@
-// supabase/functions/debacu-eval-admin-access-requests/index.ts
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -8,6 +7,11 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+
+// Base URL pública de tu frontend (prod)
+const SITE_URL = Deno.env.get("SITE_URL") ?? "https://debacu.com";
+const INVITE_REDIRECT_TO = `${SITE_URL}/auth/activate`;
+const RECOVERY_REDIRECT_TO = `${SITE_URL}/auth/reset`;
 
 /** ======================================================
  *  CORS
@@ -24,7 +28,7 @@ function corsHeaders(origin: string | null) {
   const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
   return {
     "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
+    Vary: "Origin",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Max-Age": "86400",
@@ -71,6 +75,10 @@ function userClient(req: Request) {
   });
 }
 
+function anonClientNoAuth() {
+  return createClient(SUPABASE_URL, ANON_KEY, { auth: { persistSession: false } });
+}
+
 /** ======================================================
  *  Helpers
  *  ====================================================== */
@@ -83,16 +91,7 @@ function safeStr(v: any) {
 function safeUpper(v: any) {
   return typeof v === "string" ? v.trim().toUpperCase() : "";
 }
-
 const toDate = (d: Date) => d.toISOString().slice(0, 10);
-
-function resolveSiteUrl(body: any) {
-  const raw = typeof body?.siteUrl === "string" ? body.siteUrl.trim() : "";
-  const fromBody = raw && raw.startsWith("http") ? raw : "";
-  const fromEnv = (Deno.env.get("PUBLIC_SITE_URL") ?? "").trim();
-  const fallback = "http://localhost:3000";
-  return (fromBody || fromEnv || fallback).replace(/\/$/, "");
-}
 
 /** ======================================================
  *  AUTHZ: require ADMIN (JWT real)
@@ -115,6 +114,60 @@ async function requireAdmin(req: Request) {
   if (!adminRow) throw new Error("FORBIDDEN");
 
   return { user: data.user };
+}
+
+/** ======================================================
+ *  Auth: find user by email (admin list users)
+ *  ====================================================== */
+async function getAuthUserIdByEmail(email: string): Promise<string | null> {
+  const e = safeLowerEmail(email);
+  if (!e) return null;
+
+  const perPage = 1000;
+  for (let page = 1; page <= 10; page++) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage });
+    if (error) return null;
+    const found = data.users.find((u) => safeLowerEmail(u.email) === e);
+    if (found?.id) return found.id;
+    if (data.users.length < perPage) break;
+  }
+  return null;
+}
+
+/**
+ * Envía email automático:
+ * - si user NO existe: INVITE (Supabase manda email por SMTP)
+ * - si user existe: RECOVERY (Supabase manda email por SMTP)
+ *
+ * Devuelve SIEMPRE (mode + user_id si lo pudo resolver).
+ */
+async function sendInviteOrRecovery(params: { email: string; customer_id: string; org_id: string }) {
+  const { email, customer_id, org_id } = params;
+
+  const existingUserId = await getAuthUserIdByEmail(email);
+
+  if (!existingUserId) {
+    const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
+      redirectTo: INVITE_REDIRECT_TO,
+      data: { customer_id, org_id, app: "DEBACU_EVAL" },
+    });
+    if (error) throw new Error(`INVITE_FAILED: ${error.message}`);
+
+    const newId = data?.user?.id ?? null;
+    if (!newId) {
+      // raro, pero mejor devolver null y que luego se resuelva por email
+      return { mode: "INVITED" as const, user_id: null };
+    }
+    return { mode: "INVITED" as const, user_id: newId };
+  }
+
+  const sbAnon = anonClientNoAuth();
+  const { error } = await sbAnon.auth.resetPasswordForEmail(email, {
+    redirectTo: RECOVERY_REDIRECT_TO,
+  });
+  if (error) throw new Error(`RECOVERY_FAILED: ${error.message}`);
+
+  return { mode: "RECOVERY_SENT" as const, user_id: existingUserId };
 }
 
 /** ======================================================
@@ -178,9 +231,9 @@ async function upsertDebacuEvalCustomerProfile(input: {
 }
 
 /** ======================================================
- *  Organization ONLY (sin membership)
+ *  Organization
  *  ====================================================== */
-async function ensureOrganizationOnly(params: {
+async function ensureOrganization(params: {
   customer_id: string;
   org_name: string;
   legal_name?: string | null;
@@ -216,9 +269,9 @@ async function ensureOrganizationOnly(params: {
   if (orgFindErr) throw new Error(`DB error (org find): ${orgFindErr.message}`);
 
   let org_id = orgExisting?.id as string | undefined;
+  const now = new Date().toISOString();
 
   if (!org_id) {
-    const now = new Date().toISOString();
     const { data: inserted, error: orgInsErr } = await admin
       .from("debacu_eval_organizations")
       .insert({
@@ -252,13 +305,118 @@ async function ensureOrganizationOnly(params: {
         property_type: property_type ?? null,
         rooms_count: typeof rooms_count === "number" ? rooms_count : null,
         website: website ?? null,
+        updated_at: now,
       })
       .eq("id", org_id);
 
     if (orgUpdErr) throw new Error(`DB error (org update): ${orgUpdErr.message}`);
   }
 
-  return { org_id };
+  return { org_id: org_id as string };
+}
+
+/** ======================================================
+ *  Membership (PATCH): asegura OWNER ACTIVE con auth_user_id
+ *  - si ya existe por org+auth_user_id: ajusta role/status
+ *  - si existe INVITED por invited_email: lo "reclama" y lo activa
+ *  - si no existe: crea ACTIVE directamente
+ *
+ *  Esto elimina el NO_ORG_MEMBERSHIP en postlogin.
+ *  ====================================================== */
+async function ensureOwnerActiveMembership(params: {
+  org_id: string;
+  auth_user_id: string;
+  invited_email: string;
+  created_by_user_id: string | null;
+}) {
+  const org_id = params.org_id;
+  const auth_user_id = params.auth_user_id;
+  const invited_email = safeLowerEmail(params.invited_email);
+  const now = new Date().toISOString();
+
+  if (!org_id || !auth_user_id) throw new Error("Missing org_id/auth_user_id in ensureOwnerActiveMembership");
+
+  // 1) ya existe por (org_id, auth_user_id)
+  const { data: byUser, error: byUserErr } = await admin
+    .from("debacu_eval_org_members")
+    .select("id, role, status, invited_email, auth_user_id")
+    .eq("org_id", org_id)
+    .eq("auth_user_id", auth_user_id)
+    .maybeSingle();
+
+  if (byUserErr) throw new Error(`DB error (member find by auth_user_id): ${byUserErr.message}`);
+
+  if (byUser?.id) {
+    const needsUpdate =
+      String(byUser.role || "").toUpperCase() !== "OWNER" ||
+      String(byUser.status || "").toUpperCase() !== "ACTIVE" ||
+      (invited_email && safeLowerEmail(byUser.invited_email) !== invited_email);
+
+    if (needsUpdate) {
+      const { error: updErr } = await admin
+        .from("debacu_eval_org_members")
+        .update({
+          role: "OWNER",
+          status: "ACTIVE",
+          invited_email: invited_email || null,
+          updated_at: now,
+        })
+        .eq("id", byUser.id);
+
+      if (updErr) throw new Error(`DB error (member update by auth_user_id): ${updErr.message}`);
+    }
+
+    return { member_id: byUser.id as string, mode: "UPDATED_BY_USER" as const };
+  }
+
+  // 2) existe INVITED por email (huérfana) -> reclamar y activar
+  if (invited_email) {
+    const { data: byEmail, error: byEmailErr } = await admin
+      .from("debacu_eval_org_members")
+      .select("id, status, role, auth_user_id, invited_email")
+      .eq("org_id", org_id)
+      .eq("invited_email", invited_email)
+      .in("status", ["INVITED", "PENDING", "ACTIVE"])
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (byEmailErr) throw new Error(`DB error (member find by invited_email): ${byEmailErr.message}`);
+
+    if (byEmail?.id) {
+      const { error: updErr } = await admin
+        .from("debacu_eval_org_members")
+        .update({
+          auth_user_id,
+          role: "OWNER",
+          status: "ACTIVE",
+          updated_at: now,
+        })
+        .eq("id", byEmail.id);
+
+      if (updErr) throw new Error(`DB error (member claim by email): ${updErr.message}`);
+
+      return { member_id: byEmail.id as string, mode: "CLAIMED_BY_EMAIL" as const };
+    }
+  }
+
+  // 3) crear nueva
+  const { data: inserted, error: insErr } = await admin
+    .from("debacu_eval_org_members")
+    .insert({
+      org_id,
+      role: "OWNER",
+      status: "ACTIVE",
+      invited_email: invited_email || null,
+      auth_user_id,
+      created_by_user_id: params.created_by_user_id,
+      updated_at: now,
+    })
+    .select("id")
+    .single();
+
+  if (insErr) throw new Error(`DB error (member insert): ${insErr.message}`);
+  return { member_id: inserted.id as string, mode: "CREATED" as const };
 }
 
 /** ======================================================
@@ -357,7 +515,6 @@ serve(async (req) => {
     if (action === "APPROVE") {
       const request_id = body?.requestId as string;
       const decision_notes = safeStr(body?.decisionNotes ?? "");
-      const send_email = Boolean(body?.sendEmail ?? false);
       const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? null;
 
       if (!request_id) return json(origin, 400, { error: "Missing requestId" });
@@ -394,8 +551,9 @@ serve(async (req) => {
       const notes = (request.notes ?? null) as string | null;
 
       const customer_id = await getOrCreateCustomerByEmail(email, company_name);
-
       const now = new Date().toISOString();
+
+      // customers: SIN password temporal
       const { error: custUpdErr } = await admin
         .from("customers")
         .update({
@@ -408,6 +566,7 @@ serve(async (req) => {
           email,
           is_active: true,
           app_id: "DEBACU_EVAL",
+          service_username: email, // opcional, alias
           updated_at: now,
         })
         .eq("id", customer_id);
@@ -427,8 +586,8 @@ serve(async (req) => {
         notes,
       });
 
-      // ✅ crea/actualiza org (sin membership aún)
-      const orgRes = await ensureOrganizationOnly({
+      // org
+      const orgRes = await ensureOrganization({
         customer_id,
         org_name: company_name || `Org ${email}`,
         legal_name,
@@ -441,32 +600,44 @@ serve(async (req) => {
         website,
       });
 
+      // trial
       const subRes = await ensureFreeTrialSubscription(customer_id);
 
-      // ✅ Invite Supabase (Variante 1)
+      // email Supabase SMTP: invite o recovery
       let email_sent = false;
       let email_detail: string | null = null;
       let last_email_status: string | null = null;
       let last_email_at: string | null = null;
 
-      if (send_email) {
-        try {
-          const siteUrl = resolveSiteUrl(body);
-          const redirectTo = `${siteUrl}/auth/activate`;
+      // ⚠️ IMPORTANTE: aunque el email falle, intentamos igualmente asegurar membership si podemos resolver user_id.
+      // (Si invite/recovery no devuelve user_id, luego lo resolveremos por email)
+      let resolved_auth_user_id: string | null = null;
 
-          const { error: inviteErr } = await admin.auth.admin.inviteUserByEmail(email, { redirectTo });
-          if (inviteErr) throw inviteErr;
+      try {
+        const r = await sendInviteOrRecovery({ email, customer_id, org_id: orgRes.org_id });
+        email_sent = true;
+        email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
+        last_email_status = "SENT";
+        last_email_at = now;
 
-          email_sent = true;
-          email_detail = `SENT (inviteUserByEmail) redirectTo=${redirectTo}`;
-          last_email_status = "SENT";
-          last_email_at = now;
-        } catch (e: any) {
-          email_sent = false;
-          email_detail = e?.message ?? String(e);
-          last_email_status = "FAILED";
-          last_email_at = now;
-        }
+        resolved_auth_user_id = r.user_id;
+      } catch (e: any) {
+        email_sent = false;
+        email_detail = e?.message ?? String(e);
+        last_email_status = "FAILED";
+        last_email_at = now;
+
+        // aun así, intentamos resolver user_id por email para no romper postlogin
+        resolved_auth_user_id = await getAuthUserIdByEmail(email);
+      }
+
+      if (resolved_auth_user_id) {
+        await ensureOwnerActiveMembership({
+          org_id: orgRes.org_id,
+          auth_user_id: resolved_auth_user_id,
+          invited_email: email,
+          created_by_user_id: reviewed_by,
+        });
       }
 
       const { error: updateError } = await admin
@@ -477,7 +648,6 @@ serve(async (req) => {
           reviewed_by,
           reviewed_at: now,
           customer_id,
-          org_id: orgRes.org_id, // ✅ importante para orgInviteFinalize
           last_email_status,
           last_email_at,
           last_email_detail: email_detail,
@@ -525,11 +695,10 @@ serve(async (req) => {
       return json(origin, 200, { ok: true });
     }
 
-    /** RESEND */
+    /** RESEND: reenvía link invite/recovery */
     if (action === "RESEND") {
       const request_id = body?.requestId as string;
       const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? null;
-      const send_email = Boolean(body?.sendEmail ?? true);
 
       if (!request_id) return json(origin, 400, { error: "Missing requestId" });
 
@@ -549,27 +718,46 @@ serve(async (req) => {
       const customer_id = request.customer_id ?? null;
       if (!customer_id) return json(origin, 400, { error: "Request has no customer_id (not approved?)" });
 
+      // org_id por customer_id
+      const { data: org, error: orgErr } = await admin
+        .from("debacu_eval_organizations")
+        .select("id")
+        .eq("customer_id", customer_id)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (orgErr || !org?.id) {
+        return json(origin, 500, { error: "Org not found for customer", detail: orgErr?.message });
+      }
+
       const now = new Date().toISOString();
       let email_sent = false;
       let email_detail: string | null = null;
       let last_email_status: string | null = null;
 
-      if (send_email) {
-        try {
-          const siteUrl = resolveSiteUrl(body);
-          const redirectTo = `${siteUrl}/auth/activate`;
+      let resolved_auth_user_id: string | null = null;
 
-          const { error: inviteErr } = await admin.auth.admin.inviteUserByEmail(email, { redirectTo });
-          if (inviteErr) throw inviteErr;
+      try {
+        const r = await sendInviteOrRecovery({ email, customer_id, org_id: org.id });
+        email_sent = true;
+        email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
+        last_email_status = "SENT";
+        resolved_auth_user_id = r.user_id;
+      } catch (e: any) {
+        email_sent = false;
+        email_detail = e?.message ?? String(e);
+        last_email_status = "FAILED";
+        resolved_auth_user_id = await getAuthUserIdByEmail(email);
+      }
 
-          email_sent = true;
-          email_detail = `SENT (inviteUserByEmail) redirectTo=${redirectTo}`;
-          last_email_status = "SENT";
-        } catch (e: any) {
-          email_sent = false;
-          email_detail = e?.message ?? String(e);
-          last_email_status = "FAILED";
-        }
+      if (resolved_auth_user_id) {
+        await ensureOwnerActiveMembership({
+          org_id: org.id,
+          auth_user_id: resolved_auth_user_id,
+          invited_email: email,
+          created_by_user_id: reviewed_by,
+        });
       }
 
       await admin
@@ -583,12 +771,7 @@ serve(async (req) => {
         })
         .eq("id", request_id);
 
-      return json(origin, 200, {
-        ok: true,
-        customer_id,
-        email_sent,
-        email_detail,
-      });
+      return json(origin, 200, { ok: true, customer_id, org_id: org.id, email_sent, email_detail });
     }
 
     return json(origin, 400, { error: "Invalid action" });

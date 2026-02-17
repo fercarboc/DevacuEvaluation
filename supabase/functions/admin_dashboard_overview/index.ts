@@ -1,114 +1,52 @@
 // supabase/functions/admin_dashboard_overview/index.ts
 // deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-// =======================
-// CORS (simple y seguro)
-// =======================
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+import { json, preflight } from "../_shared/cors.ts";
+import { requireAdmin, supabaseServiceClient } from "../_shared/auth.ts";
 
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "*";
+/* -----------------------
+   Time helpers (LOCAL day -> UTC range)
+   tz_offset_minutes: recomendado desde front:
+     tz_offset_minutes = -new Date().getTimezoneOffset()
+   (Madrid: +60 invierno / +120 verano)
+----------------------- */
+
+function clampInt(n: number, min: number, max: number) {
+  return Math.min(Math.max(n, min), max);
+}
+
+function cleanInt(v: any, fallback: number) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Rango UTC [start, end) del "día local actual" según offset.
+ */
+function todayLocalUtcRange(tzOffsetMinutes: number) {
+  const utcNow = Date.now();
+  const localNow = new Date(utcNow + tzOffsetMinutes * 60_000);
+
+  const y = localNow.getUTCFullYear();
+  const m = localNow.getUTCMonth();
+  const d = localNow.getUTCDate();
+
+  const localMidnightAsUtc = Date.UTC(y, m, d, 0, 0, 0);
+  const utcStartMs = localMidnightAsUtc - tzOffsetMinutes * 60_000;
+  const utcEndMs = utcStartMs + 24 * 60 * 60 * 1000;
+
   return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
+    startIso: new Date(utcStartMs).toISOString(),
+    endIso: new Date(utcEndMs).toISOString(),
+    startMs: utcStartMs,
   };
 }
 
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      ...corsHeaders(req),
-    },
-  });
-}
-
-// =======================
-// Env + helpers
-// =======================
-function requireEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env ${name}`);
-  return v;
-}
-
-const SUPABASE_URL = requireEnv("SUPABASE_URL");
-const SUPABASE_ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
-const SUPABASE_SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-function getBearer(req: Request) {
-  const h = req.headers.get("authorization") ??
-    req.headers.get("Authorization") ??
-    "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m?.[1] ?? null;
-}
-
-function parseAllowedEmails(csv: string | null) {
-  const raw = (csv ?? "").trim();
-  if (!raw) return ["admin@debacu.com"];
-  return raw
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-function supabaseUserClient(token: string) {
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-    auth: { persistSession: false },
-  });
-}
-
-function supabaseServiceClient() {
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
-}
-
-async function requireAdmin(req: Request) {
-  const token = getBearer(req);
-  if (!token) return { ok: false as const, status: 401, error: "missing_bearer" as const };
-
-  const sbUser = supabaseUserClient(token);
-
-  const { data: userData, error: userErr } = await sbUser.auth.getUser();
-  if (userErr || !userData?.user) {
-    return { ok: false as const, status: 401, error: "invalid_token" as const };
-  }
-
-  const allowed = parseAllowedEmails(Deno.env.get("ADMIN_EMAILS"));
-  const email = (userData.user.email ?? "").toLowerCase().trim();
-  const isAdmin = allowed.includes(email);
-
-  if (!isAdmin) return { ok: false as const, status: 403, error: "forbidden" as const };
-  return { ok: true as const, user: userData.user };
-}
-
-// =======================
-// Utils
-// =======================
-function isoDate(d: Date) {
-  // YYYY-MM-DD
+function isoDateUTC(d: Date) {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
-}
-
-function startOfDayUTC(d: Date) {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0));
 }
 
 function addDaysUTC(d: Date, days: number) {
@@ -122,115 +60,148 @@ function safeString(x: any) {
   return String(x);
 }
 
-// =======================
-// Main
-// =======================
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
-
-  const admin = await requireAdmin(req);
-  if (!admin.ok) return json(req, admin.status, { ok: false, error: admin.error });
+  // ✅ CORS
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "method_not_allowed" });
+  }
 
   try {
+    // ✅ Admin real (JWT-only; sin RPC; sin email allowlist)
+    await requireAdmin(req);
+
     const sb = supabaseServiceClient();
     const body = await req.json().catch(() => ({}));
-    const range = (body?.range === "7d" || body?.range === "30d") ? body.range : "30d";
+
+    const range: "7d" | "30d" = body?.range === "7d" || body?.range === "30d" ? body.range : "30d";
     const app_id = String(body?.app_id ?? "DEBACU_EVAL");
 
-    // -----------------------
-    // 1) METRICS (cards)
-    // -----------------------
+    // tz_offset_minutes: por defecto +60 (Madrid invierno) si no viene del front
+    const tzRaw = cleanInt(body?.tz_offset_minutes, 60);
+    const tz_offset_minutes = clampInt(tzRaw, -720, 840);
+
+    const { startIso: todayStartUtc, endIso: todayEndUtc, startMs: todayStartMs } =
+      todayLocalUtcRange(tz_offset_minutes);
+
+    /* -----------------------
+       1) METRICS (cards)
+    ----------------------- */
+
     // Clientes activos: customers.is_active = true AND customers.app_id = app_id
-    const { count: activeCustomers, error: e1 } = await sb
+    const activeCustomersQ = sb
       .from("customers")
       .select("id", { count: "exact", head: true })
       .eq("app_id", app_id)
       .eq("is_active", true);
 
-    if (e1) return json(req, 500, { ok: false, error: "db_error", detail: e1.message });
-
     // Solicitudes pendientes: debacu_eval_access_requests.status = 'PENDING'
-    const { count: pendingAccess, error: e2 } = await sb
+    const pendingAccessQ = sb
       .from("debacu_eval_access_requests")
       .select("id", { count: "exact", head: true })
       .eq("status", "PENDING");
 
-    if (e2) return json(req, 500, { ok: false, error: "db_error", detail: e2.message });
-
-    // Consultas hoy: usamos debacu_eval_audit_log (hoy) - heurística:
-    // cuenta filas con search_value_hash o search_value_masked no null
-    const today = startOfDayUTC(new Date());
-    const tomorrow = addDaysUTC(today, 1);
-
-    const { data: todayLogs, error: e3 } = await sb
+    // Consultas hoy: audit log (hoy local) — heurística estable: search_kind IS NOT NULL
+    // (si tu tabla no tiene search_kind, cambia a search_value_hash/masked).
+    const consultasHoyQ = sb
       .from("debacu_eval_audit_log")
-      .select("id, created_at, search_value_hash, search_value_masked")
-      .gte("created_at", today.toISOString())
-      .lt("created_at", tomorrow.toISOString())
-      .limit(5000);
-
-    if (e3) return json(req, 500, { ok: false, error: "db_error", detail: e3.message });
-
-    const consultasHoy = (todayLogs ?? []).filter((r: any) =>
-      r?.search_value_hash || r?.search_value_masked
-    ).length;
+      .select("id", { count: "exact", head: true })
+      .gte("created_at", todayStartUtc)
+      .lt("created_at", todayEndUtc)
+      .not("search_kind", "is", null);
 
     // Alertas activas: OPEN o ACKNOWLEDGED
-    const { count: activeAlerts, error: e4 } = await sb
+    const activeAlertsQ = sb
       .from("debacu_eval_usage_alerts")
       .select("id", { count: "exact", head: true })
       .in("status", ["OPEN", "ACKNOWLEDGED"]);
 
-    if (e4) return json(req, 500, { ok: false, error: "db_error", detail: e4.message });
+    const [
+      { count: activeCustomers, error: e1 },
+      { count: pendingAccess, error: e2 },
+      { count: consultasHoy, error: e3 },
+      { count: activeAlerts, error: e4 },
+    ] = await Promise.all([activeCustomersQ, pendingAccessQ, consultasHoyQ, activeAlertsQ]);
+
+    if (e1) return json(req, 500, { ok: false, error: "db_error", detail: `customers: ${e1.message}` });
+    if (e2) return json(req, 500, { ok: false, error: "db_error", detail: `access_requests: ${e2.message}` });
+    if (e3) return json(req, 500, { ok: false, error: "db_error", detail: `audit_log(today): ${e3.message}` });
+    if (e4) return json(req, 500, { ok: false, error: "db_error", detail: `usage_alerts: ${e4.message}` });
 
     const metrics = {
       clientes_activos: activeCustomers ?? 0,
       solicitudes_pendientes: pendingAccess ?? 0,
-      consultas_hoy: consultasHoy,
+      consultas_hoy: consultasHoy ?? 0,
       alertas_activas: activeAlerts ?? 0,
     };
 
-    // -----------------------
-    // 2) SERIES (7d/30d)
-    // -----------------------
-    const days = range === "7d" ? 7 : 30;
-    const fromDay = startOfDayUTC(addDaysUTC(today, -(days - 1)));
-    const toDay = addDaysUTC(today, 1);
+    /* -----------------------
+       2) SERIES (7d/30d) — conteo por día local (convertido a buckets UTC)
+       - sin RPC
+       - agregación en JS con dataset acotado
+    ----------------------- */
 
+    const days = range === "7d" ? 7 : 30;
+
+    // fromDayUtcStart = inicio UTC del día local de hace (days-1) días
+    const fromDayStartMs = todayStartMs - (days - 1) * 24 * 60 * 60 * 1000;
+    const toDayEndMs = todayStartMs + 24 * 60 * 60 * 1000;
+
+    const fromDayIso = new Date(fromDayStartMs).toISOString();
+    const toDayIso = new Date(toDayEndMs).toISOString();
+
+    // Traemos solo lo mínimo para bucketing
     const { data: logsRange, error: e5 } = await sb
       .from("debacu_eval_audit_log")
-      .select("created_at, search_value_hash, search_value_masked")
-      .gte("created_at", fromDay.toISOString())
-      .lt("created_at", toDay.toISOString())
+      .select("created_at, search_kind")
+      .gte("created_at", fromDayIso)
+      .lt("created_at", toDayIso)
+      .not("search_kind", "is", null)
       .limit(50000);
 
-    if (e5) return json(req, 500, { ok: false, error: "db_error", detail: e5.message });
+    if (e5) return json(req, 500, { ok: false, error: "db_error", detail: `audit_log(range): ${e5.message}` });
 
+    // Inicializa buckets con YYYY-MM-DD (en “día local” representado como UTC-start del bucket)
     const countsByDay = new Map<string, number>();
     for (let i = 0; i < days; i++) {
-      countsByDay.set(isoDate(addDaysUTC(fromDay, i)), 0);
+      const bucketStartMs = fromDayStartMs + i * 24 * 60 * 60 * 1000;
+      countsByDay.set(isoDateUTC(new Date(bucketStartMs)), 0);
     }
 
+    // Bucketing:
+    // - Convertimos created_at (UTC) a "local ms" sumando offset
+    // - Sacamos la fecha local (Y/M/D) y reconstruimos su "midnight local" en ms
+    // - Volvemos a UTC bucketStartMs restando offset
     for (const r of logsRange ?? []) {
-      if (!(r?.search_value_hash || r?.search_value_masked)) continue;
-      const dt = new Date(r.created_at);
-      const key = isoDate(startOfDayUTC(dt));
+      const createdAt = r?.created_at ? Date.parse(String(r.created_at)) : NaN;
+      if (!Number.isFinite(createdAt)) continue;
+
+      const localMs = createdAt + tz_offset_minutes * 60_000;
+      const local = new Date(localMs);
+      const y = local.getUTCFullYear();
+      const m = local.getUTCMonth();
+      const d = local.getUTCDate();
+
+      const localMidnightAsUtc = Date.UTC(y, m, d, 0, 0, 0);
+      const bucketUtcStartMs = localMidnightAsUtc - tz_offset_minutes * 60_000;
+
+      const key = isoDateUTC(new Date(bucketUtcStartMs));
       if (countsByDay.has(key)) countsByDay.set(key, (countsByDay.get(key) ?? 0) + 1);
     }
 
     const series = Array.from(countsByDay.entries()).map(([ts, value]) => ({ ts, value }));
 
-    // -----------------------
-    // 3) RECENT ALERTS
-    // -----------------------
+    /* -----------------------
+       3) RECENT ALERTS
+    ----------------------- */
+
     const { data: alerts, error: e6 } = await sb
       .from("debacu_eval_usage_alerts")
       .select("id, detected_at, customer_id, severity, alert_type, status, reason")
       .order("detected_at", { ascending: false })
       .limit(8);
 
-    if (e6) return json(req, 500, { ok: false, error: "db_error", detail: e6.message });
+    if (e6) return json(req, 500, { ok: false, error: "db_error", detail: `usage_alerts(recent): ${e6.message}` });
 
     const customerIds = [...new Set((alerts ?? []).map((a: any) => a.customer_id).filter(Boolean))] as string[];
     const custMap = new Map<string, { name: string | null; email: string | null }>();
@@ -256,17 +227,19 @@ Deno.serve(async (req) => {
         detected_at: String(a.detected_at),
         customer_id: cid,
         customer_name: c?.name ?? null,
-        severity: (a.severity ?? "LOW"),
+        severity: a.severity ?? "LOW",
         alert_type: String(a.alert_type ?? "UNKNOWN"),
         status: String(a.status ?? "OPEN"),
         reason: a.reason ?? null,
       };
     });
 
-    // -----------------------
-    // 4) RECENT ACTIVITY (feed mezclado)
-    // -----------------------
-    // cogemos: subscription_events, audit_exports, settings_audit_log
+    /* -----------------------
+       4) RECENT ACTIVITY (feed mezclado)
+       Ojo: aquí mantengo tus tablas tal cual.
+       Si luego las renombramos a debacu_eval_* lo ajustamos.
+    ----------------------- */
+
     const [ev1, ev2, ev3] = await Promise.all([
       sb.from("subscription_events")
         .select("id, created_at, type, stripe_subscription_id, stripe_customer_id")
@@ -282,9 +255,9 @@ Deno.serve(async (req) => {
         .limit(10),
     ]);
 
-    if (ev1.error) return json(req, 500, { ok: false, error: "db_error", detail: ev1.error.message });
-    if (ev2.error) return json(req, 500, { ok: false, error: "db_error", detail: ev2.error.message });
-    if (ev3.error) return json(req, 500, { ok: false, error: "db_error", detail: ev3.error.message });
+    if (ev1.error) return json(req, 500, { ok: false, error: "db_error", detail: `subscription_events: ${ev1.error.message}` });
+    if (ev2.error) return json(req, 500, { ok: false, error: "db_error", detail: `audit_exports: ${ev2.error.message}` });
+    if (ev3.error) return json(req, 500, { ok: false, error: "db_error", detail: `settings_audit_log: ${ev3.error.message}` });
 
     const activity: any[] = [];
 
@@ -324,10 +297,9 @@ Deno.serve(async (req) => {
     activity.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
     const recent_activity = activity.slice(0, 12);
 
-    // -----------------------
-    // 5) HEALTH (honesto)
-    // -----------------------
-    // Si todavía no tienes telemetría real, NO inventamos.
+    /* -----------------------
+       5) HEALTH (no inventamos)
+    ----------------------- */
     const health = {
       uptime_pct: null,
       api_latency_ms: null,
@@ -342,9 +314,22 @@ Deno.serve(async (req) => {
         recent_alerts,
         recent_activity,
         health,
+        meta: {
+          app_id,
+          range,
+          tz_offset_minutes,
+          today_start_utc: todayStartUtc,
+          today_end_utc: todayEndUtc,
+        },
       },
     });
   } catch (e: any) {
-    return json(req, 500, { ok: false, error: "unexpected", detail: e?.message ?? String(e) });
+    const msg = e?.message ?? String(e);
+
+    if (msg === "UNAUTHORIZED") return json(req, 401, { ok: false, error: "unauthorized" });
+    if (msg === "FORBIDDEN") return json(req, 403, { ok: false, error: "forbidden" });
+    if (msg === "ADMIN_CHECK_FAILED") return json(req, 500, { ok: false, error: "admin_check_failed" });
+
+    return json(req, 500, { ok: false, error: "unexpected", detail: msg });
   }
 });

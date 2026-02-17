@@ -19,27 +19,19 @@ type Row = {
   reviewed_at?: string | null;
   decision_notes?: string | null;
   customer_id?: string | null;
+  org_id?: string | null;
 
-  last_email_status?: string | null;
+  last_email_status?: string | null; // SENT / FAILED
   last_email_at?: string | null;
-};
-
-type Credentials = {
-  email: string;
-  username: string;
-  tempPassword: string;
+  last_email_detail?: string | null;
 };
 
 type ApproveResult = {
   ok?: boolean;
-  customerId?: string;
-  emailSent?: boolean;
-  emailDetail?: string | null;
-  credentials?: {
-    email: string;
-    username: string;
-    password: string; // ✅ edge devuelve password
-  };
+  customer_id?: string;
+  org_id?: string;
+  email_sent?: boolean;
+  email_detail?: string | null;
 };
 
 export function AdminSolicitudesAccesoPage() {
@@ -49,9 +41,6 @@ export function AdminSolicitudesAccesoPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const [adminUserId, setAdminUserId] = useState<string | null>(null);
-
-  const [lastCreds, setLastCreds] = useState<Credentials | null>(null);
-  const [copyOk, setCopyOk] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -64,7 +53,7 @@ export function AdminSolicitudesAccesoPage() {
     setLoading(true);
     try {
       const params: any = { limit: 100 };
-      if (status !== "ALL") params.status = status; // ✅ IMPORTANT
+      if (status !== "ALL") params.status = status;
 
       const res = await adminAccessRequests("LIST", params);
       setRows((res?.data ?? []) as Row[]);
@@ -80,49 +69,24 @@ export function AdminSolicitudesAccesoPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
-  const copyToClipboard = async () => {
-    if (!lastCreds) return;
-
-    const text = `Aprobado ✅ — Credenciales
-Usuario: ${lastCreds.username}
-Contraseña temporal: ${lastCreds.tempPassword}
-Email: ${lastCreds.email}`;
-
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopyOk(true);
-      setTimeout(() => setCopyOk(false), 1500);
-    } catch {
-      alert("No se pudo copiar al portapapeles (permisos del navegador).");
-    }
-  };
-
   const approve = async (id: string) => {
     const notes = window.prompt("Notas (opcional):") ?? "";
-    const sendEmail = window.confirm("¿Enviar email con credenciales (Brevo)?");
+    const siteUrl = window.location.origin; // ✅ clave: local/prod dinámico
 
     setBusyId(id);
-    setLastCreds(null);
-
     try {
       const res = (await adminAccessRequests("APPROVE", {
         requestId: id,
         decisionNotes: notes,
-        reviewedBy: adminUserId, // ✅ guarda reviewed_by
-        sendEmail,
+        reviewedBy: adminUserId,
+        siteUrl,
+        sendEmail: true, // ✅ dispara inviteUserByEmail
       })) as ApproveResult;
 
-      const c = res?.credentials;
-      if (c?.username && c?.password && c?.email) {
-        setLastCreds({
-          email: c.email,
-          username: c.username,
-          tempPassword: c.password, // ✅ mapeo
-        });
-      }
-
-      if (sendEmail && res?.emailSent === false) {
-        alert(res?.emailDetail ?? "No se pudo enviar el email.");
+      if (res?.email_sent === false) {
+        alert(res?.email_detail ?? "No se pudo enviar el email de invitación (Supabase).");
+      } else {
+        alert("Aprobado. Email de activación enviado por Supabase.");
       }
 
       await load();
@@ -134,29 +98,21 @@ Email: ${lastCreds.email}`;
   };
 
   const resend = async (id: string) => {
-    setBusyId(id);
-    setLastCreds(null);
+    const siteUrl = window.location.origin;
 
+    setBusyId(id);
     try {
       const res = (await adminAccessRequests("RESEND", {
         requestId: id,
         reviewedBy: adminUserId,
+        siteUrl,
         sendEmail: true,
       })) as ApproveResult;
 
-      const c = res?.credentials;
-      if (c?.username && c?.password && c?.email) {
-        setLastCreds({
-          email: c.email,
-          username: c.username,
-          tempPassword: c.password,
-        });
-      }
-
-      if (res?.emailSent === false) {
-        alert(res?.emailDetail ?? "No se pudo reenviar el email.");
+      if (res?.email_sent === false) {
+        alert(res?.email_detail ?? "No se pudo reenviar el email de invitación.");
       } else {
-        alert("Reenvío lanzado.");
+        alert("Reenvío lanzado. Email de activación enviado por Supabase.");
       }
 
       await load();
@@ -170,8 +126,6 @@ Email: ${lastCreds.email}`;
   const reject = async (id: string) => {
     const notes = window.prompt("Motivo de rechazo (opcional):") ?? "";
     setBusyId(id);
-    setLastCreds(null);
-
     try {
       await adminAccessRequests("REJECT", {
         requestId: id,
@@ -207,7 +161,7 @@ Email: ${lastCreds.email}`;
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Solicitudes de acceso</h1>
           <p className="text-slate-600">
-            Aprobar genera credenciales temporales (usuario + contraseña) y opcionalmente envía email (Brevo).
+            Aprobar crea el hotel (org) y envía un email automático de Supabase para activar la cuenta.
           </p>
         </div>
 
@@ -228,39 +182,6 @@ Email: ${lastCreds.email}`;
           </button>
         </div>
       </div>
-
-      {lastCreds && (
-        <div className="mb-6 border rounded-xl bg-white p-4">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-            <div>
-              <div className="font-semibold text-slate-900">Aprobado ✅ — Credenciales</div>
-              <div className="text-sm text-slate-700 mt-2 space-y-1">
-                <div>
-                  <span className="font-semibold">Usuario:</span> {lastCreds.username}
-                </div>
-                <div>
-                  <span className="font-semibold">Contraseña temporal:</span> {lastCreds.tempPassword}
-                </div>
-                <div className="text-xs text-slate-500">
-                  <span className="font-semibold">Email:</span> {lastCreds.email}
-                </div>
-              </div>
-              <div className="text-xs text-slate-500 mt-2">
-                Recomendación: forzar cambio de contraseña en el primer acceso.
-              </div>
-            </div>
-
-            <div className="flex gap-2">
-              <button onClick={copyToClipboard} className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm">
-                {copyOk ? "Copiado" : "Copiar"}
-              </button>
-              <button onClick={() => setLastCreds(null)} className="px-4 py-2 rounded-lg border text-sm">
-                Cerrar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="bg-white border rounded-xl overflow-hidden">
         <div className="grid grid-cols-12 gap-2 px-4 py-3 text-xs font-semibold text-slate-600 bg-slate-50 border-b">
@@ -300,6 +221,12 @@ Email: ${lastCreds.email}`;
                     <span className="text-[11px] text-slate-400">{new Date(r.last_email_at).toLocaleString()}</span>
                   ) : null}
                 </div>
+
+                {r.last_email_detail ? (
+                  <div className="text-[11px] text-slate-400 mt-1 truncate" title={r.last_email_detail}>
+                    {r.last_email_detail}
+                  </div>
+                ) : null}
               </div>
 
               <div className="col-span-2 font-mono text-xs">{r.cif}</div>
@@ -331,7 +258,7 @@ Email: ${lastCreds.email}`;
                         disabled={busyId === r.id}
                         onClick={() => resend(r.id)}
                         className="px-2 py-1 rounded bg-indigo-600 text-white text-xs disabled:opacity-50"
-                        title="Reenviar credenciales por email"
+                        title="Reenviar email de activación"
                       >
                         {busyId === r.id ? "..." : "Reenviar"}
                       </button>

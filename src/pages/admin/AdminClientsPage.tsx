@@ -183,38 +183,29 @@ export default function AdminClientsPage() {
   }
 
   async function openPdf(req: AccessRequestRow) {
-    if (!req.accepted_terms_pdf_path) return;
+  if (!req?.id) return;
 
-    const bucket = req.accepted_terms_pdf_bucket || "debacu_legal_acceptances";
-    const path = req.accepted_terms_pdf_path;
+  try {
+    setPdfBusy(true);
 
-    try {
-      setPdfBusy(true);
-
-      // 1) intento URL pública (si el bucket fuese público)
-      const pub = supabase.storage.from(bucket).getPublicUrl(path);
-      const publicUrl = pub?.data?.publicUrl;
-      if (publicUrl) {
-        window.open(publicUrl, "_blank", "noopener,noreferrer");
-        return;
+    // llama a Edge Function admin_get_signed_legal_acceptance_url
+    const { data, error } = await supabase.functions.invoke(
+      "admin_get_signed_legal_acceptance_url",
+      {
+        body: { request_id: req.id, expires_in: 60 * 15 },
       }
+    );
 
-      // 2) intento signed url (solo funciona si el token actual tiene permiso)
-      const { data: signed, error: signedErr } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 15);
-      if (signedErr || !signed?.signedUrl) {
-        alert(
-          "No se pudo abrir el PDF. Si el bucket es privado, lo correcto es crear una Edge Function admin que genere la signed_url."
-        );
-        return;
-      }
+    if (error) throw error;
+    if (!data?.signed_url) throw new Error("No signed_url returned");
 
-      window.open(signed.signedUrl, "_blank", "noopener,noreferrer");
-    } catch (e: any) {
-      alert(e?.message ?? "No se pudo abrir el PDF.");
-    } finally {
-      setPdfBusy(false);
-    }
+    window.open(data.signed_url, "_blank", "noopener,noreferrer");
+  } catch (e: any) {
+    alert(e?.message ?? "No se pudo abrir el PDF.");
+  } finally {
+    setPdfBusy(false);
   }
+}
 
   return (
     <div className="space-y-6">
