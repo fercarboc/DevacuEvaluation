@@ -15,6 +15,7 @@ const EXPLICIT_ALLOWED_ORIGINS = new Set<string>([
   "https://debacu.com",
   "https://www.debacu.com",
   "https://debacu-evaluation.vercel.app",
+  "https://devacu-evaluation.vercel.app",
 ]);
 
 function isAllowedOrigin(origin: string): boolean {
