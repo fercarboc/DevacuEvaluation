@@ -1,134 +1,174 @@
+// supabase/functions/debacu_eval_auth_postlogin/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { serve } from "https://deno.land/std@0.177.1/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+type Body = {
+  org_id?: string | null;
+  app_id?: string | null;
+  appId?: string | null;
+};
 
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
+const APP_ID = "DEBACU_EVAL";
+
+function err(code: string, detail?: string) {
+  return { ok: false, error: "request_failed", detail: detail ? `${code}:${detail}` : code };
 }
-
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
-  });
-}
-
-const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
-
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
-
 function safeLowerEmail(v: any) {
   return typeof v === "string" ? v.trim().toLowerCase() : "";
 }
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
+}
 
-serve(async (req) => {
-  const origin = req.headers.get("origin");
+async function getApprovedRequestByEmail(
+  supabase: ReturnType<typeof supabaseServiceClient>,
+  email: string,
+) {
+  const { data, error } = await supabase
+    .from("debacu_eval_access_requests")
+    .select("id, status, customer_id, org_id, reviewed_at")
+    .eq("email", email)
+    .eq("status", "APPROVED")
+    .order("reviewed_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(origin) });
+  if (error) return { row: null, code: "db_read_failed" as const };
+  return { row: data ?? null, code: null as const };
+}
+
+async function resolveOrgIdForCustomer(
+  supabase: ReturnType<typeof supabaseServiceClient>,
+  customerId: string,
+) {
+  const { data, error } = await supabase
+    .from("debacu_eval_organizations")
+    .select("id, created_at")
+    .eq("customer_id", customerId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) return null;
+  return data?.id ? String(data.id) : null;
+}
+
+async function ensureOwnerMembershipActive(params: {
+  supabase: ReturnType<typeof supabaseServiceClient>;
+  orgId: string;
+  authUserId: string;
+}) {
+  const { supabase, orgId, authUserId } = params;
+
+  // ⚠️ Si tu columna real es user_id, cambia auth_user_id -> user_id en SELECT/INSERT/UPDATE
+  const { data: existing, error } = await supabase
+    .from("debacu_eval_org_members")
+    .select("id, role, status")
+    .eq("org_id", orgId)
+    .eq("auth_user_id", authUserId)
+    .maybeSingle();
+
+  if (error) return { ok: false as const, code: "db_read_failed" as const };
+
+  if (!existing?.id) {
+    const { error: insErr } = await supabase.from("debacu_eval_org_members").insert({
+      org_id: orgId,
+      auth_user_id: authUserId,
+      role: "OWNER",
+      status: "ACTIVE",
+    } as any);
+
+    if (insErr) return { ok: false as const, code: "db_write_failed" as const };
+    return { ok: true as const };
   }
 
-  try {
-    // 1) user actual (JWT)
-    const sbUser = userClient(req);
-    const { data: u, error: uErr } = await sbUser.auth.getUser();
-    if (uErr || !u?.user) return json(origin, 401, { error: "UNAUTHENTICATED" });
+  // si existe, forzamos OWNER + ACTIVE (postlogin debe dejarlo limpio)
+  const needRole = String(existing.role ?? "").toUpperCase() !== "OWNER";
+  const needStatus = String(existing.status ?? "").toUpperCase() !== "ACTIVE";
 
-    const email = safeLowerEmail(u.user.email);
-    if (!email) return json(origin, 400, { error: "USER_NO_EMAIL" });
+  if (needRole || needStatus) {
+    const patch: any = {};
+    if (needRole) patch.role = "OWNER";
+    if (needStatus) patch.status = "ACTIVE";
 
-    // 2) buscar solicitud aprobada (service role)
-    const { data: reqRow, error: reqErr } = await admin
-      .from("debacu_eval_access_requests")
-      .select("id, status, customer_id, org_id, reviewed_at")
-      .eq("email", email)
-      .eq("status", "APPROVED")
-      .order("reviewed_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (reqErr) return json(origin, 500, { error: "REQ_QUERY_FAILED", detail: reqErr.message });
-    if (!reqRow?.customer_id) return json(origin, 404, { error: "APPROVED_REQUEST_NOT_FOUND" });
-
-    const customerId = reqRow.customer_id as string;
-    let orgId = (reqRow.org_id as string | null) ?? null;
-
-    // 3) fallback org_id si falta
-    if (!orgId) {
-      const { data: orgRow, error: orgErr } = await admin
-        .from("debacu_eval_organizations")
-        .select("id")
-        .eq("customer_id", customerId)
-        .order("created_at", { ascending: true })
-        .limit(1)
-        .maybeSingle();
-
-      if (orgErr) return json(origin, 500, { error: "ORG_QUERY_FAILED", detail: orgErr.message });
-      if (!orgRow?.id) return json(origin, 404, { error: "ORG_NOT_FOUND_FOR_CUSTOMER" });
-      orgId = orgRow.id as string;
-
-      // opcional: backfill org_id en access_requests para futuro
-      await admin.from("debacu_eval_access_requests").update({ org_id: orgId }).eq("id", reqRow.id);
-    }
-
-    // 4) membership (service role)
-    const userId = u.user.id;
-
-    const { data: mExisting, error: mErr } = await admin
+    const { error: updErr } = await supabase
       .from("debacu_eval_org_members")
-      .select("id, role")
-      .eq("org_id", orgId)
-      .eq("user_id", userId)
-      .maybeSingle();
+      .update(patch)
+      .eq("id", existing.id);
 
-    if (mErr) return json(origin, 500, { error: "MEMBER_QUERY_FAILED", detail: mErr.message });
+    if (updErr) return { ok: false as const, code: "db_write_failed" as const };
+  }
 
-    if (!mExisting?.id) {
-      // intenta sin status; si falla por NOT NULL, reintenta con status
-      const ins1 = await admin.from("debacu_eval_org_members").insert({ org_id: orgId, user_id: userId, role: "OWNER" });
-      if (ins1.error) {
-        const msg = (ins1.error.message || "").toLowerCase();
-        if (msg.includes("status") && (msg.includes("not null") || msg.includes("null value"))) {
-          const ins2 = await admin
-            .from("debacu_eval_org_members")
-            .insert({ org_id: orgId, user_id: userId, role: "OWNER", status: "ACTIVE" } as any);
-          if (ins2.error) return json(origin, 500, { error: "MEMBER_INSERT_FAILED", detail: ins2.error.message });
-        } else {
-          return json(origin, 500, { error: "MEMBER_INSERT_FAILED", detail: ins1.error.message });
-        }
-      }
-    } else if (String(mExisting.role || "").toUpperCase() !== "OWNER") {
-      const upd = await admin.from("debacu_eval_org_members").update({ role: "OWNER" }).eq("id", mExisting.id);
-      if (upd.error) return json(origin, 500, { error: "MEMBER_UPDATE_FAILED", detail: upd.error.message });
+  return { ok: true as const };
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, err("method_not_allowed"));
+
+  try {
+    const user = await requireUser(req);
+
+    const body = (await req.json().catch(() => null)) as Body | null;
+    if (!body) return json(req, 400, err("invalid_json"));
+
+    const appId = safeStr(body.app_id ?? body.appId) || APP_ID;
+
+    const supabase = supabaseServiceClient();
+
+    const email = safeLowerEmail(user.email);
+    if (!email) return json(req, 400, err("invalid_user", "USER_NO_EMAIL"));
+
+    // 1) org_id preferido desde UI
+    let orgId = safeStr(body.org_id) || null;
+    let customerId: string | null = null;
+
+    // 2) buscar access_request APPROVED
+    const { row: reqRow, code: reqCode } = await getApprovedRequestByEmail(supabase, email);
+    if (reqCode) return json(req, 500, err(reqCode));
+
+    if (!reqRow?.customer_id) {
+      // sin solicitud aprobada -> no hay tenant
+      return json(req, 404, err("APPROVED_REQUEST_NOT_FOUND"));
     }
 
-    return json(origin, 200, { ok: true, org_id: orgId, customer_id: customerId });
+    customerId = String(reqRow.customer_id);
+
+    // 3) si no vino orgId, usar el del request o fallback a organizations
+    if (!orgId) orgId = reqRow.org_id ? String(reqRow.org_id) : null;
+
+    if (!orgId) {
+      const fallbackOrgId = await resolveOrgIdForCustomer(supabase, customerId);
+      if (!fallbackOrgId) return json(req, 404, err("ORG_NOT_FOUND_FOR_CUSTOMER"));
+      orgId = fallbackOrgId;
+
+      // best-effort backfill en access_requests
+      await supabase.from("debacu_eval_access_requests").update({ org_id: orgId }).eq("id", reqRow.id);
+    }
+
+    // 4) asegurar membership OWNER+ACTIVE para este usuario
+    const ensured = await ensureOwnerMembershipActive({
+      supabase,
+      orgId,
+      authUserId: user.id,
+    });
+
+    if (!ensured.ok) return json(req, 500, err(ensured.code));
+
+    return json(req, 200, {
+      ok: true,
+      app_id: appId,
+      org_id: orgId,
+      customer_id: customerId,
+    });
   } catch (e: any) {
-    return json(origin, 500, { error: "FAILED", detail: e?.message ?? String(e) });
+    const msg = String(e?.message ?? e ?? "");
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
+      return json(req, 401, err("UNAUTHENTICATED"));
+    }
+    return json(req, 500, err("internal_error"));
   }
 });

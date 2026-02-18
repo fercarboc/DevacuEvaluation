@@ -1,57 +1,28 @@
+// supabase/functions/debacu-eval-global-summary/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Max-Age": "86400",
-  };
+function mustEnv(name: string) {
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`missing_env:${name}`);
+  return v;
 }
 
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8" },
-  });
-}
+const SUPABASE_URL = mustEnv("SUPABASE_URL");
+const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-/* =========================
- * AUTH (JWT)
- * ========================= */
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+function supabaseServiceClient() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
   });
 }
 
-async function requireJwtUser(req: Request) {
-  const sb = userClient(req);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
+function err(req: Request, status: number, detail: string) {
+  return json(req, status, { ok: false, error: "request_failed", detail });
 }
-
-const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
 
 /* =========================
  * Normalizadores + Top/Rest
@@ -113,20 +84,22 @@ function topNWithRest(
   };
 }
 
-export default Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response("ok", { status: 200, headers: corsHeaders(req) });
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return err(req, 405, "method_not_allowed");
 
   try {
-    // 1) JWT obligatorio (solo controla acceso)
-    await requireJwtUser(req);
+    // 1) JWT obligatorio (control de acceso)
+    await requireUser(req);
 
     // 2) GLOBAL dataset (no filtrar por hotel)
-    const { data, error } = await admin
+    const sb = supabaseServiceClient();
+
+    const { data, error } = await sb
       .from("debacu_evaluations")
       .select("platform,nationality");
 
-    if (error) return json(req, 500, { ok: false, error: error.message });
+    if (error) return err(req, 500, "db_read_failed");
 
     const rows = (data ?? []) as { platform: string | null; nationality: string | null }[];
 
@@ -148,25 +121,27 @@ export default Deno.serve(async (req: Request) => {
     return json(req, 200, {
       ok: true,
       data: {
-        // ✅ compatibilidad: tu UI antigua suele depender de esto
+        // ✅ compatibilidad UI antigua
         totalCount,
         platformCounts,
         countryCounts,
 
-        // ✅ nuevo: Top5 + resto en %
+        // ✅ Top5 + resto en %
         countries_total_distinct: Object.keys(countryCounts).length,
         platforms_total_distinct: Object.keys(platformCounts).length,
 
         countries_top: countriesAgg.top,
-        countries_rest: countriesAgg.rest, // { keys, pct }
+        countries_rest: countriesAgg.rest,
         platforms_top: platformsAgg.top,
         platforms_rest: platformsAgg.rest,
       },
     });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
-    const code = msg === "UNAUTHENTICATED" ? 401 : 500;
-    console.error("debacu-eval-global-summary error:", e);
-    return json(req, code, { ok: false, error: "request_failed", detail: msg });
+
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return err(req, 401, "UNAUTHORIZED");
+    if (msg === "FORBIDDEN") return err(req, 403, "FORBIDDEN");
+
+    return err(req, 500, "internal_error");
   }
 });

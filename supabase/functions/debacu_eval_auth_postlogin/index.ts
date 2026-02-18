@@ -1,6 +1,6 @@
 // supabase/functions/debacu_eval_auth_postlogin/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 import { json, preflight } from "../_shared/cors.ts";
 import { requireUser, requireAdmin, supabaseServiceClient } from "../_shared/auth.ts";
@@ -10,7 +10,7 @@ const DEFAULT_APP_ID = "DEBACU_EVAL";
 
 type Body = {
   appCode?: string; // "DEBACU_EVAL"
-  org_id?: string;  // ✅ recomendado: UI siempre lo manda
+  org_id?: string; // ✅ recomendado: UI siempre lo manda
 };
 
 type PaywallErrorCode =
@@ -23,7 +23,8 @@ type PaywallErrorCode =
   | "NO_ENTITLEMENTS"
   | "PLAN_NOT_ACTIVE"
   | "DATA_INCONSISTENT"
-  | "DB_ERROR";
+  | "DB_ERROR"
+  | "METHOD_NOT_ALLOWED";
 
 function safeStr(v: any) {
   return typeof v === "string" ? v.trim() : "";
@@ -50,7 +51,7 @@ function fail(req: Request, status: number, code: PaywallErrorCode, extra?: Reco
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return preflight(req);
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "request_failed", detail: "METHOD_NOT_ALLOWED" });
+  if (req.method !== "POST") return fail(req, 405, "METHOD_NOT_ALLOWED");
 
   // 1) Auth (JWT-only)
   let authUser: any;
@@ -71,6 +72,7 @@ Deno.serve(async (req) => {
   const sb = supabaseServiceClient();
 
   // 4) Resolver org_id + validar membership ACTIVE
+  // ⚠️ IMPORTANTE: org_members usa auth_user_id (no user_id)
   let orgId: string | null = requestedOrgId || null;
   let memberRole: string | null = null;
   let memberStatus: string | null = null;
@@ -80,7 +82,7 @@ Deno.serve(async (req) => {
       .from("debacu_eval_org_members")
       .select("org_id, role, status")
       .eq("org_id", orgId)
-      .eq("user_id", authUser.id)
+      .eq("auth_user_id", authUser.id)
       .eq("status", "ACTIVE")
       .maybeSingle();
 
@@ -94,7 +96,7 @@ Deno.serve(async (req) => {
     const { data: mem, error: memErr } = await sb
       .from("debacu_eval_org_members")
       .select("org_id, role, status, created_at")
-      .eq("user_id", authUser.id)
+      .eq("auth_user_id", authUser.id)
       .eq("status", "ACTIVE")
       .order("created_at", { ascending: true })
       .limit(1)
@@ -153,7 +155,6 @@ Deno.serve(async (req) => {
   }
 
   // 7) Admin bypass (por tabla debacu_eval_admin_users via requireAdmin)
-  //    ✅ Sin emails en ENV.
   let isPlatformAdmin = false;
   try {
     await requireAdmin(req);
@@ -185,7 +186,6 @@ Deno.serve(async (req) => {
 
   // 8) Normal users: requiere entitlement activo
   if (!ent?.subscription_status || !ent?.plan_code) {
-    // tu spec pide 402: PLAN_NOT_ACTIVE cuando aplique
     return fail(req, 402, "PLAN_NOT_ACTIVE", {
       appCode,
       appId,

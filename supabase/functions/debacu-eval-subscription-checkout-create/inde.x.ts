@@ -1,47 +1,31 @@
 // supabase/functions/debacu_eval_checkout_create/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
 type PlanCode = "BASIC" | "MEDIUM" | "PREMIUM";
 type BillingFrequency = "MONTHLY" | "YEARLY";
 
+type Body = {
+  org_id?: string;
+  app_id?: string;
+  app_code?: string;
+  plan_code?: string;
+  billing_frequency?: string;
+};
+
 const APP_ID_DEFAULT = "DEBACU_EVAL";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
 function mustEnv(name: string) {
-  const value = Deno.env.get(name);
-  if (!value) throw new Error(`Missing env var: ${name}`);
-  return value;
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`missing_env_${name}`);
+  return v;
 }
 
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    Vary: "Origin",
-    // ✅ JWT-only
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json; charset=utf-8" },
-  });
-}
-
-function fail(origin: string | null, status: number, code: string, message?: string, extra?: any) {
-  return json(origin, status, { ok: false, error_obj: { code, message, ...(extra ?? {}) } });
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
 }
 
 function toPlanCode(v: string): PlanCode | null {
@@ -58,6 +42,20 @@ function toBilling(v: string): BillingFrequency | null {
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
+}
+
+async function readJsonSafe<T>(req: Request): Promise<T> {
+  try {
+    const t = await req.text();
+    if (!t) return {} as T;
+    return JSON.parse(t) as T;
+  } catch {
+    return {} as T;
+  }
+}
+
+function fail(req: Request, status: number, detail: string, extra?: Record<string, unknown>) {
+  return json(req, status, { ok: false, error: "request_failed", detail, ...(extra ?? {}) });
 }
 
 function formEncode(obj: Record<string, string>) {
@@ -78,67 +76,109 @@ async function stripePost(path: string, secretKey: string, form: Record<string, 
   let j: any = null;
   try {
     j = JSON.parse(text);
-  } catch {}
+  } catch {
+    // ignore
+  }
 
   if (!res.ok) {
-    const msg = j?.error?.message ?? text ?? "Stripe error";
-    throw new Error(msg);
+    // NO filtramos mensajes internos a cliente; aquí solo lanzamos código genérico
+    const stripeCode = j?.error?.code ? String(j.error.code) : "stripe_error";
+    throw new Error(`STRIPE_${stripeCode}`);
   }
+
   return j;
 }
 
-/** =========================
- * JWT user (ANON) + org->customer
- * ========================= */
-function userClient(req: Request, supabaseUrl: string, anonKey: string) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(supabaseUrl, anonKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
+/* ======================================================
+ * Multi-org: resolve org + customer_id (service role)
+ * ====================================================== */
+async function resolveOrgAndCustomerId(
+  sb: ReturnType<typeof supabaseServiceClient>,
+  authUserId: string,
+  orgIdIn?: string,
+) {
+  const requested = safeStr(orgIdIn);
 
-async function requireJwtUser(req: Request, supabaseUrl: string, anonKey: string) {
-  const sb = userClient(req, supabaseUrl, anonKey);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
+  if (requested) {
+    const { data: mem, error: memErr } = await sb
+      .from("debacu_eval_org_members")
+      .select("org_id, role, status")
+      .eq("org_id", requested)
+      .eq("auth_user_id", authUserId)
+      .eq("status", "ACTIVE")
+      .maybeSingle();
 
-async function requireOrgContext(admin: any, user_id: string) {
-  const { data: mem, error: memErr } = await admin
+    if (memErr) throw new Error("DB_ERROR");
+    if (!mem?.org_id) throw new Error("NO_ORG_MEMBERSHIP");
+
+    const org_id = String(mem.org_id);
+
+    // customer_id: entitlements view -> organizations fallback
+    let customer_id: string | null = null;
+
+    try {
+      const { data: ent, error: entErr } = await sb
+        .from("debacu_eval_org_entitlements_v")
+        .select("customer_id")
+        .eq("org_id", org_id)
+        .maybeSingle();
+      if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
+    } catch {
+      // ignore
+    }
+
+    if (!customer_id) {
+      const { data: org, error: orgErr } = await sb
+        .from("debacu_eval_organizations")
+        .select("customer_id")
+        .eq("id", org_id)
+        .maybeSingle();
+
+      if (orgErr) throw new Error("DB_ERROR");
+      if (!org?.customer_id) throw new Error("NO_ORG");
+      customer_id = String(org.customer_id);
+    }
+
+    return { org_id, customer_id };
+  }
+
+  // fallback determinista
+  const { data: mem, error: memErr } = await sb
     .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", user_id)
+    .select("org_id, role, status, created_at")
+    .eq("auth_user_id", authUserId)
+    .eq("status", "ACTIVE")
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+  if (memErr) throw new Error("DB_ERROR");
+  if (!mem?.org_id) throw new Error("NO_ORG_MEMBERSHIP");
 
   const org_id = String(mem.org_id);
 
-  // primero entitlements view (si existe)
   let customer_id: string | null = null;
+
   try {
-    const { data: ent, error: entErr } = await admin
+    const { data: ent, error: entErr } = await sb
       .from("debacu_eval_org_entitlements_v")
       .select("customer_id")
       .eq("org_id", org_id)
       .maybeSingle();
     if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
-  } catch {}
+  } catch {
+    // ignore
+  }
 
-  // fallback organizations
   if (!customer_id) {
-    const { data: org, error: orgErr } = await admin
+    const { data: org, error: orgErr } = await sb
       .from("debacu_eval_organizations")
       .select("customer_id")
       .eq("id", org_id)
       .maybeSingle();
-    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+
+    if (orgErr) throw new Error("DB_ERROR");
+    if (!org?.customer_id) throw new Error("NO_ORG");
     customer_id = String(org.customer_id);
   }
 
@@ -146,16 +186,16 @@ async function requireOrgContext(admin: any, user_id: string) {
 }
 
 Deno.serve(async (req) => {
-  const origin = req.headers.get("origin");
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return fail(req, 405, "method_not_allowed");
 
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(origin) });
-  if (req.method !== "POST") return fail(origin, 405, "METHOD_NOT_ALLOWED");
+  let pendingSubscriptionId: string | null = null;
 
   try {
-    const SUPABASE_URL = mustEnv("SUPABASE_URL");
-    const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
-    const SERVICE_ROLE = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+    // 1) JWT obligatorio
+    const user = await requireUser(req);
 
+    // 2) env + price map
     const STRIPE_SECRET_KEY = mustEnv("STRIPE_SECRET_KEY");
     const SUCCESS_URL = Deno.env.get("STRIPE_SUCCESS_URL") || "http://localhost:3000/login?paid=1";
     const CANCEL_URL = Deno.env.get("STRIPE_CANCEL_URL") || "http://localhost:3000/login?cancel=1";
@@ -175,38 +215,35 @@ Deno.serve(async (req) => {
       },
     };
 
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
+    // 3) body
+    const body = await readJsonSafe<Body>(req);
+    const app_id = safeStr(body.app_id ?? body.app_code) || APP_ID_DEFAULT;
 
-    // ✅ JWT obligatorio (validado con ANON)
-    const user = await requireJwtUser(req, SUPABASE_URL, ANON_KEY);
+    const plan_code = toPlanCode(safeStr(body.plan_code));
+    const billing_frequency = toBilling(safeStr(body.billing_frequency)) ?? "MONTHLY";
 
-    const body = await req.json().catch(() => ({}));
-    const app_id = String(body?.app_id ?? body?.app_code ?? APP_ID_DEFAULT).trim() || APP_ID_DEFAULT;
-
-    const plan_code = toPlanCode(String(body?.plan_code ?? ""));
-    const billing_frequency = toBilling(String(body?.billing_frequency ?? "MONTHLY")) ?? "MONTHLY";
-    if (!plan_code) return fail(origin, 400, "VALIDATION_ERROR", "plan_code inválido (BASIC|MEDIUM|PREMIUM)");
-
+    if (!plan_code) return fail(req, 400, "invalid_plan_code");
     const stripe_price_id = PRICE_MAP[plan_code][billing_frequency];
 
-    // ✅ tenant seguro (org->customer_id)
-    const { org_id, customer_id } = await requireOrgContext(admin, user.id);
+    // 4) DB (service role)
+    const sb = supabaseServiceClient();
 
-    // ✅ customer row
-    const { data: customer, error: cErr } = await admin
+    // 5) resolve tenant (org -> customer) con org_id recomendado
+    const { org_id, customer_id } = await resolveOrgAndCustomerId(sb, user.id, body.org_id);
+
+    // 6) customer row
+    const { data: customer, error: cErr } = await sb
       .from("customers")
       .select("id,name,email,is_active,stripe_customer_id")
       .eq("id", customer_id)
       .maybeSingle();
 
-    if (cErr) return fail(origin, 500, "DB_ERROR", cErr.message);
-    if (!customer?.id) return fail(origin, 403, "NO_CUSTOMER", "No existe customer para este org");
-    if (customer.is_active === false) return fail(origin, 403, "CUSTOMER_INACTIVE", "Cliente inactivo");
+    if (cErr) return fail(req, 500, "db_read_failed");
+    if (!customer?.id) return fail(req, 403, "FORBIDDEN");
+    if (customer.is_active === false) return fail(req, 403, "FORBIDDEN");
 
-    // ✅ evita doble pending
-    const { data: pending } = await admin
+    // 7) evita doble pending
+    const { data: pending, error: pendingErr } = await sb
       .from("subscriptions")
       .select("id")
       .eq("customer_id", customer_id)
@@ -216,29 +253,28 @@ Deno.serve(async (req) => {
       .limit(1)
       .maybeSingle();
 
+    if (pendingErr) return fail(req, 500, "db_read_failed");
     if (pending?.id) {
-      return fail(origin, 409, "PENDING_CHANGE", "Ya existe un cambio pendiente", {
-        pending_subscription_id: pending.id,
-      });
+      return fail(req, 409, "pending_change_exists", { pending_subscription_id: pending.id });
     }
 
-    // ✅ plan_id correcto por app_id
-    const { data: planRow, error: pErr } = await admin
+    // 8) plan_id correcto por app_id
+    const { data: planRow, error: pErr } = await sb
       .from("plans")
-      .select("id, code")
+      .select("id")
       .eq("app_id", app_id)
       .eq("code", plan_code)
       .maybeSingle();
 
-    if (pErr) return fail(origin, 500, "DB_ERROR", pErr.message);
-    if (!planRow?.id) return fail(origin, 400, "PLAN_NOT_FOUND", `Plan ${plan_code} no existe para app_id=${app_id}`);
+    if (pErr) return fail(req, 500, "db_read_failed");
+    if (!planRow?.id) return fail(req, 400, "invalid_plan_code");
 
-    // ✅ Stripe customer
+    // 9) Stripe customer
     let stripe_customer_id = (customer.stripe_customer_id as string | null) ?? null;
 
     if (!stripe_customer_id) {
       const email = String(customer.email ?? user.email ?? "").trim().toLowerCase();
-      if (!email || !email.includes("@")) return fail(origin, 409, "CUSTOMER_NO_EMAIL", "Cliente sin email válido para Stripe");
+      if (!email || !email.includes("@")) return fail(req, 409, "customer_no_email");
 
       const sc = await stripePost("customers", STRIPE_SECRET_KEY, {
         email,
@@ -249,17 +285,17 @@ Deno.serve(async (req) => {
         "metadata[auth_user_id]": user.id,
       });
 
-      stripe_customer_id = sc.id as string;
+      stripe_customer_id = String(sc.id);
 
-      const { error: upErr } = await admin.from("customers").update({ stripe_customer_id }).eq("id", customer_id);
-      if (upErr) return fail(origin, 500, "DB_ERROR", upErr.message);
+      const { error: upErr } = await sb.from("customers").update({ stripe_customer_id }).eq("id", customer_id);
+      if (upErr) return fail(req, 500, "db_write_failed");
     }
 
-    // ✅ crear pending subscription
+    // 10) crear pending subscription (mínimo seguro)
     const start_date = todayISO();
     const nowIso = new Date().toISOString();
 
-    const { data: pendingSub, error: pendingErr } = await admin
+    const { data: pendingSub, error: insErr } = await sb
       .from("subscriptions")
       .insert({
         customer_id,
@@ -273,20 +309,14 @@ Deno.serve(async (req) => {
         stripe_price_id,
         created_at: nowIso,
         updated_at: nowIso,
-        // si tienes estas columnas, perfecto; si no, bórralas:
-        org_id,
-        required_plan_code: plan_code,
-        required_billing_frequency: billing_frequency,
-        extra_seats: 0,
       } as any)
-      .select("id")
+      .select("id, created_at")
       .single();
 
-    if (pendingErr) return fail(origin, 500, "DB_ERROR", pendingErr.message);
+    if (insErr) return fail(req, 500, "db_write_failed");
+    pendingSubscriptionId = String(pendingSub.id);
 
-    const pendingSubscriptionId = String(pendingSub.id);
-
-    // ✅ checkout session
+    // 11) checkout session
     const cs = await stripePost("checkout/sessions", STRIPE_SECRET_KEY, {
       mode: "subscription",
       customer: stripe_customer_id,
@@ -295,6 +325,8 @@ Deno.serve(async (req) => {
       allow_promotion_codes: "true",
       "line_items[0][price]": stripe_price_id,
       "line_items[0][quantity]": "1",
+
+      // metadata para webhook
       "metadata[pendingSubscriptionId]": pendingSubscriptionId,
       "metadata[customer_id]": customer_id,
       "metadata[org_id]": org_id,
@@ -304,13 +336,16 @@ Deno.serve(async (req) => {
       "metadata[auth_user_id]": user.id,
     });
 
-    const checkout_session_id = cs.id as string;
-    const url = cs.url as string;
+    const checkout_session_id = String(cs.id);
+    const url = String(cs.url);
 
-    // guarda checkout id
-    await admin.from("subscriptions").update({ stripe_checkout_session_id: checkout_session_id }).eq("id", pendingSubscriptionId);
+    // 12) guarda checkout id (best-effort)
+    await sb
+      .from("subscriptions")
+      .update({ stripe_checkout_session_id: checkout_session_id, updated_at: new Date().toISOString() })
+      .eq("id", pendingSubscriptionId);
 
-    return json(origin, 200, {
+    return json(req, 200, {
       ok: true,
       data: {
         url,
@@ -320,14 +355,26 @@ Deno.serve(async (req) => {
     });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
-    const code =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED")
-        ? 403
-        : 500;
 
-    console.error("debacu_eval_checkout_create error:", e);
-    return json(origin, code, { ok: false, error_obj: { code: "CHECKOUT_CREATE_ERROR", message: msg } });
+    // cleanup best-effort: si ya creamos pending y Stripe falló, marcamos FAILED
+    try {
+      if (pendingSubscriptionId) {
+        const sb = supabaseServiceClient();
+        await sb
+          .from("subscriptions")
+          .update({ status: "FAILED", updated_at: new Date().toISOString() } as any)
+          .eq("id", pendingSubscriptionId);
+      }
+    } catch {
+      // ignore
+    }
+
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return fail(req, 401, "UNAUTHORIZED");
+    if (msg === "NO_ORG_MEMBERSHIP") return fail(req, 403, "NO_ORG_MEMBERSHIP");
+    if (msg === "NO_ORG") return fail(req, 403, "NO_ORG");
+    if (msg.startsWith("missing_env_")) return fail(req, 500, "missing_server_configuration");
+    if (msg.startsWith("STRIPE_")) return fail(req, 502, "stripe_request_failed");
+
+    return fail(req, 500, "internal_error");
   }
 });

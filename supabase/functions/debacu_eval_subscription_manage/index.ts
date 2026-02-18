@@ -1,7 +1,10 @@
 // supabase/functions/debacu_eval_subscription_manage/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import Stripe from "https://esm.sh/stripe@16.12.0?target=deno";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
 
 type PlanCode = "BASIC" | "MEDIUM" | "PREMIUM";
 type BillingFrequency = "MONTHLY" | "YEARLY";
@@ -9,18 +12,14 @@ type ManageAction = "GET" | "CHANGE" | "SCHEDULE_DOWNGRADE" | "CANCEL_DOWNGRADE"
 
 const DEFAULT_APP_ID = "DEBACU_EVAL";
 
-/** ======================================================
- *  ENV
- *  ====================================================== */
 function mustEnv(name: string) {
-  const value = Deno.env.get(name);
-  if (!value) throw new Error(`MISSING_ENV:${name}`);
-  return value;
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`MISSING_ENV:${name}`);
+  return v;
 }
 
 const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
 
 const STRIPE_SECRET_KEY = mustEnv("STRIPE_SECRET_KEY");
 const STRIPE_SUCCESS_URL = mustEnv("STRIPE_SUCCESS_URL");
@@ -41,57 +40,24 @@ const PRICE_MAP: Record<PlanCode, Record<BillingFrequency, string>> = {
   },
 };
 
-const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
-
 const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-/** ======================================================
- *  CORS
- *  ====================================================== */
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    Vary: "Origin",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json; charset=utf-8" },
+function sbService() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
   });
 }
 
-/** ======================================================
- *  Helpers
- *  ====================================================== */
 function safeUpper(v?: string | null) {
   return String(v ?? "").toUpperCase();
 }
-
 function safeStr(v: any) {
   return typeof v === "string" ? v.trim() : "";
 }
-
 function pickString(body: any, snake: string, camel?: string): string | undefined {
   const v = body?.[snake] ?? (camel ? body?.[camel] : undefined);
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
-
 function pickPlanCode(body: any): PlanCode | undefined {
   const v = body?.target_plan_code ?? body?.targetPlanCode;
   if (typeof v !== "string") return undefined;
@@ -99,7 +65,6 @@ function pickPlanCode(body: any): PlanCode | undefined {
   if (up === "BASIC" || up === "MEDIUM" || up === "PREMIUM") return up;
   return undefined;
 }
-
 function pickBillingFrequency(body: any): BillingFrequency {
   const v = body?.billing_frequency ?? body?.billingFrequency;
   if (typeof v !== "string") return "MONTHLY";
@@ -107,7 +72,6 @@ function pickBillingFrequency(body: any): BillingFrequency {
   if (up === "MONTHLY" || up === "YEARLY") return up;
   return "MONTHLY";
 }
-
 function planRank(code: string) {
   const c = safeUpper(code);
   if (c === "BASIC") return 1;
@@ -115,82 +79,71 @@ function planRank(code: string) {
   if (c === "PREMIUM") return 3;
   return 0;
 }
-
 function isoDateFromUnix(sec?: number | null) {
   if (!sec) return null;
   return new Date(sec * 1000).toISOString().slice(0, 10);
 }
 
-function errToString(e: unknown) {
-  if (e instanceof Error) return `${e.name}: ${e.message}`;
-  try {
-    return JSON.stringify(e);
-  } catch {
-    return String(e);
-  }
+function err(
+  req: Request,
+  status: number,
+  detail:
+    | "UNAUTHENTICATED"
+    | "FORBIDDEN"
+    | "missing_org_id"
+    | "missing_action"
+    | "invalid_action"
+    | "invalid_app_id"
+    | "missing_target_plan_code"
+    | "invalid_billing_frequency"
+    | "PENDING_CHANGE"
+    | "USE_SCHEDULE_DOWNGRADE"
+    | "PLAN_NOT_ACTIVE"
+    | "SEATS_EXCEEDED"
+    | "NO_ACTIVE_SUBSCRIPTION"
+    | "NO_DOWNGRADE_SCHEDULED"
+    | "request_failed",
+) {
+  return json(req, status, { ok: false, error: "request_failed", detail });
 }
 
 /** ======================================================
- *  Auth (JWT-only)
+ *  Org context (STRICT: org_id requerido)
  *  ====================================================== */
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
-
-async function requireJwtUser(req: Request) {
-  const sb = userClient(req);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
-
-/** ======================================================
- *  Tenant context (org membership -> customer_id)
- *  ====================================================== */
-async function requireOrgContext(user_id: string) {
-  // 1) membership (first membership by created_at)
-  const { data: mem, error: memErr } = await admin
+async function requireOrgContext(sb: ReturnType<typeof sbService>, user_id: string, org_id: string) {
+  // membership ACTIVE en org y role OWNER/ADMIN
+  const { data: mem, error: memErr } = await sb
     .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
+    .select("org_id, role, status")
     .eq("user_id", user_id)
-    .order("created_at", { ascending: true })
-    .limit(1)
+    .eq("org_id", org_id)
+    .eq("status", "ACTIVE")
     .maybeSingle();
 
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+  if (memErr || !mem) return null;
 
-  const org_id = String(mem.org_id);
-  const role = mem.role ?? null;
+  const role = safeUpper(mem.role);
+  if (!(role === "OWNER" || role === "ADMIN")) return null;
 
-  // 2) customer_id via entitlements view (if exists)
+  // customer_id preferente por view
   let customer_id: string | null = null;
-  try {
-    const { data: ent, error: entErr } = await admin
-      .from("debacu_eval_org_entitlements_v")
-      .select("customer_id")
-      .eq("org_id", org_id)
-      .maybeSingle();
 
-    if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
-  } catch {
-    // ignore
-  }
+  const { data: ent, error: entErr } = await sb
+    .from("debacu_eval_org_entitlements_v")
+    .select("customer_id")
+    .eq("org_id", org_id)
+    .maybeSingle();
 
-  // 3) fallback organizations
+  if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
+
   if (!customer_id) {
-    const { data: org, error: orgErr } = await admin
+    const { data: org, error: orgErr } = await sb
       .from("debacu_eval_organizations")
       .select("customer_id")
       .eq("id", org_id)
       .maybeSingle();
 
-    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+    if (orgErr || !org?.customer_id) return null;
     customer_id = String(org.customer_id);
   }
 
@@ -200,8 +153,8 @@ async function requireOrgContext(user_id: string) {
 /** ======================================================
  *  DB helpers
  *  ====================================================== */
-async function getActiveSubscription(customer_id: string, app_id: string) {
-  const { data, error } = await admin
+async function getActiveSubscription(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string) {
+  const { data, error } = await sb
     .from("subscriptions")
     .select("*")
     .eq("customer_id", customer_id)
@@ -212,11 +165,11 @@ async function getActiveSubscription(customer_id: string, app_id: string) {
     .limit(1)
     .maybeSingle();
   if (error) throw error;
-  return data;
+  return data as any;
 }
 
-async function getPendingSubscription(customer_id: string, app_id: string) {
-  const { data, error } = await admin
+async function getPendingSubscription(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string) {
+  const { data, error } = await sb
     .from("subscriptions")
     .select("*")
     .eq("customer_id", customer_id)
@@ -226,20 +179,18 @@ async function getPendingSubscription(customer_id: string, app_id: string) {
     .limit(1)
     .maybeSingle();
   if (error) throw error;
-  return data;
+  return data as any;
 }
 
-// Best subscription for UI (ignore REPLACED, prefer ACTIVE/TRIAL_ACTIVE...)
 const STATUS_ORDER = ["ACTIVE", "TRIAL_ACTIVE", "SUSPENDED", "PENDING_PAYMENT"] as const;
-
 function scoreStatus(s?: string | null) {
   const up = safeUpper(s);
   const idx = STATUS_ORDER.indexOf(up as any);
   return idx === -1 ? 999 : idx;
 }
 
-async function getBestSubscription(customer_id: string, app_id: string) {
-  const { data, error } = await admin
+async function getBestSubscription(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string) {
+  const { data, error } = await sb
     .from("subscriptions")
     .select("*")
     .eq("customer_id", customer_id)
@@ -256,15 +207,11 @@ async function getBestSubscription(customer_id: string, app_id: string) {
 
   rows.sort((a: any, b: any) => {
     const sa = scoreStatus(a.status);
-    const sb = scoreStatus(b.status);
-    if (sa !== sb) return sa - sb;
+    const sb2 = scoreStatus(b.status);
+    if (sa !== sb2) return sa - sb2;
 
-    const pa =
-      (!a.next_billing_date ? 10 : 0) +
-      (!(a.stripe_subscription_id || a.provider_subscription_id) ? 10 : 0);
-    const pb =
-      (!b.next_billing_date ? 10 : 0) +
-      (!(b.stripe_subscription_id || b.provider_subscription_id) ? 10 : 0);
+    const pa = (!a.next_billing_date ? 10 : 0) + (!(a.stripe_subscription_id || a.provider_subscription_id) ? 10 : 0);
+    const pb = (!b.next_billing_date ? 10 : 0) + (!(b.stripe_subscription_id || b.provider_subscription_id) ? 10 : 0);
     if (pa !== pb) return pa - pb;
 
     const da = String(a.start_date ?? a.created_at ?? "");
@@ -275,40 +222,25 @@ async function getBestSubscription(customer_id: string, app_id: string) {
   return rows[0] as any;
 }
 
-async function getPlanByCode(app_id: string, code: string) {
-  const { data, error } = await admin
-    .from("plans")
-    .select("*")
-    .eq("app_id", app_id)
-    .eq("code", code)
-    .limit(1)
-    .maybeSingle();
+async function getPlanByCode(sb: ReturnType<typeof sbService>, app_id: string, code: string) {
+  const { data, error } = await sb.from("plans").select("*").eq("app_id", app_id).eq("code", code).maybeSingle();
   if (error) throw error;
   return data as any;
 }
 
-async function getPlanById(plan_id: string) {
-  const { data, error } = await admin
-    .from("plans")
-    .select("*")
-    .eq("id", plan_id)
-    .limit(1)
-    .maybeSingle();
+async function getPlanById(sb: ReturnType<typeof sbService>, plan_id: string) {
+  const { data, error } = await sb.from("plans").select("*").eq("id", plan_id).maybeSingle();
   if (error) throw error;
   return data as any;
 }
 
-async function getCustomerById(customer_id: string) {
-  const { data, error } = await admin
-    .from("customers")
-    .select("id, email")
-    .eq("id", customer_id)
-    .maybeSingle();
+async function getCustomerById(sb: ReturnType<typeof sbService>, customer_id: string) {
+  const { data, error } = await sb.from("customers").select("id, email").eq("id", customer_id).maybeSingle();
   if (error) throw error;
   return data as any;
 }
 
-async function insertEvent(params: {
+async function insertEvent(sb: ReturnType<typeof sbService>, params: {
   app_id: string;
   customer_id: string;
   type: string;
@@ -319,7 +251,7 @@ async function insertEvent(params: {
 }) {
   const stripe_event_id = params.stripe_event_id ?? `manage_${crypto.randomUUID()}`;
 
-  const { error } = await admin.from("subscription_events").insert({
+  const { error } = await sb.from("subscription_events").insert({
     stripe_event_id,
     type: params.type,
     payload: params.payload ?? {},
@@ -339,61 +271,41 @@ async function insertEvent(params: {
 /** ======================================================
  *  Handlers
  *  ====================================================== */
-async function handleGet(customer_id: string, app_id: string) {
-  const best = await getBestSubscription(customer_id, app_id);
-  const active = await getActiveSubscription(customer_id, app_id);
-  const pending = await getPendingSubscription(customer_id, app_id);
+async function handleGet(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string) {
+  const best = await getBestSubscription(sb, customer_id, app_id);
+  const active = await getActiveSubscription(sb, customer_id, app_id);
+  const pending = await getPendingSubscription(sb, customer_id, app_id);
 
   const plan =
-    best?.plan_id && typeof best.plan_id === "string"
-      ? await getPlanById(best.plan_id)
-      : active?.plan_id && typeof active.plan_id === "string"
-      ? await getPlanById(active.plan_id)
-      : null;
+    best?.plan_id ? await getPlanById(sb, best.plan_id)
+    : active?.plan_id ? await getPlanById(sb, active.plan_id)
+    : null;
 
   return { latest: best, active, pending, plan };
 }
 
-async function handleChange(customer_id: string, app_id: string, body: any) {
+async function handleChange(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string, body: any) {
   const target_plan_code = pickPlanCode(body);
-  if (!target_plan_code) return { status: 400, body: { error: "target_plan_code is required" } };
+  if (!target_plan_code) return { status: 400, detail: "missing_target_plan_code" as const };
 
   const billing_frequency = pickBillingFrequency(body);
   const price_id = PRICE_MAP[target_plan_code][billing_frequency];
-  if (!price_id) return { status: 400, body: { error: "stripe price not configured" } };
+  if (!price_id) return { status: 400, detail: "request_failed" as const };
 
-  const pending = await getPendingSubscription(customer_id, app_id);
-  if (pending) {
-    return {
-      status: 409,
-      body: {
-        code: "PENDING_CHANGE",
-        error: "Ya existe un cambio de plan pendiente",
-        pending_subscription_id: pending.id,
-        pendingSubscriptionId: pending.id,
-      },
-    };
-  }
+  const pending = await getPendingSubscription(sb, customer_id, app_id);
+  if (pending) return { status: 409, detail: "PENDING_CHANGE" as const, extra: { pendingSubscriptionId: pending.id } };
 
-  const plan_row = await getPlanByCode(app_id, target_plan_code);
-  if (!plan_row) return { status: 400, body: { error: `Plan ${target_plan_code} no encontrado en BD` } };
+  const plan_row = await getPlanByCode(sb, app_id, target_plan_code);
+  if (!plan_row) return { status: 400, detail: "request_failed" as const };
 
-  const customer = await getCustomerById(customer_id);
-  const active_sub = await getActiveSubscription(customer_id, app_id);
+  const customer = await getCustomerById(sb, customer_id);
+  const active_sub = await getActiveSubscription(sb, customer_id, app_id);
 
-  const currentPlanRow = active_sub?.plan_id ? await getPlanById(active_sub.plan_id) : null;
+  const currentPlanRow = active_sub?.plan_id ? await getPlanById(sb, active_sub.plan_id) : null;
   const current_code = safeUpper(currentPlanRow?.code ?? "");
 
   const isDowngrade = !!active_sub && planRank(target_plan_code) < planRank(current_code);
-  if (isDowngrade) {
-    return {
-      status: 400,
-      body: {
-        error: "Para bajar de plan usa action=SCHEDULE_DOWNGRADE (next_cycle).",
-        code: "USE_SCHEDULE_DOWNGRADE",
-      },
-    };
-  }
+  if (isDowngrade) return { status: 400, detail: "USE_SCHEDULE_DOWNGRADE" as const };
 
   const replaces_subscription_id = active_sub?.id ?? null;
 
@@ -426,7 +338,7 @@ async function handleChange(customer_id: string, app_id: string, body: any) {
     },
   });
 
-  const { error: insertError } = await admin.from("subscriptions").insert({
+  const { error: insertError } = await sb.from("subscriptions").insert({
     id: pending_subscription_id,
     customer_id,
     app_id,
@@ -447,7 +359,7 @@ async function handleChange(customer_id: string, app_id: string, body: any) {
 
   if (insertError) throw insertError;
 
-  await insertEvent({
+  await insertEvent(sb, {
     app_id,
     customer_id,
     type: "CHECKOUT_CREATED",
@@ -463,65 +375,43 @@ async function handleChange(customer_id: string, app_id: string, body: any) {
 
   return {
     status: 200,
-    body: {
-      checkout_url: checkoutSession.url,
-      pending_subscription_id,
-      // compat
-      checkoutUrl: checkoutSession.url,
-      pendingSubscriptionId: pending_subscription_id,
-    },
+    body: { ok: true, checkoutUrl: checkoutSession.url, pendingSubscriptionId: pending_subscription_id },
   };
 }
 
-async function handleScheduleDowngrade(customer_id: string, app_id: string, body: any) {
+async function handleScheduleDowngrade(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string, body: any) {
   const target_plan_code = pickPlanCode(body);
-  if (!target_plan_code) return { status: 400, body: { error: "target_plan_code is required" } };
+  if (!target_plan_code) return { status: 400, detail: "missing_target_plan_code" as const };
 
   const billing_frequency = pickBillingFrequency(body);
   const price_id = PRICE_MAP[target_plan_code][billing_frequency];
-  if (!price_id) return { status: 400, body: { error: "stripe price not configured" } };
+  if (!price_id) return { status: 400, detail: "request_failed" as const };
 
-  const pending = await getPendingSubscription(customer_id, app_id);
-  if (pending) {
-    return {
-      status: 409,
-      body: {
-        code: "PENDING_CHANGE",
-        error: "Ya existe un cambio de plan pendiente",
-        pending_subscription_id: pending.id,
-        pendingSubscriptionId: pending.id,
-      },
-    };
-  }
+  const pending = await getPendingSubscription(sb, customer_id, app_id);
+  if (pending) return { status: 409, detail: "PENDING_CHANGE" as const, extra: { pendingSubscriptionId: pending.id } };
 
-  const active_sub = await getActiveSubscription(customer_id, app_id);
-  if (!active_sub) return { status: 409, body: { error: "No hay suscripción ACTIVE para programar downgrade." } };
+  const active_sub = await getActiveSubscription(sb, customer_id, app_id);
+  if (!active_sub) return { status: 409, detail: "NO_ACTIVE_SUBSCRIPTION" as const };
 
   if ((active_sub as any)?.required_plan_code) {
+    // ya programado; lo devolvemos como ok true (pero sin inventar detail)
     return {
-      status: 409,
+      status: 200,
       body: {
-        code: "DOWNGRADE_ALREADY_SCHEDULED",
-        error: "Ya existe un downgrade programado",
-        required_plan_code: (active_sub as any)?.required_plan_code,
-        required_billing_frequency: (active_sub as any)?.required_billing_frequency ?? null,
+        ok: true,
+        scheduled: true,
         effective_date: (active_sub as any)?.next_billing_date ?? null,
+        target_plan_code: (active_sub as any)?.required_plan_code,
+        schedule_id: (active_sub as any)?.stripe_schedule_id ?? null,
       },
     };
   }
 
-  const currentPlanRow = (active_sub as any)?.plan_id ? await getPlanById((active_sub as any).plan_id) : null;
+  const currentPlanRow = (active_sub as any)?.plan_id ? await getPlanById(sb, (active_sub as any).plan_id) : null;
   const current_code = safeUpper(currentPlanRow?.code ?? "");
 
   if (!(planRank(target_plan_code) < planRank(current_code))) {
-    return {
-      status: 400,
-      body: {
-        error: "SCHEDULE_DOWNGRADE solo permite bajar de plan (target inferior al actual).",
-        current_plan_code: current_code || null,
-        target_plan_code,
-      },
-    };
+    return { status: 400, detail: "invalid_action" as const };
   }
 
   const stripeSubId =
@@ -529,9 +419,7 @@ async function handleScheduleDowngrade(customer_id: string, app_id: string, body
     (active_sub as any)?.provider_subscription_id ??
     null;
 
-  if (!stripeSubId) {
-    return { status: 409, body: { error: "No hay stripe_subscription_id en la suscripción ACTIVE para hacer downgrade." } };
-  }
+  if (!stripeSubId) return { status: 409, detail: "request_failed" as const };
 
   const stripeSub = await stripe.subscriptions.retrieve(stripeSubId, { expand: ["items.data.price", "customer"] });
 
@@ -539,33 +427,22 @@ async function handleScheduleDowngrade(customer_id: string, app_id: string, body
   const periodStart = (stripeSub as any).current_period_start as number | undefined;
   const periodEnd = (stripeSub as any).current_period_end as number | undefined;
 
-  if (!currentPriceId || !periodStart || !periodEnd) {
-    return { status: 500, body: { error: "Stripe subscription missing current price/period" } };
-  }
+  if (!currentPriceId || !periodStart || !periodEnd) return { status: 500, detail: "request_failed" as const };
 
   const schedule = await stripe.subscriptionSchedules.create({ from_subscription: stripeSubId });
 
   await stripe.subscriptionSchedules.update(schedule.id, {
     end_behavior: "release",
     phases: [
-      {
-        start_date: periodStart,
-        end_date: periodEnd,
-        items: [{ price: currentPriceId, quantity: 1 }],
-        proration_behavior: "none",
-      },
-      {
-        start_date: periodEnd,
-        items: [{ price: price_id, quantity: 1 }],
-        proration_behavior: "none",
-      },
+      { start_date: periodStart, end_date: periodEnd, items: [{ price: currentPriceId, quantity: 1 }], proration_behavior: "none" },
+      { start_date: periodEnd, items: [{ price: price_id, quantity: 1 }], proration_behavior: "none" },
     ],
   });
 
   const nowIso = new Date().toISOString();
   const effective_date = isoDateFromUnix(periodEnd);
 
-  const { error: upErr } = await admin
+  const { error: upErr } = await sb
     .from("subscriptions")
     .update({
       required_plan_code: target_plan_code,
@@ -578,7 +455,7 @@ async function handleScheduleDowngrade(customer_id: string, app_id: string, body
 
   if (upErr) throw upErr;
 
-  await insertEvent({
+  await insertEvent(sb, {
     app_id,
     customer_id,
     type: "DOWNGRADE_SCHEDULED",
@@ -597,32 +474,22 @@ async function handleScheduleDowngrade(customer_id: string, app_id: string, body
     },
   });
 
-  return {
-    status: 200,
-    body: {
-      ok: true,
-      scheduled: true,
-      effective_date,
-      current_plan_code: current_code || null,
-      target_plan_code,
-      schedule_id: schedule.id,
-    },
-  };
+  return { status: 200, body: { ok: true, scheduled: true, effective_date, current_plan_code: current_code || null, target_plan_code, schedule_id: schedule.id } };
 }
 
-async function handleCancelDowngrade(customer_id: string, app_id: string) {
-  const active_sub = await getActiveSubscription(customer_id, app_id);
-  if (!active_sub) return { status: 409, body: { error: "No hay suscripción ACTIVE." } };
+async function handleCancelDowngrade(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string) {
+  const active_sub = await getActiveSubscription(sb, customer_id, app_id);
+  if (!active_sub) return { status: 409, detail: "NO_ACTIVE_SUBSCRIPTION" as const };
 
   const scheduleId = (active_sub as any)?.stripe_schedule_id ?? null;
-  if (!scheduleId) return { status: 400, body: { error: "NO_DOWNGRADE_SCHEDULED", code: "NO_DOWNGRADE_SCHEDULED" } };
+  if (!scheduleId) return { status: 400, detail: "NO_DOWNGRADE_SCHEDULED" as const };
 
   const stripeSubId =
     (active_sub as any)?.stripe_subscription_id ??
     (active_sub as any)?.provider_subscription_id ??
     null;
 
-  if (!stripeSubId) return { status: 409, body: { error: "No hay stripe_subscription_id en la suscripción ACTIVE." } };
+  if (!stripeSubId) return { status: 409, detail: "request_failed" as const };
 
   try {
     await stripe.subscriptionSchedules.release(scheduleId);
@@ -652,112 +519,113 @@ async function handleCancelDowngrade(customer_id: string, app_id: string) {
   };
   if (effectiveNextDate) updatePayload.next_billing_date = effectiveNextDate;
 
-  const { error: upErr } = await admin.from("subscriptions").update(updatePayload as any).eq("id", (active_sub as any).id);
+  const { error: upErr } = await sb.from("subscriptions").update(updatePayload as any).eq("id", (active_sub as any).id);
   if (upErr) throw upErr;
 
-  await insertEvent({
+  await insertEvent(sb, {
     app_id,
     customer_id,
     type: "DOWNGRADE_CANCELLED",
     stripe_subscription_id: stripeSubId ?? null,
     stripe_customer_id: (active_sub as any)?.stripe_customer_id ?? null,
-    payload: {
-      stripe_schedule_id: scheduleId,
-      action: "CANCEL_DOWNGRADE",
-      next_billing_date: effectiveNextDate,
-    },
+    payload: { stripe_schedule_id: scheduleId, action: "CANCEL_DOWNGRADE", next_billing_date: effectiveNextDate },
   });
 
   return { status: 200, body: { ok: true, next_billing_date: effectiveNextDate } };
 }
 
 /** ======================================================
- *  Server (JWT-only)
+ *  Server
  *  ====================================================== */
 Deno.serve(async (req) => {
-  const origin = req.headers.get("origin");
-
-  // Preflight
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(origin) });
-  }
+  if (req.method === "OPTIONS") return preflight(req);
 
   try {
-    // 1) JWT obligatorio
-    const user = await requireJwtUser(req);
+    const user = await requireUser(req);
+    if (!user?.id) return err(req, 401, "UNAUTHENTICATED");
 
-    // 2) Org context (seguro)
-    const ctx = await requireOrgContext(user.id);
+    // org_id: obligatorio para billing manage (multi-org correcto)
+    const url = new URL(req.url);
+    const org_id_q = safeStr(url.searchParams.get("org_id"));
 
-    // 3) Billing actions: recomendable limitar a OWNER/ADMIN
-    const role = safeUpper(ctx.role);
-    const canManageBilling = role === "OWNER" || role === "ADMIN";
-    if (!canManageBilling) {
-      return json(origin, 403, { ok: false, error: "FORBIDDEN_ROLE", detail: `Role ${role} cannot manage billing.` });
-    }
-
-    // 4) Parse
     let body: any = {};
-    if (req.method === "POST") {
-      body = await req.json().catch(() => ({}));
-    } else if (req.method !== "GET") {
-      return json(origin, 405, { ok: false, error: "method_not_allowed" });
+    if (req.method === "POST") body = await req.json().catch(() => ({}));
+    if (req.method !== "POST" && req.method !== "GET") {
+      return json(req, 405, { ok: false, error: "request_failed", detail: "METHOD_NOT_ALLOWED" });
     }
+
+    const org_id = pickString(body, "org_id", "orgId") ?? org_id_q;
+    if (!org_id) return err(req, 400, "missing_org_id");
+
+    const sb = sbService();
+
+    const ctx = await requireOrgContext(sb, user.id, org_id);
+    if (!ctx) return err(req, 403, "FORBIDDEN");
 
     const app_id = pickString(body, "app_id", "appId") ?? DEFAULT_APP_ID;
+    if (app_id !== DEFAULT_APP_ID) return err(req, 400, "invalid_app_id");
 
-    // 5) Anti-tampering: si mandan customer_id y no coincide, 403
+    // anti-tampering: si mandan customer_id, debe coincidir
     const customer_id_in = pickString(body, "customer_id", "customerId");
-    if (customer_id_in && customer_id_in !== ctx.customer_id) {
-      return json(origin, 403, {
-        ok: false,
-        error: "FORBIDDEN_CUSTOMER_MISMATCH",
-        detail: "customer_id does not match authenticated tenant context",
-      });
-    }
+    if (customer_id_in && customer_id_in !== ctx.customer_id) return err(req, 403, "FORBIDDEN");
 
-    // 6) Routing
+    // Routing
     if (req.method === "GET") {
-      const data = await handleGet(ctx.customer_id, app_id);
-      return json(origin, 200, { ok: true, data });
+      const data = await handleGet(sb, ctx.customer_id, app_id);
+      return json(req, 200, { ok: true, data });
     }
 
-    // POST
-    const action = safeUpper(body?.action ?? "GET") as ManageAction;
+    const action = safeUpper(body?.action ?? "");
+    if (!action) return err(req, 400, "missing_action");
 
     if (action === "GET") {
-      const data = await handleGet(ctx.customer_id, app_id);
-      return json(origin, 200, { ok: true, data });
+      const data = await handleGet(sb, ctx.customer_id, app_id);
+      return json(req, 200, { ok: true, data });
     }
 
     if (action === "CHANGE") {
-      const result = await handleChange(ctx.customer_id, app_id, body);
-      return json(origin, result.status, result.body);
+      const result = await handleChange(sb, ctx.customer_id, app_id, body);
+      if ((result as any).detail) {
+        const d = (result as any).detail as any;
+        if (d === "missing_target_plan_code") return err(req, 400, "missing_target_plan_code");
+        if (d === "USE_SCHEDULE_DOWNGRADE") return err(req, 400, "USE_SCHEDULE_DOWNGRADE");
+        if (d === "PENDING_CHANGE") {
+          return json(req, 409, { ok: false, error: "request_failed", detail: "PENDING_CHANGE", ...(result as any).extra });
+        }
+        return err(req, 500, "request_failed");
+      }
+      return json(req, 200, (result as any).body);
     }
 
     if (action === "SCHEDULE_DOWNGRADE") {
-      const result = await handleScheduleDowngrade(ctx.customer_id, app_id, body);
-      return json(origin, result.status, result.body);
+      const result = await handleScheduleDowngrade(sb, ctx.customer_id, app_id, body);
+      if ((result as any).detail) {
+        const d = (result as any).detail as any;
+        if (d === "missing_target_plan_code") return err(req, 400, "missing_target_plan_code");
+        if (d === "NO_ACTIVE_SUBSCRIPTION") return err(req, 409, "NO_ACTIVE_SUBSCRIPTION");
+        if (d === "PENDING_CHANGE") {
+          return json(req, 409, { ok: false, error: "request_failed", detail: "PENDING_CHANGE", ...(result as any).extra });
+        }
+        return err(req, 500, "request_failed");
+      }
+      return json(req, (result as any).status ?? 200, (result as any).body);
     }
 
     if (action === "CANCEL_DOWNGRADE") {
-      const result = await handleCancelDowngrade(ctx.customer_id, app_id);
-      return json(origin, result.status, result.body);
+      const result = await handleCancelDowngrade(sb, ctx.customer_id, app_id);
+      if ((result as any).detail) {
+        const d = (result as any).detail as any;
+        if (d === "NO_ACTIVE_SUBSCRIPTION") return err(req, 409, "NO_ACTIVE_SUBSCRIPTION");
+        if (d === "NO_DOWNGRADE_SCHEDULED") return err(req, 400, "NO_DOWNGRADE_SCHEDULED");
+        return err(req, 500, "request_failed");
+      }
+      return json(req, (result as any).status ?? 200, (result as any).body);
     }
 
-    return json(origin, 400, { ok: false, error: "unsupported_action" });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    const code =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED")
-        ? 403
-        : msg.startsWith("MISSING_ENV:")
-        ? 500
-        : 500;
-
-    console.error("debacu_eval_subscription_manage error:", error);
-    return json(origin, code, { ok: false, error: "request_failed", detail: errToString(error) });
+    return err(req, 400, "invalid_action");
+  } catch (e) {
+    // Logging interno OK, pero NUNCA devolver stack/error bruto al cliente
+    console.error("debacu_eval_subscription_manage error:", e);
+    return err(req, 500, "request_failed");
   }
 });

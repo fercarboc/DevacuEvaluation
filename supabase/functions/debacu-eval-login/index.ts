@@ -1,369 +1,271 @@
 // supabase/functions/debacu-eval-login/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
 
-/** ======================================================
- *  CORS (whitelist + preflight 204)
- *  ====================================================== */
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
-  });
-}
-
-function errorTyped(
-  origin: string | null,
-  status: number,
-  code: string,
-  message: string,
-  extra: Record<string, unknown> = {},
-) {
-  return json(origin, status, {
-    error: message,
-    error_obj: { code, message, ...extra },
-  });
-}
-
-/** ======================================================
- *  Helpers
- *  ====================================================== */
 function mustEnv(name: string) {
   const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env var: ${name}`);
+  if (!v) throw new Error(`missing_env:${name}`);
   return v;
 }
 
-function nowISO() {
-  return new Date().toISOString();
+const SUPABASE_URL = mustEnv("SUPABASE_URL");
+const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+const APP_ID = "DEBACU_EVAL";
+
+function supabaseServiceClient() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 }
 
-function addDaysISO(days: number) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString();
+function err(req: Request, status: number, detail: string) {
+  return json(req, status, { ok: false, error: "request_failed", detail });
 }
 
-function randomTokenHex(bytesLen = 32) {
-  const bytes = new Uint8Array(bytesLen);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+async function readJson(req: Request) {
+  try {
+    const t = await req.text();
+    if (!t) return {};
+    return JSON.parse(t);
+  } catch {
+    return {};
+  }
 }
 
-function safeLowerEmail(v: any) {
-  return typeof v === "string" ? v.trim().toLowerCase() : "";
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
 }
 
 function toYMD(v: any): string | null {
   if (!v) return null;
   const s = String(v);
-  // si viene como "2026-02-05T..." recortamos
   return s.length >= 10 ? s.slice(0, 10) : null;
 }
-
 function todayYMD(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-Deno.serve(async (req) => {
-  const origin = req.headers.get("origin");
+/* ======================================================
+ * Multi-org resolution
+ * - body.org_id recomendado
+ * - si no viene: primera membership ACTIVE (determinista)
+ * ====================================================== */
+async function resolveOrgForUser(
+  sb: ReturnType<typeof supabaseServiceClient>,
+  userId: string,
+  orgId?: string,
+) {
+  const org_id_in = safeStr(orgId);
 
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(origin) });
-  }
-
-  try {
-    const SUPABASE_URL = mustEnv("SUPABASE_URL");
-    const SERVICE_ROLE = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-
-    const body = await req.json().catch(() => ({}));
-    const username = String(body?.username ?? "").trim();
-    const password = String(body?.password ?? "").trim();
-    const app_code = String(body?.appCode ?? body?.app_code ?? "DEBACU_EVAL").trim();
-
-    if (!username || !password) {
-      return errorTyped(origin, 400, "MISSING_CREDENTIALS", "Faltan credenciales");
-    }
-
-    /** ------------------------------------------------------
-     *  1) customer por username/password (snake_case)
-     *  ------------------------------------------------------ */
-    const { data: customer, error: customerError } = await supabase
-      .from("customers")
-      .select(
-        [
-          "id",
-          "name",
-          "email",
-          "is_active",
-          "service_username",
-          "service_password",
-          "start_date",
-          "sector_id",
-        ].join(","),
-      )
-      .eq("service_username", username)
-      .eq("service_password", password)
+  if (org_id_in) {
+    const { data, error } = await sb
+      .from("debacu_eval_org_members")
+      .select("org_id, role, status, created_at")
+      .eq("user_id", userId)
+      .eq("org_id", org_id_in)
+      .eq("status", "ACTIVE")
       .maybeSingle();
 
-    if (customerError) {
-      console.error("customers error:", customerError);
-      return errorTyped(origin, 500, "DB_CUSTOMERS", "Error DB customers", {
-        detail: customerError.message,
-      });
-    }
+    if (error) throw new Error("membership_check_failed");
+    if (!data?.org_id) throw new Error("FORBIDDEN");
+    return { org_id: String(data.org_id), role: data.role ?? null };
+  }
 
-    if (!customer) return errorTyped(origin, 401, "BAD_CREDENTIALS", "Usuario o contraseña incorrectos");
-    if (customer.is_active === false) return errorTyped(origin, 403, "CUSTOMER_INACTIVE", "Cliente inactivo");
+  const { data, error } = await sb
+    .from("debacu_eval_org_members")
+    .select("org_id, role, status, created_at")
+    .eq("user_id", userId)
+    .eq("status", "ACTIVE")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
 
-    const sector_id = String(customer.sector_id ?? "").trim();
-    const is_admin = sector_id === "ADMIN";
+  if (error) throw new Error("membership_lookup_failed");
+  if (!data?.org_id) throw new Error("FORBIDDEN");
+  return { org_id: String(data.org_id), role: data.role ?? null };
+}
 
-    const email = safeLowerEmail(customer.email);
-    if (!email) {
-      return errorTyped(origin, 409, "MISSING_EMAIL", "Cliente sin email. Registre un email para activar acceso.");
-    }
+async function resolveCustomerIdForOrg(sb: ReturnType<typeof supabaseServiceClient>, org_id: string) {
+  // 1) entitlements view si existe
+  try {
+    const { data: ent, error: entErr } = await sb
+      .from("debacu_eval_org_entitlements_v")
+      .select("customer_id")
+      .eq("org_id", org_id)
+      .maybeSingle();
 
-    const customer_id = customer.id;
-/** ------------------------------------------------------
- *  2) subscription para esta app
- *     - Primero: buscamos una ACTIVA/TRIAL_ACTIVE
- *     - Si no hay: buscamos la última para reportar status
- *  ------------------------------------------------------ */
-let sub: any = null;
+    if (!entErr && ent?.customer_id) return String(ent.customer_id);
+  } catch {
+    // ignore
+  }
 
-if (!is_admin) {
-  // 2.1) Intentar coger la suscripción válida (ACTIVE/TRIAL_ACTIVE)
-  const { data: activeSubs, error: activeErr } = await supabase
+  // 2) organizations fallback
+  const { data: org, error } = await sb
+    .from("debacu_eval_organizations")
+    .select("customer_id")
+    .eq("id", org_id)
+    .maybeSingle();
+
+  if (error) throw new Error("org_lookup_failed");
+  if (!org?.customer_id) throw new Error("FORBIDDEN");
+  return String(org.customer_id);
+}
+
+async function isAdminUser(sb: ReturnType<typeof supabaseServiceClient>, userId: string) {
+  const { data, error } = await sb
+    .from("debacu_eval_admin_users")
+    .select("user_id")
+    .eq("user_id", userId)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (error) return false;
+  return !!data?.user_id;
+}
+
+/* ======================================================
+ * Subscription resolution
+ * - ACTIVE/TRIAL_ACTIVE preferente
+ * - si no hay: 402 PLAN_NOT_ACTIVE
+ * ====================================================== */
+async function getActiveSubscription(
+  sb: ReturnType<typeof supabaseServiceClient>,
+  customer_id: string,
+  app_id: string,
+) {
+  const { data: activeSubs, error } = await sb
     .from("subscriptions")
     .select("id, plan_id, status, start_date, end_date, next_billing_date, billing_frequency, created_at, updated_at")
     .eq("customer_id", customer_id)
-    .eq("app_id", app_code)
+    .eq("app_id", app_id)
     .in("status", ["ACTIVE", "TRIAL_ACTIVE"])
     .order("start_date", { ascending: false })
     .order("updated_at", { ascending: false })
     .order("created_at", { ascending: false })
     .limit(1);
 
-  if (activeErr) {
-    console.error("subscriptions(active) error:", activeErr);
-    return errorTyped(origin, 500, "DB_SUBSCRIPTIONS", "Error DB subscriptions", {
-      detail: activeErr.message,
-    });
+  if (error) throw new Error("db_subscriptions_read_failed");
+
+  if (!activeSubs || activeSubs.length === 0) {
+    // Opcional: puedes mirar la última para reportar estado, pero tu estándar pide PLAN_NOT_ACTIVE
+    throw new Error("PLAN_NOT_ACTIVE");
   }
 
-  if (activeSubs && activeSubs.length > 0) {
-    sub = activeSubs[0];
-  } else {
-    // 2.2) No hay activa: buscamos la última “cualquiera” para poder diferenciar NO_SUBSCRIPTION vs EXPIRED/etc
-    const { data: lastSubs, error: lastErr } = await supabase
-      .from("subscriptions")
-      .select("id, plan_id, status, start_date, end_date, next_billing_date, billing_frequency, created_at, updated_at")
-      .eq("customer_id", customer_id)
-      .eq("app_id", app_code)
-      .order("start_date", { ascending: false })
-      .order("updated_at", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(1);
-
-    if (lastErr) {
-      console.error("subscriptions(last) error:", lastErr);
-      return errorTyped(origin, 500, "DB_SUBSCRIPTIONS", "Error DB subscriptions", {
-        detail: lastErr.message,
-      });
-    }
-
-    sub = (lastSubs && lastSubs.length > 0) ? lastSubs[0] : null;
-
-    if (!sub) {
-      return errorTyped(
-        origin,
-        403,
-        "NO_SUBSCRIPTION",
-        "No tienes una suscripción para esta aplicación.",
-        { app_code },
-      );
-    }
-
-    const status = String(sub.status ?? "").toUpperCase();
-    return errorTyped(
-      origin,
-      403,
-      "SUBSCRIPTION_NOT_ACTIVE",
-      "No tienes una suscripción activa para esta aplicación.",
-      { status, app_code },
-    );
-  }
-
-  // 2.3) Si es TRIAL_ACTIVE, valida fechas (si está caducada => EXPIRED)
+  const sub = activeSubs[0] as any;
   const status = String(sub.status ?? "").toUpperCase();
-  const endYMD = toYMD(sub.end_date);
-  const today = todayYMD();
 
-  if (status === "TRIAL_ACTIVE" && endYMD && endYMD < today) {
-    return errorTyped(
-      origin,
-      403,
-      "SUBSCRIPTION_NOT_ACTIVE",
-      "No tienes una suscripción activa para esta aplicación.",
-      { status: "EXPIRED", app_code },
-    );
+  // Validación extra de trial caducada
+  if (status === "TRIAL_ACTIVE") {
+    const endYMD = toYMD(sub.end_date);
+    const today = todayYMD();
+    if (endYMD && endYMD < today) throw new Error("PLAN_NOT_ACTIVE");
   }
+
+  return sub;
 }
 
-    /** ------------------------------------------------------
-     *  3) plan (si admin, forzamos)
-     *  ------------------------------------------------------ */
-    let planType = is_admin ? "ADMIN" : "UNKNOWN";
-    let monthlyFee = 0;
+async function getPlanInfo(sb: ReturnType<typeof supabaseServiceClient>, plan_id: string) {
+  const { data, error } = await sb
+    .from("plans")
+    .select("id, name, code, price_monthly")
+    .eq("id", plan_id)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data as any;
+}
+
+function planTypeFromCode(codeRaw: any) {
+  const code = String(codeRaw ?? "").toUpperCase();
+  if (!code) return "UNKNOWN";
+  if (code === "FREE") return "FREE";
+  if (code.includes("BASIC")) return "BASIC";
+  if (code.includes("MEDIUM")) return "MEDIUM";
+  if (code.includes("PREMIUM")) return "PREMIUM";
+  return code;
+}
+
+/* ======================================================
+ * Main
+ * ====================================================== */
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return err(req, 405, "method_not_allowed");
+
+  try {
+    // ✅ JWT-only
+    const user = await requireUser(req);
+
+    const sb = supabaseServiceClient();
+    const body = await readJson(req);
+
+    // multi-org
+    const org_id = safeStr(body?.org_id ?? body?.orgId ?? "");
+    const { org_id: resolvedOrgId } = await resolveOrgForUser(sb, user.id, org_id || undefined);
+    const customer_id = await resolveCustomerIdForOrg(sb, resolvedOrgId);
+
+    // customer (para nombre/email, etc.)
+    const { data: customer, error: custErr } = await sb
+      .from("customers")
+      .select("id, name, email, is_active, start_date")
+      .eq("id", customer_id)
+      .maybeSingle();
+
+    if (custErr) return err(req, 500, "db_customer_read_failed");
+    if (!customer?.id) return err(req, 403, "FORBIDDEN");
+    if (customer.is_active === false) return err(req, 403, "FORBIDDEN");
+
+    const adminFlag = await isAdminUser(sb, user.id);
+
+    // subscripción / plan (si admin, no forzamos plan)
+    let sub: any = null;
     let planCode: string | null = null;
+    let planType = adminFlag ? "ADMIN" : "UNKNOWN";
+    let monthlyFee = 0;
 
-    if (!is_admin && sub?.plan_id) {
-      const { data: plan, error: planError } = await supabase
-        .from("plans")
-        .select("id, name, code, price_monthly")
-        .eq("id", sub.plan_id)
-        .maybeSingle();
+    if (!adminFlag) {
+      sub = await getActiveSubscription(sb, customer_id, APP_ID);
 
-      if (planError) {
-        console.error("plans error:", planError);
-      } else if (plan) {
-        planCode = String(plan.code ?? "").toUpperCase();
-        if (planCode === "FREE") planType = "FREE";
-        else if (planCode.includes("BASIC")) planType = "BASIC";
-        else if (planCode.includes("MEDIUM")) planType = "MEDIUM";
-        else if (planCode.includes("PREMIUM")) planType = "PREMIUM";
-        else planType = planCode || "UNKNOWN";
-
-        monthlyFee = Number(plan.price_monthly ?? 0);
+      if (sub?.plan_id) {
+        const plan = await getPlanInfo(sb, String(sub.plan_id));
+        if (plan) {
+          planCode = String(plan.code ?? "").toUpperCase() || null;
+          planType = planTypeFromCode(planCode);
+          monthlyFee = Number(plan.price_monthly ?? 0);
+        }
       }
     }
 
-    /** ------------------------------------------------------
-     *  4) asegurar usuario en Auth (best-effort)
-     *  ------------------------------------------------------ */
-    const { data: list, error: listError } = await supabase.auth.admin.listUsers({
-      page: 1,
-      perPage: 1000,
-    });
-
-    if (listError) {
-      console.error("auth.listUsers error:", listError);
-      return errorTyped(origin, 500, "AUTH_LIST_USERS", "Error listando usuarios Auth", {
-        detail: listError.message,
-      });
-    }
-
-    const existing = (list?.users ?? []).find(
-      (u) => String(u.email ?? "").trim().toLowerCase() === email,
-    );
-
-    if (!existing) {
-      const { error: createError } = await supabase.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true,
-      });
-
-      if (createError) {
-        console.error("auth.createUser error:", createError);
-        return errorTyped(origin, 500, "AUTH_CREATE_USER", "Error creando usuario Auth", {
-          detail: createError.message,
-        });
-      }
-    }
-
-    /** ------------------------------------------------------
-     *  4.5) sesión propia para Edge (debacu_eval_sessions)
-     *  ------------------------------------------------------ */
-    const session_token = randomTokenHex(32);
-    const expires_at = addDaysISO(7);
-
-    const { error: revokeErr } = await supabase
-      .from("debacu_eval_sessions")
-      .update({ revoked_at: nowISO() })
-      .eq("customer_id", customer_id)
-      .eq("app_code", app_code)
-      .is("revoked_at", null);
-
-    if (revokeErr) {
-      console.error("sessions revoke error:", revokeErr);
-      return errorTyped(origin, 500, "SESSIONS_REVOKE", "Error revocando sesiones", {
-        detail: revokeErr.message,
-      });
-    }
-
-    const { error: sessErr } = await supabase
-      .from("debacu_eval_sessions")
-      .insert({
-        token: session_token,
-        app_code,
-        customer_id,
-        customer_name: customer.name ?? username,
-        expires_at,
-        revoked_at: null,
-        created_at: nowISO(), // elimina si tu tabla no tiene created_at
-      });
-
-    if (sessErr) {
-      console.error("sessions insert error:", sessErr);
-      return errorTyped(origin, 500, "SESSIONS_INSERT", "Error creando sesión", {
-        detail: sessErr.message,
-      });
-    }
-
-    /** ------------------------------------------------------
-     *  5) respuesta OK
-     *  ------------------------------------------------------ */
     const user_payload = {
       id: customer_id,
       customerId: customer_id,
-      username: customer.service_username ?? username,
+      orgId: resolvedOrgId,
       fullName: customer.name ?? "Cliente",
-      email,
+      email: String(customer.email ?? user.email ?? "").toLowerCase(),
       plan: planType,
       planCode,
       planStartDate: customer.start_date ?? (sub?.start_date ?? ""),
       monthlyFee,
-      isAdmin: is_admin,
-      subscriptionStatus: sub?.status ?? (is_admin ? "ADMIN" : null),
+      isAdmin: adminFlag,
+      subscriptionStatus: sub?.status ?? (adminFlag ? "ADMIN" : null),
       billingFrequency: sub?.billing_frequency ?? null,
       subscriptionId: sub?.id ?? null,
     };
 
-    return json(origin, 200, {
-      ok: true,
-      authEmail: email,
-      session_token,
-      user: user_payload,
-    });
-  } catch (error) {
-    console.error("FATAL login error:", error);
-    return errorTyped(origin, 500, "LOGIN_FATAL", "Error creando sesión", {
-      detail: String((error as any)?.message ?? error),
-    });
+    // ✅ Ya no devolvemos session_token (legacy eliminado)
+    return json(req, 200, { ok: true, user: user_payload });
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+
+    // mapping estricto
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return err(req, 401, "UNAUTHORIZED");
+    if (msg === "FORBIDDEN") return err(req, 403, "FORBIDDEN");
+    if (msg === "PLAN_NOT_ACTIVE") return err(req, 402, "PLAN_NOT_ACTIVE");
+    if (msg.startsWith("missing_") || msg.startsWith("invalid_")) return err(req, 400, msg);
+
+    return err(req, 500, "internal_error");
   }
 });

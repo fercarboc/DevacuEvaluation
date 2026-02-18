@@ -2,6 +2,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import Stripe from "https://esm.sh/stripe@16.12.0?target=deno";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { json, preflight } from "../_shared/cors.ts";
+
+// deno-lint-ignore-file no-explicit-any
 
 function mustEnv(name: string) {
   const v = Deno.env.get(name);
@@ -15,24 +18,13 @@ const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
 
 const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+
+// Webhook => siempre service role
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, stripe-signature",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-}
-
+/** Helpers fecha */
 function isoDateFromUnix(sec?: number | null) {
   if (!sec) return null;
   return new Date(sec * 1000).toISOString().slice(0, 10);
@@ -52,7 +44,40 @@ function mdGet(
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
-/** log best-effort (dedupe si stripe_event_id es UNIQUE en DB) */
+/**
+ * Idempotencia HARD:
+ * - intentamos insertar stripe_event_id en subscription_events
+ * - si existe (unique violation), devolvemos 200 y NO hacemos side-effects
+ */
+async function acquireEventLock(event: Stripe.Event): Promise<
+  | { ok: true; duplicate: false }
+  | { ok: true; duplicate: true }
+  | { ok: false; detail: string }
+> {
+  const baseRow = {
+    stripe_event_id: event.id,
+    type: event.type,
+    payload: { note: "received", created: event.created, livemode: event.livemode } as any,
+    // no ponemos created_at manual; deja default now() si existe
+  };
+
+  const { error } = await supabase.from("subscription_events").insert(baseRow);
+
+  if (!error) return { ok: true, duplicate: false };
+
+  const code = String((error as any)?.code ?? "");
+  const msg = String((error as any)?.message ?? "").toLowerCase();
+
+  // Postgres unique violation
+  if (code === "23505" || msg.includes("duplicate") || msg.includes("unique")) {
+    return { ok: true, duplicate: true };
+  }
+
+  console.error("subscription_events acquireEventLock insert error:", error);
+  return { ok: false, detail: "EVENT_LOCK_INSERT_FAILED" };
+}
+
+/** log best-effort (sin romper si ya existe) */
 async function logEvent(params: {
   stripe_event_id: string;
   type: string;
@@ -62,37 +87,56 @@ async function logEvent(params: {
   stripe_subscription_id?: string | null;
   payload?: any;
 }) {
-  const customer_id = params.customer_id ?? null;
+  // Intento UPDATE del evento ya insertado (el “lock”), y si no existe por lo que sea, hago insert best-effort.
+  const patch: Record<string, unknown> = {
+    customer_id: params.customer_id ?? null,
+    app_id: params.app_id ?? null,
+    stripe_customer_id: params.stripe_customer_id ?? null,
+    stripe_subscription_id: params.stripe_subscription_id ?? null,
+    payload: params.payload ?? null,
+  };
 
-  const { error } = await supabase.from("subscription_events").insert({
+  const { data: up, error: upErr } = await supabase
+    .from("subscription_events")
+    .update(patch)
+    .eq("stripe_event_id", params.stripe_event_id)
+    .select("stripe_event_id")
+    .maybeSingle();
+
+  if (!upErr && up?.stripe_event_id) return;
+
+  if (upErr) {
+    // si falla por RLS o similar (no debería con service role), lo logueamos y seguimos
+    console.error("subscription_events update error:", upErr);
+  }
+
+  // fallback insert (por si el lock no se insertó)
+  const { error: insErr } = await supabase.from("subscription_events").insert({
     stripe_event_id: params.stripe_event_id,
     type: params.type,
     payload: params.payload ?? null,
-    created_at: new Date().toISOString(),
-    customer_id,
-    customer_id_uuid: customer_id,
+    customer_id: params.customer_id ?? null,
     app_id: params.app_id ?? null,
     stripe_customer_id: params.stripe_customer_id ?? null,
     stripe_subscription_id: params.stripe_subscription_id ?? null,
   });
 
-  if (error) {
-    const msg = String((error as any)?.message ?? "").toLowerCase();
-    if (!(msg.includes("duplicate") || msg.includes("unique"))) {
-      console.error("subscription_events insert error:", error);
+  if (insErr) {
+    const code = String((insErr as any)?.code ?? "");
+    const msg = String((insErr as any)?.message ?? "").toLowerCase();
+    if (!(code === "23505" || msg.includes("duplicate") || msg.includes("unique"))) {
+      console.error("subscription_events insert error:", insErr);
     }
   }
 }
 
 /**
- * Stripe a veces trae inv.period_start/end "pegados" al created.
- * Para el periodo REAL del servicio hay que leer:
- * - invoice.lines[].period.start/end (línea de suscripción) y, si falta,
- * - subscription.current_period_start/end
+ * Stripe a veces trae inv.period_start/end “pegados”.
+ * Para el periodo REAL:
+ * - invoice.lines[].period.start/end (línea de suscripción)
+ * - si falta, subscription.current_period_start/end
  */
-function pickInvoiceLinePeriod(
-  inv: Stripe.Invoice,
-): { start: number | null; end: number | null } {
+function pickInvoiceLinePeriod(inv: Stripe.Invoice): { start: number | null; end: number | null } {
   const lines = inv.lines?.data ?? [];
 
   const subLine =
@@ -108,11 +152,7 @@ function pickInvoiceLinePeriod(
 
 async function getSubscriptionPeriod(stripeSubId: string | null) {
   if (!stripeSubId) {
-    return {
-      start: null as number | null,
-      end: null as number | null,
-      priceId: null as string | null,
-    };
+    return { start: null as number | null, end: null as number | null, priceId: null as string | null };
   }
   const s = await stripe.subscriptions.retrieve(stripeSubId);
   return {
@@ -134,9 +174,8 @@ async function findInternalSubscriptionByStripeSub(stripeSubId: string) {
 }
 
 /**
- * PASO 2:
- * Para eventos que vienen sin metadata (invoice.*, customer.subscription.*),
- * intentamos “ponerles contexto” (customer_id/app_id) antes de logEvent.
+ * Para eventos que vienen sin metadata, intentamos “poner contexto”
+ * (customer_id/app_id) antes del logEvent.
  */
 async function resolveEventContext(params: {
   stripe_subscription_id?: string | null;
@@ -147,10 +186,10 @@ async function resolveEventContext(params: {
 
   if (stripe_subscription_id) {
     const internal = await findInternalSubscriptionByStripeSub(stripe_subscription_id);
-    if (internal?.customer_id && internal?.app_id) {
+    if (internal?.customer_id && (internal as any)?.app_id) {
       return {
         customer_id: internal.customer_id as string,
-        app_id: internal.app_id as string,
+        app_id: (internal as any).app_id as string,
       };
     }
   }
@@ -175,9 +214,8 @@ async function resolveEventContext(params: {
 }
 
 /**
- * ✅ FIX CRÍTICO:
- * El índice único "uniq_current_sub_per_customer_app" suele incluir TRIAL_ACTIVE.
- * Si solo reemplazas ACTIVE, al activar una PENDING revienta con 23505.
+ * Ojo: índice único "suscripción vigente" suele incluir TRIAL_ACTIVE/PAST_DUE etc.
+ * Para activar una pending sin reventar 23505: reemplazar vigentes antes.
  */
 const CURRENT_STATUSES = ["ACTIVE", "TRIAL_ACTIVE", "PAST_DUE"] as const;
 
@@ -247,9 +285,9 @@ async function activatePendingSubscription(opts: {
 
   if (sub.status === "ACTIVE") return { ok: true as const, alreadyActive: true as const };
 
-  // ✅ primero “libera” el índice único
+  // primero libera el índice único
   await replaceAnyActive(sub.customer_id, sub.app_id, sub.id);
-  await markReplacedById(sub.replaces_subscription_id ?? null);
+  await markReplacedById((sub as any).replaces_subscription_id ?? null);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -258,21 +296,21 @@ async function activatePendingSubscription(opts: {
     provider: "stripe",
     updated_at: new Date().toISOString(),
 
-    provider_checkout_id: opts.stripe_checkout_session_id ?? sub.provider_checkout_id ?? null,
+    provider_checkout_id: opts.stripe_checkout_session_id ?? (sub as any).provider_checkout_id ?? null,
     stripe_checkout_session_id:
-      opts.stripe_checkout_session_id ?? sub.stripe_checkout_session_id ?? null,
+      opts.stripe_checkout_session_id ?? (sub as any).stripe_checkout_session_id ?? null,
 
     provider_subscription_id:
-      opts.stripe_subscription_id ?? sub.provider_subscription_id ?? null,
+      opts.stripe_subscription_id ?? (sub as any).provider_subscription_id ?? null,
     stripe_subscription_id:
-      opts.stripe_subscription_id ?? sub.stripe_subscription_id ?? null,
+      opts.stripe_subscription_id ?? (sub as any).stripe_subscription_id ?? null,
 
-    stripe_price_id: opts.stripe_price_id ?? sub.stripe_price_id ?? null,
+    stripe_price_id: opts.stripe_price_id ?? (sub as any).stripe_price_id ?? null,
 
-    start_date: sub.start_date ?? isoDateFromUnix(opts.period_start_unix ?? null) ?? today,
+    start_date: (sub as any).start_date ?? isoDateFromUnix(opts.period_start_unix ?? null) ?? today,
 
     next_billing_date:
-      isoDateFromUnix(opts.period_end_unix ?? null) ?? (sub.next_billing_date ?? null),
+      isoDateFromUnix(opts.period_end_unix ?? null) ?? ((sub as any).next_billing_date ?? null),
   };
 
   const { error: upErr } = await supabase.from("subscriptions").update(patch).eq("id", sub.id);
@@ -317,6 +355,7 @@ async function upsertDebacuEvalInvoice(inv: Stripe.Invoice) {
     }
   }
 
+  // fallback por email Stripe (solo dev/recuperación)
   let stripe_customer_email: string | null = null;
   if (!customer_id && stripe_customer_id) {
     try {
@@ -341,10 +380,7 @@ async function upsertDebacuEvalInvoice(inv: Stripe.Invoice) {
         if (!(custByEmail as any).stripe_customer_id && stripe_customer_id) {
           const { error: ePatch } = await supabase
             .from("customers")
-            .update({
-              stripe_customer_id,
-              updated_at: new Date().toISOString(),
-            })
+            .update({ stripe_customer_id, updated_at: new Date().toISOString() })
             .eq("id", customer_id);
 
           if (ePatch) console.error("customers patch stripe_customer_id error:", ePatch);
@@ -389,7 +425,6 @@ async function upsertDebacuEvalInvoice(inv: Stripe.Invoice) {
   const payload: Record<string, unknown> = {
     app_id,
     customer_id,
-    customer_id_uuid: customer_id,
 
     stripe_invoice_id,
     stripe_customer_id,
@@ -450,41 +485,16 @@ async function upsertDebacuEvalInvoice(inv: Stripe.Invoice) {
   return { customer_id, app_id };
 }
 
-async function backfillSubscriptionEventsByInvoiceId(stripe_invoice_id: string) {
-  if (!stripe_invoice_id) return;
-
-  const { data: invRow, error: invErr } = await supabase
-    .from("debacu_eval_invoices")
-    .select("customer_id_uuid, app_id")
-    .eq("stripe_invoice_id", stripe_invoice_id)
-    .maybeSingle();
-
-  if (invErr) {
-    console.error("backfill: invoices lookup error:", invErr);
-    return;
-  }
-  if (!invRow?.customer_id_uuid || !invRow?.app_id) return;
-
-  const { error: upErr } = await supabase
-    .from("subscription_events")
-    .update({
-      customer_id: invRow.customer_id_uuid,
-      customer_id_uuid: invRow.customer_id_uuid,
-      app_id: invRow.app_id,
-    })
-    .eq("type", "invoice.paid")
-    .is("customer_id", null)
-    .filter("payload->>stripe_invoice_id", "eq", stripe_invoice_id);
-
-  if (upErr) console.error("backfill: subscription_events update error:", upErr);
-}
-
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (req.method !== "POST") return json(405, { error: "Method not allowed" });
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "request_failed", detail: "method_not_allowed" });
+  }
 
   const sig = req.headers.get("stripe-signature");
-  if (!sig) return json(400, { error: "Missing stripe-signature header" });
+  if (!sig) {
+    return json(req, 400, { ok: false, error: "request_failed", detail: "missing_stripe_signature" });
+  }
 
   const rawBody = await req.text();
 
@@ -493,14 +503,30 @@ Deno.serve(async (req) => {
     event = await stripe.webhooks.constructEventAsync(rawBody, sig, STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     console.error("Webhook signature verification failed:", err);
-    return json(400, { error: "Invalid signature" });
+    return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_signature" });
+  }
+
+  // ✅ Idempotencia: si ya existe, salimos sin side-effects
+  const lock = await acquireEventLock(event);
+  if (!lock.ok) {
+    return json(req, 500, { ok: false, error: "request_failed", detail: lock.detail });
+  }
+  if (lock.duplicate) {
+    return json(req, 200, { ok: true, received: true, duplicate: true });
   }
 
   try {
     switch (event.type) {
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
-        if (session.mode !== "subscription") break;
+        if (session.mode !== "subscription") {
+          await logEvent({
+            stripe_event_id: event.id,
+            type: event.type,
+            payload: { note: "ignored_non_subscription_mode", mode: session.mode },
+          });
+          return json(req, 200, { ok: true, received: true });
+        }
 
         const stripe_subscription_id =
           typeof session.subscription === "string"
@@ -520,6 +546,7 @@ Deno.serve(async (req) => {
         const app_id = mdGet(session.metadata, "app_id", "appId");
         const customer_id = mdGet(session.metadata, "customer_id", "customerId");
 
+        // si viene customer_id + stripe_customer_id, lo vinculamos
         if (customer_id && stripe_customer_id) {
           const { error: upCustErr } = await supabase
             .from("customers")
@@ -571,7 +598,7 @@ Deno.serve(async (req) => {
         });
 
         if (!pending_subscription_id) {
-          return json(200, { received: true, warning: "missing_pending_subscription_id" });
+          return json(req, 200, { ok: true, received: true, warning: "missing_pending_subscription_id" });
         }
 
         const act = await activatePendingSubscription({
@@ -583,7 +610,7 @@ Deno.serve(async (req) => {
           period_start_unix,
         });
 
-        return json(200, { received: true, activate: act });
+        return json(req, 200, { ok: true, received: true, activate: act });
       }
 
       case "invoice.paid": {
@@ -608,9 +635,6 @@ Deno.serve(async (req) => {
             : inv.customer?.id ?? null;
 
         const ctx = await upsertDebacuEvalInvoice(inv);
-
-        await backfillSubscriptionEventsByInvoiceId(inv.id);
-
         const ctx2 =
           ctx.customer_id && ctx.app_id
             ? ctx
@@ -626,7 +650,7 @@ Deno.serve(async (req) => {
           payload: { stripe_invoice_id: inv.id, status: inv.status, total: inv.total },
         });
 
-        return json(200, { received: true });
+        return json(req, 200, { ok: true, received: true });
       }
 
       case "invoice.payment_failed": {
@@ -675,7 +699,7 @@ Deno.serve(async (req) => {
           payload: { stripe_invoice_id: inv.id, status: inv.status },
         });
 
-        return json(200, { received: true });
+        return json(req, 200, { ok: true, received: true });
       }
 
       case "customer.subscription.updated": {
@@ -722,10 +746,7 @@ Deno.serve(async (req) => {
         }
 
         const ctx = internal
-          ? {
-              customer_id: (internal as any).customer_id ?? null,
-              app_id: (internal as any).app_id ?? null,
-            }
+          ? { customer_id: (internal as any).customer_id ?? null, app_id: (internal as any).app_id ?? null }
           : await resolveEventContext({ stripe_subscription_id, stripe_customer_id });
 
         await logEvent({
@@ -742,7 +763,7 @@ Deno.serve(async (req) => {
           },
         });
 
-        return json(200, { received: true });
+        return json(req, 200, { ok: true, received: true });
       }
 
       case "customer.subscription.deleted": {
@@ -781,10 +802,7 @@ Deno.serve(async (req) => {
         }
 
         const ctx = internal
-          ? {
-              customer_id: (internal as any).customer_id ?? null,
-              app_id: (internal as any).app_id ?? null,
-            }
+          ? { customer_id: (internal as any).customer_id ?? null, app_id: (internal as any).app_id ?? null }
           : await resolveEventContext({ stripe_subscription_id, stripe_customer_id });
 
         await logEvent({
@@ -797,7 +815,7 @@ Deno.serve(async (req) => {
           payload: { status: sub.status },
         });
 
-        return json(200, { received: true });
+        return json(req, 200, { ok: true, received: true });
       }
 
       default: {
@@ -806,13 +824,12 @@ Deno.serve(async (req) => {
           type: event.type,
           payload: { note: "unhandled_event" },
         });
-        return json(200, { received: true, unhandled: event.type });
+        return json(req, 200, { ok: true, received: true, unhandled: event.type });
       }
     }
-
-    return json(200, { received: true });
   } catch (err) {
     console.error("Webhook handler error:", err);
-    return json(500, { error: "Webhook handler failed" });
+    // Stripe considera 5xx como “retry”; esto está bien si realmente falló.
+    return json(req, 500, { ok: false, error: "request_failed", detail: "webhook_handler_failed" });
   }
 });

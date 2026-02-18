@@ -1,7 +1,9 @@
 // supabase/functions/debacu-eval-check-signals/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { serve } from "https://deno.land/std@0.177.1/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
 
 /* ======================================================
  * Types
@@ -10,6 +12,55 @@ type Risk = "BAJO" | "MEDIO" | "ALTO" | "NO_CONCLUYENTE";
 type MatchStrength = "STRONG" | "MEDIUM" | "WEAK";
 type CountBucket = "0" | "1-2" | "3-5" | "6-10" | "10+";
 type Scope = "GLOBAL" | "MY"; // GLOBAL = sin filtro customer_id, MY = filtro customer_id
+
+const APP_ID = "DEBACU_EVAL";
+
+/* ======================================================
+ * Env + clients
+ * ====================================================== */
+function mustEnv(name: string) {
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`missing_env:${name}`);
+  return v;
+}
+
+const SUPABASE_URL = mustEnv("SUPABASE_URL");
+const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
+
+function supabaseServiceClient() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+function supabaseAnonClientNoAuth() {
+  // para resetPasswordForEmail / otros flujos anon si hiciera falta (aquí no se usa)
+  return createClient(SUPABASE_URL, ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+/* ======================================================
+ * Utils
+ * ====================================================== */
+function errResp(req: Request, status: number, detail: string) {
+  return json(req, status, { ok: false, error: "request_failed", detail });
+}
+
+async function readJson(req: Request) {
+  try {
+    const t = await req.text();
+    if (!t) return {};
+    return JSON.parse(t);
+  } catch {
+    return {};
+  }
+}
+
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
+}
 
 /* ======================================================
  * Buckets
@@ -38,36 +89,6 @@ function bucketToMinCount(bucket: CountBucket): number {
     default:
       return 0;
   }
-}
-
-/* ======================================================
- * CORS allowlist
- * ====================================================== */
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function corsHeaders(req: Request): Record<string, string> {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    Vary: "Origin",
-    // ✅ JWT-only (sin x-session-token)
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(req: Request, body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json; charset=utf-8", ...corsHeaders(req) },
-  });
 }
 
 /* ======================================================
@@ -191,82 +212,77 @@ function parseScope(x: unknown): Scope {
 }
 
 /* ======================================================
- * JWT + tenant resolution (org -> customer)
+ * Multi-org resolution (org_id optional)
+ * - Si viene org_id: validar membership ACTIVE en ese org
+ * - Si no viene: fallback determinista a primera membership ACTIVE
+ * - Resuelve customer_id asociado al org
  * ====================================================== */
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-const APP_ID = "DEBACU_EVAL";
+async function resolveOrgAndCustomerId(sbAdmin: ReturnType<typeof supabaseServiceClient>, userId: string, orgId?: string) {
+  const org_id_in = safeStr(orgId);
 
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
+  if (org_id_in) {
+    const { data: mem, error } = await sbAdmin
+      .from("debacu_eval_org_members")
+      .select("org_id, role, status, created_at")
+      .eq("user_id", userId)
+      .eq("org_id", org_id_in)
+      .eq("status", "ACTIVE")
+      .maybeSingle();
 
-async function requireJwtUser(req: Request) {
-  const sb = userClient(req);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
+    if (error) throw new Error("membership_check_failed");
+    if (!mem?.org_id) throw new Error("FORBIDDEN");
+    const customer_id = await resolveCustomerIdForOrg(sbAdmin, String(mem.org_id));
+    return { org_id: String(mem.org_id), role: mem.role ?? null, customer_id };
+  }
 
-const admin = createClient(SUPABASE_URL, SERVICE_ROLE, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
-
-async function requireOrgMemberAndCustomerId(user_id: string) {
-  // 1) membership
-  const { data: mem, error: memErr } = await admin
+  // fallback determinista: primera ACTIVE por created_at asc
+  const { data: mem, error } = await sbAdmin
     .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", user_id)
+    .select("org_id, role, status, created_at")
+    .eq("user_id", userId)
+    .eq("status", "ACTIVE")
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+  if (error) throw new Error("membership_lookup_failed");
+  if (!mem?.org_id) throw new Error("FORBIDDEN");
 
-  const org_id = String(mem.org_id);
-  const role = mem.role ?? null;
+  const customer_id = await resolveCustomerIdForOrg(sbAdmin, String(mem.org_id));
+  return { org_id: String(mem.org_id), role: mem.role ?? null, customer_id };
+}
 
-  // 2) customer_id: por view entitlements si existe, si no por organizations
-  let customer_id: string | null = null;
-
+async function resolveCustomerIdForOrg(sbAdmin: ReturnType<typeof supabaseServiceClient>, org_id: string): Promise<string> {
+  // 1) preferir view entitlements si existe
   try {
-    const { data: ent, error: entErr } = await admin
+    const { data: ent, error: entErr } = await sbAdmin
       .from("debacu_eval_org_entitlements_v")
       .select("customer_id")
       .eq("org_id", org_id)
       .maybeSingle();
-    if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
+
+    if (!entErr && ent?.customer_id) return String(ent.customer_id);
   } catch {
-    // ignore
+    // ignore (view puede no existir en algún entorno)
   }
 
-  if (!customer_id) {
-    const { data: org, error: orgErr } = await admin
-      .from("debacu_eval_organizations")
-      .select("customer_id")
-      .eq("id", org_id)
-      .maybeSingle();
+  // 2) fallback organizations
+  const { data: org, error: orgErr } = await sbAdmin
+    .from("debacu_eval_organizations")
+    .select("customer_id")
+    .eq("id", org_id)
+    .maybeSingle();
 
-    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
-    customer_id = String(org.customer_id);
-  }
-
-  return { org_id, role, customer_id };
+  if (orgErr) throw new Error("org_lookup_failed");
+  if (!org?.customer_id) throw new Error("FORBIDDEN");
+  return String(org.customer_id);
 }
 
 /* ======================================================
- * Query builders (evita el bug "qq.eq is not a function")
+ * Query builders
  * ====================================================== */
-function makeBaseCount(scope: Scope, customerId: string, cutoffISO: string) {
-  let q = admin
+function makeBaseCount(sbAdmin: ReturnType<typeof supabaseServiceClient>, scope: Scope, customerId: string, cutoffISO: string) {
+  let q = sbAdmin
     .from("debacu_evaluations")
     .select("id", { count: "exact", head: true })
     .gte("created_at", cutoffISO);
@@ -275,8 +291,14 @@ function makeBaseCount(scope: Scope, customerId: string, cutoffISO: string) {
   return q;
 }
 
-function makeBaseRatings(scope: Scope, customerId: string, cutoffISO: string, lim: number) {
-  let q = admin
+function makeBaseRatings(
+  sbAdmin: ReturnType<typeof supabaseServiceClient>,
+  scope: Scope,
+  customerId: string,
+  cutoffISO: string,
+  lim: number,
+) {
+  let q = sbAdmin
     .from("debacu_evaluations")
     .select("rating")
     .gte("created_at", cutoffISO)
@@ -289,27 +311,20 @@ function makeBaseRatings(scope: Scope, customerId: string, cutoffISO: string, li
 /* ======================================================
  * Main
  * ====================================================== */
-serve(async (req) => {
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return errResp(req, 405, "method_not_allowed");
+
   try {
-    // CORS preflight
-    if (req.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders(req) });
-    }
-    if (req.method !== "POST") {
-      return json(req, { ok: false, error: "method_not_allowed" }, 405);
-    }
-
-    if (!SUPABASE_URL || !SERVICE_ROLE || !ANON_KEY) {
-      return json(req, { ok: false, error: "missing_server_configuration" }, 500);
-    }
-
     // 1) JWT obligatorio
-    const user = await requireJwtUser(req);
+    const user = await requireUser(req);
 
-    // 2) customer_id por org membership
-    const { customer_id: customerId } = await requireOrgMemberAndCustomerId(user.id);
+    const sbAdmin = supabaseServiceClient();
+    const body = await readJson(req);
 
-    const body = await req.json().catch(() => ({} as any));
+    // multi-org: UI debería mandar org_id siempre
+    const org_id = safeStr(body?.org_id ?? body?.orgId ?? "");
+    const { customer_id: customerId } = await resolveOrgAndCustomerId(sbAdmin, user.id, org_id || undefined);
 
     const q_raw = String(body?.q_input ?? body?.query ?? body?.q_raw ?? "").trim();
     const scope = parseScope(body?.scope); // "GLOBAL" | "MY"
@@ -320,7 +335,7 @@ serve(async (req) => {
     const maxRatingsForAvg = clampInt(body?.max_avg_samples, 50, 2000, 500);
 
     if (!q_raw) {
-      return json(req, {
+      return json(req, 200, {
         ok: true,
         data: {
           scope,
@@ -361,10 +376,10 @@ serve(async (req) => {
         meta: { message: "WEAK_NAME_ONLY", scope },
       };
 
-      const ins = await admin.from("debacu_eval_audit_log").insert(auditPayload);
-      if (ins.error) console.error("AUDIT INSERT FAILED (WEAK)", ins.error, auditPayload);
+      // best-effort (sin reventar la respuesta si falla)
+      await sbAdmin.from("debacu_eval_audit_log").insert(auditPayload);
 
-      return json(req, {
+      return json(req, 200, {
         ok: true,
         data: {
           scope,
@@ -389,9 +404,8 @@ serve(async (req) => {
     cutoff.setMonth(cutoff.getMonth() - months);
     const cutoffISO = cutoff.toISOString();
 
-    // base builders
-    const baseCount = makeBaseCount(scope, String(customerId), cutoffISO);
-    const baseRatings = makeBaseRatings(scope, String(customerId), cutoffISO, maxRatingsForAvg);
+    const baseCount = makeBaseCount(sbAdmin, scope, String(customerId), cutoffISO);
+    const baseRatings = makeBaseRatings(sbAdmin, scope, String(customerId), cutoffISO, maxRatingsForAvg);
 
     let countExact = 0;
 
@@ -399,14 +413,12 @@ serve(async (req) => {
     if (kind === "email") {
       const q = normalizeEmail(q_raw);
       const { count, error } = await baseCount.eq("email", q);
-      if (error) return json(req, { ok: false, error: "query_failed", detail: error.message }, 500);
+      if (error) return errResp(req, 500, "query_failed");
       countExact = Number(count ?? 0);
     } else if (kind === "doc") {
       const q = normalizeDoc(q_raw);
-      // Nota: aquí asumo que en DB guardas el documento normalizado (como te aparece en tu ejemplo)
-      // Si no lo guardas normalizado, iguala por `document` y asegúrate de guardar normalizado desde UI.
       const { count, error } = await baseCount.eq("document", q);
-      if (error) return json(req, { ok: false, error: "query_failed", detail: error.message }, 500);
+      if (error) return errResp(req, 500, "query_failed");
       countExact = Number(count ?? 0);
     } else if (kind === "phone") {
       const vars = normalizePhoneVariants(q_raw);
@@ -414,7 +426,7 @@ serve(async (req) => {
         countExact = 0;
       } else {
         const { count, error } = await baseCount.in("phone", vars);
-        if (error) return json(req, { ok: false, error: "query_failed", detail: error.message }, 500);
+        if (error) return errResp(req, 500, "query_failed");
         countExact = Number(count ?? 0);
       }
     } else {
@@ -458,7 +470,7 @@ serve(async (req) => {
 
     const risk = computeRisk(countExact, avgStars);
 
-    // 5) Audit log (best-effort)
+    // 5) Audit log (best-effort, RGPD: usa bucket mínimo)
     const resultCountForAudit = bucketToMinCount(countBucket);
     const auditPayload = {
       action: "CHECK_SIGNALS",
@@ -479,7 +491,6 @@ serve(async (req) => {
       meta: {
         scope,
         has_matches: hasMatches,
-        count_exact: countExact, // si quieres RGPD estricto: quítalo y deja bucket
         count_bucket: countBucket,
         avg_stars: avgStars,
         risk,
@@ -488,11 +499,10 @@ serve(async (req) => {
       },
     };
 
-    const ins = await admin.from("debacu_eval_audit_log").insert(auditPayload);
-    if (ins.error) console.error("AUDIT INSERT FAILED", ins.error, auditPayload);
+    await sbAdmin.from("debacu_eval_audit_log").insert(auditPayload);
 
     // 6) Response
-    return json(req, {
+    return json(req, 200, {
       ok: true,
       data: {
         scope,
@@ -510,16 +520,12 @@ serve(async (req) => {
     });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
-    const status =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("FORBIDDEN") ||
-          msg.startsWith("MEMBERSHIP_FAILED") ||
-          msg.startsWith("ORG_LOOKUP_FAILED")
-        ? 403
-        : 500;
 
-    console.error("CHECK_SIGNALS ERROR", e);
-    return json(req, { ok: false, error: "request_failed", detail: msg }, status);
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return errResp(req, 401, "UNAUTHORIZED");
+    if (msg === "FORBIDDEN") return errResp(req, 403, "FORBIDDEN");
+    if (msg.startsWith("missing_") || msg.startsWith("invalid_")) return errResp(req, 400, msg);
+
+    // no filtrar detalle interno
+    return errResp(req, 500, "internal_error");
   }
 });

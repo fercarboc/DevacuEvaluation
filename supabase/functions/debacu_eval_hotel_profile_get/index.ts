@@ -1,123 +1,31 @@
+// supabase/functions/debacu_eval_hotel_profile_get/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
 /** ======================================================
- *  CORS
- *  ====================================================== */
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+ * Types
+ * ====================================================== */
+type Body = {
+  org_id?: string | null; // ✅ multi-org (recomendado)
+  app_id?: string | null;
+  appId?: string | null;
+};
 
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    // ✅ JWT-only, sin x-session-token
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Max-Age": "86400",
-  };
-}
+type AuditState = { audit_ok: boolean; missing_fields: string[] };
 
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8" },
-  });
-}
-
-function mustEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env var ${name}`);
-  return v;
+/** ======================================================
+ * Helpers
+ * ====================================================== */
+function err(code: string, detail?: string) {
+  return { ok: false, error: "request_failed", detail: detail ? `${code}:${detail}` : code };
 }
 
 function safeStr(v: any) {
   return typeof v === "string" ? v.trim() : "";
 }
-
-/** ======================================================
- *  Clients
- *  ====================================================== */
-const SUPABASE_URL = mustEnv("SUPABASE_URL");
-const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
-const SERVICE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
-
-const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
-
-async function requireJwtUser(req: Request) {
-  const sb = userClient(req);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
-
-/** ======================================================
- *  AuthZ: org membership -> customer_id (entitlements view -> org fallback)
- *  ====================================================== */
-async function requireOrgMemberAndCustomerId(user_id: string) {
-  const { data: mem, error: memErr } = await admin
-    .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", user_id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
-
-  const org_id = String(mem.org_id);
-
-  let customer_id: string | null = null;
-
-  // view (si existe)
-  try {
-    const { data: ent, error: entErr } = await admin
-      .from("debacu_eval_org_entitlements_v")
-      .select("customer_id")
-      .eq("org_id", org_id)
-      .maybeSingle();
-
-    if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
-  } catch {
-    // ignore
-  }
-
-  if (!customer_id) {
-    const { data: org, error: orgErr } = await admin
-      .from("debacu_eval_organizations")
-      .select("customer_id")
-      .eq("id", org_id)
-      .maybeSingle();
-
-    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
-    customer_id = String(org.customer_id);
-  }
-
-  return { org_id, customer_id, role: mem.role ?? null };
-}
-
-/** ======================================================
- *  Completeness / Audit
- *  ====================================================== */
-type AuditState = { audit_ok: boolean; missing_fields: string[] };
 
 function computeAudit(params: {
   country: string | null;
@@ -155,33 +63,109 @@ function computeAudit(params: {
   return { audit_ok: miss.length === 0, missing_fields: miss };
 }
 
+/**
+ * ✅ multi-org:
+ * - si viene org_id: validar membership ACTIVE
+ * - si no viene: fallback determinista a primera ACTIVE (created_at asc)
+ */
+async function resolveOrgId(
+  supabase: ReturnType<typeof supabaseServiceClient>,
+  authUserId: string,
+  orgIdFromBody: string | null | undefined,
+): Promise<string | null> {
+  const orgId = safeStr(orgIdFromBody);
+  if (orgId) {
+    const { data, error } = await supabase
+      .from("debacu_eval_org_members")
+      .select("org_id")
+      .eq("org_id", orgId)
+      .eq("auth_user_id", authUserId) // ⚠️ si tu columna es user_id, cámbiala aquí
+      .eq("status", "ACTIVE")
+      .maybeSingle();
+
+    if (error) return null;
+    return data?.org_id ? String(data.org_id) : null;
+  }
+
+  const { data: rows, error } = await supabase
+    .from("debacu_eval_org_members")
+    .select("org_id, created_at")
+    .eq("auth_user_id", authUserId) // ⚠️ si tu columna es user_id, cámbiala aquí
+    .eq("status", "ACTIVE")
+    .order("created_at", { ascending: true })
+    .limit(1);
+
+  if (error) return null;
+  return rows?.[0]?.org_id ? String(rows[0].org_id) : null;
+}
+
+/**
+ * Resolver customer_id:
+ * - prefer view entitlements
+ * - fallback organizations.customer_id
+ */
+async function resolveCustomerId(
+  supabase: ReturnType<typeof supabaseServiceClient>,
+  orgId: string,
+): Promise<string | null> {
+  // 1) entitlements view (si existe)
+  try {
+    const { data: ent, error: entErr } = await supabase
+      .from("debacu_eval_org_entitlements_v")
+      .select("customer_id")
+      .eq("org_id", orgId)
+      .maybeSingle();
+
+    if (!entErr && ent?.customer_id) return String(ent.customer_id);
+  } catch {
+    // ignore (view may not exist)
+  }
+
+  // 2) organizations fallback
+  const { data: org, error: orgErr } = await supabase
+    .from("debacu_eval_organizations")
+    .select("customer_id")
+    .eq("id", orgId)
+    .maybeSingle();
+
+  if (orgErr) return null;
+  return org?.customer_id ? String(org.customer_id) : null;
+}
+
 /** ======================================================
- *  Handler
- *  ====================================================== */
-export default Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+ * Handler
+ * ====================================================== */
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, err("method_not_allowed"));
 
   try {
-    const authHeader = req.headers.get("authorization") || "";
-    if (!authHeader.toLowerCase().startsWith("bearer ")) {
-      return json(req, 401, { ok: false, error: "Missing Authorization Bearer token" });
-    }
+    // ✅ JWT-only
+    const user = await requireUser(req);
 
-    const body = await req.json().catch(() => ({}));
-    const appId = String(body?.app_id ?? body?.appId ?? "DEBACU_EVAL");
+    const body = (await req.json().catch(() => null)) as Body | null;
+    if (!body) return json(req, 400, err("invalid_json"));
 
-    const user = await requireJwtUser(req);
-    const { customer_id: customerId } = await requireOrgMemberAndCustomerId(user.id);
+    const appId = safeStr(body.app_id ?? body.appId) || "DEBACU_EVAL";
 
-    const { data: profile, error: pErr } = await admin
+    const supabase = supabaseServiceClient();
+
+    // ✅ multi-org
+    const orgId = await resolveOrgId(supabase, user.id, body.org_id);
+    if (!orgId) return json(req, 403, err("FORBIDDEN", "NO_ACTIVE_MEMBERSHIP"));
+
+    const customerId = await resolveCustomerId(supabase, orgId);
+    if (!customerId) return json(req, 403, err("FORBIDDEN", "NO_CUSTOMER_FOR_ORG"));
+
+    // ✅ read profile (service role)
+    const { data: profile, error: pErr } = await supabase
       .from("debacu_eval_hotel_profile")
       .select("*")
       .eq("customer_id", customerId)
       .eq("app_id", appId)
       .maybeSingle();
 
-    if (pErr) throw new Error(`DB_PROFILE_GET:${pErr.message}`);
+    if (pErr) return json(req, 500, err("db_read_failed"));
 
     const audit = computeAudit({
       country: (profile as any)?.country ?? null,
@@ -196,23 +180,16 @@ export default Deno.serve(async (req) => {
 
     return json(req, 200, {
       ok: true,
-      meta: { customer_id: customerId, app_id: appId },
+      meta: { org_id: orgId, customer_id: customerId, app_id: appId },
       profile: profile ?? null,
       audit_ok: audit.audit_ok,
       missing_fields: audit.missing_fields,
     });
   } catch (e: any) {
-    const msg = String(e?.message ?? e);
-    const code =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED")
-        ? 403
-        : msg.startsWith("DB_")
-        ? 500
-        : 500;
-
-    console.error("debacu_eval_hotel_profile_get error:", e);
-    return json(req, code, { ok: false, error: "request_failed", detail: msg });
+    const msg = String(e?.message ?? e ?? "");
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
+      return json(req, 401, err("UNAUTHENTICATED"));
+    }
+    return json(req, 500, err("internal_error"));
   }
 });

@@ -1,35 +1,16 @@
+// supabase/functions/debacu_eval_terms_acceptance_pdf_generate/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { PDFDocument, StandardFonts, rgb } from "https://esm.sh/pdf-lib@1.17.1";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
-// ✅ server-side versioning
+/**
+ * ✅ server-side versioning
+ * Mantén esto en server; NO confiar en frontend.
+ */
 const TERMS_VERSION = "2026-01-24 - V1.0";
-
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-}
-
-function requireEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
-}
-
-function toHex(buffer: ArrayBuffer) {
-  return [...new Uint8Array(buffer)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
 
 type PropertyType = "HOTEL" | "RURAL" | "APARTMENTS" | "HOSTEL" | "OTHER";
 
@@ -57,10 +38,41 @@ type PdfData = {
   phone?: string | null;
   notes?: string | null;
 
-  // ✅ para incluir en el PDF (sin tocar tu BD)
+  // para incluir en el PDF (sin tocar tu BD)
   accepted_ip?: string | null;
   accepted_user_agent?: string | null;
 };
+
+function toHex(buffer: ArrayBuffer) {
+  return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function safeTimestamp(iso: string) {
+  // 2026-02-18T08:10:00.123Z -> 2026-02-18T08-10-00-123Z
+  return iso.replace(/[:.]/g, "-");
+}
+
+function getClientIp(req: Request): string | null {
+  const xff = req.headers.get("x-forwarded-for");
+  if (xff) return xff.split(",")[0]?.trim() ?? null;
+  return req.headers.get("cf-connecting-ip") ?? null;
+}
+
+function normalizeEmail(e: string | null | undefined) {
+  return (e ?? "").trim().toLowerCase();
+}
+
+function errPayload(code: string, detail?: string) {
+  return { ok: false, error: "request_failed", detail: detail ? `${code}:${detail}` : code };
+}
+
+function mapDbErrorToResponse(req: Request, status: number, code: string, detail?: string) {
+  return json(req, status, errPayload(code, detail));
+}
 
 async function buildPdf(data: PdfData, acceptedAtIso: string) {
   const pdfDoc = await PDFDocument.create();
@@ -109,7 +121,7 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   };
 
   const ensureSpace = (need: number) => {
-    const bottom = 48; // reserva para pie/respirar
+    const bottom = 48;
     if (y - need < bottom) newPage();
   };
 
@@ -126,15 +138,9 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   };
 
   const wrapLines = (text: string, size: number) => {
-    const words = text
-      .replace(/\s+/g, " ")
-      .trim()
-      .split(" ")
-      .filter(Boolean);
-
+    const words = text.replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
     const lines: string[] = [];
     let line = "";
-
     for (const w of words) {
       const test = line ? `${line} ${w}` : w;
       const width = font.widthOfTextAtSize(test, size);
@@ -151,25 +157,13 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
 
   const drawH1 = (text: string) => {
     ensureSpace(40);
-    page.drawText(text, {
-      x: margin,
-      y,
-      size: 18,
-      font: fontBold,
-      color: colors.title,
-    });
+    page.drawText(text, { x: margin, y, size: 18, font: fontBold, color: colors.title });
     y -= 28;
   };
 
   const drawH2 = (text: string) => {
     ensureSpace(26);
-    page.drawText(text, {
-      x: margin,
-      y,
-      size: 12.5,
-      font: fontBold,
-      color: rgb(0.12, 0.12, 0.12),
-    });
+    page.drawText(text, { x: margin, y, size: 12.5, font: fontBold, color: rgb(0.12, 0.12, 0.12) });
     y -= 18;
   };
 
@@ -177,13 +171,7 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     const lines = wrapLines(text, size);
     ensureSpace(lines.length * lineGap + 10);
     for (const l of lines) {
-      page.drawText(l, {
-        x: margin,
-        y,
-        size,
-        font,
-        color: colors.text,
-      });
+      page.drawText(l, { x: margin, y, size, font, color: colors.text });
       y -= lineGap;
     }
     y -= 6;
@@ -196,26 +184,12 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
       const lines = wrapLines(it, size);
       ensureSpace(lines.length * lineGap + 10);
 
-      // primera línea con viñeta
       page.drawText(bullet, { x: margin, y, size, font, color: colors.text });
-      page.drawText(lines[0], {
-        x: margin + 14,
-        y,
-        size,
-        font,
-        color: colors.text,
-      });
+      page.drawText(lines[0], { x: margin + 14, y, size, font, color: colors.text });
       y -= lineGap;
 
-      // resto líneas indentadas
       for (let i = 1; i < lines.length; i++) {
-        page.drawText(lines[i], {
-          x: margin + 14,
-          y,
-          size,
-          font,
-          color: colors.text,
-        });
+        page.drawText(lines[i], { x: margin + 14, y, size, font, color: colors.text });
         y -= lineGap;
       }
       y -= 2;
@@ -227,15 +201,9 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     const size = 10.5;
     const labelW = 165;
     ensureSpace(18);
-    page.drawText(label, {
-      x: margin,
-      y,
-      size,
-      font: fontBold,
-      color: rgb(0.1, 0.1, 0.1),
-    });
 
-    // value wrap en columna derecha
+    page.drawText(label, { x: margin, y, size, font: fontBold, color: rgb(0.1, 0.1, 0.1) });
+
     const maxW = contentW - labelW;
     const words = (value || "-").replace(/\s+/g, " ").trim().split(" ");
     let line = "";
@@ -252,25 +220,12 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     }
     if (line) lines.push(line);
 
-    page.drawText(lines[0] ?? "-", {
-      x: margin + labelW,
-      y,
-      size,
-      font,
-      color: rgb(0.15, 0.15, 0.15),
-    });
-
+    page.drawText(lines[0] ?? "-", { x: margin + labelW, y, size, font, color: rgb(0.15, 0.15, 0.15) });
     y -= 14.5;
 
     for (let i = 1; i < lines.length; i++) {
       ensureSpace(14.5);
-      page.drawText(lines[i], {
-        x: margin + labelW,
-        y,
-        size,
-        font,
-        color: rgb(0.15, 0.15, 0.15),
-      });
+      page.drawText(lines[i], { x: margin + labelW, y, size, font, color: rgb(0.15, 0.15, 0.15) });
       y -= 14.5;
     }
 
@@ -285,14 +240,11 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     privacy_email: "privacidad@debacu.com",
   };
 
-  // ===========================
   // PORTADA / EVIDENCIA
-  // ===========================
   drawH1("Justificante de aceptación · Debacu Evaluation360");
   drawP(
-    "Este documento reúne en un único PDF la evidencia de aceptación electrónica y el contenido legal aplicable al acceso y uso profesional de la plataforma (Aviso Legal, Términos y Condiciones, Política de Acceso y Uso Profesional y Encargo de Tratamiento – RGPD)."
+    "Este documento reúne en un único PDF la evidencia de aceptación electrónica y el contenido legal aplicable al acceso y uso profesional de la plataforma (Aviso Legal, Términos y Condiciones, Política de Acceso y Uso Profesional y Encargo de Tratamiento – RGPD).",
   );
-
   hr();
 
   drawH2("Datos de la solicitud");
@@ -306,9 +258,7 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     drawKV("IP (x-forwarded-for):", data.accepted_ip ?? "-");
     drawKV("User-Agent:", data.accepted_user_agent ?? "-");
   } else {
-    drawP(
-      "Nota técnica: la IP y el User-Agent se registran a nivel de servidor y quedan asociados a esta solicitud (ID) en los registros internos."
-    );
+    drawP("Nota técnica: la IP y el User-Agent se registran a nivel de servidor y quedan asociados a esta solicitud (ID) en los registros internos.");
   }
 
   hr();
@@ -337,23 +287,14 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   hr();
 
   drawH2("Declaración de aceptación electrónica");
-  drawP(
-    "El solicitante declara haber leído y aceptado expresamente los documentos incluidos en este PDF y consiente su incorporación como evidencia de aceptación vinculada a la solicitud indicada."
-  );
-  drawP(
-    "Este documento ha sido aceptado electrónicamente, sin necesidad de firma manuscrita, conforme a la Ley 34/2002 (LSSI-CE) y el Reglamento (UE) 910/2014 (eIDAS)."
-  );
+  drawP("El solicitante declara haber leído y aceptado expresamente los documentos incluidos en este PDF y consiente su incorporación como evidencia de aceptación vinculada a la solicitud indicada.");
+  drawP("Este documento ha sido aceptado electrónicamente, sin necesidad de firma manuscrita, conforme a la Ley 34/2002 (LSSI-CE) y el Reglamento (UE) 910/2014 (eIDAS).");
 
-  // salto a documentos
   newPage();
 
-  // ===========================
   // DOC 1: AVISO LEGAL
-  // ===========================
   drawH1("Documento 1 · Aviso Legal");
-  drawP(
-    "En cumplimiento de la normativa aplicable, se informa que el sitio y la plataforma Debacu Evaluation360 (en adelante, la “Plataforma”) es titularidad del proveedor indicado a continuación."
-  );
+  drawP("En cumplimiento de la normativa aplicable, se informa que el sitio y la plataforma Debacu Evaluation360 (en adelante, la “Plataforma”) es titularidad del proveedor indicado a continuación.");
 
   drawH2("1. Titularidad");
   drawList([
@@ -364,49 +305,31 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   ]);
 
   drawH2("2. Objeto y naturaleza del servicio");
-  drawP(
-    "La Plataforma proporciona un entorno privado de uso profesional para alojamientos y equipos operativos, orientado a la gestión interna de incidencias y trazabilidad (consultas, registros y auditoría). No se trata de un servicio público ni de un registro accesible al público general."
-  );
+  drawP("La Plataforma proporciona un entorno privado de uso profesional para alojamientos y equipos operativos, orientado a la gestión interna de incidencias y trazabilidad (consultas, registros y auditoría). No se trata de un servicio público ni de un registro accesible al público general.");
 
   drawH2("3. Acceso y registro");
-  drawP(
-    "El acceso puede requerir alta controlada, creación de cuenta y autenticación. El usuario se compromete a facilitar información veraz, mantenerla actualizada y custodiar sus credenciales, evitando el uso compartido no autorizado."
-  );
+  drawP("El acceso puede requerir alta controlada, creación de cuenta y autenticación. El usuario se compromete a facilitar información veraz, mantenerla actualizada y custodiar sus credenciales, evitando el uso compartido no autorizado.");
 
   drawH2("4. Normas de uso");
-  drawP(
-    "El usuario se compromete a utilizar la Plataforma de forma diligente, lícita y conforme a la finalidad profesional descrita. Queda prohibida la difusión pública de información obtenida en la Plataforma, la recolección automatizada no autorizada, así como cualquier uso difamatorio, discriminatorio o contrario a la buena fe."
-  );
+  drawP("El usuario se compromete a utilizar la Plataforma de forma diligente, lícita y conforme a la finalidad profesional descrita. Queda prohibida la difusión pública de información obtenida en la Plataforma, la recolección automatizada no autorizada, así como cualquier uso difamatorio, discriminatorio o contrario a la buena fe.");
 
   drawH2("5. Propiedad intelectual e industrial");
-  drawP(
-    "Los contenidos, marcas, diseños, software y elementos de la Plataforma están protegidos por derechos de propiedad intelectual e industrial. Queda prohibida su reproducción, distribución o explotación no autorizada."
-  );
+  drawP("Los contenidos, marcas, diseños, software y elementos de la Plataforma están protegidos por derechos de propiedad intelectual e industrial. Queda prohibida su reproducción, distribución o explotación no autorizada.");
 
   drawH2("6. Responsabilidad");
-  drawP(
-    "La Plataforma se ofrece “tal cual”, con esfuerzos razonables de disponibilidad y seguridad. El titular no garantiza la inexistencia absoluta de interrupciones o errores, aunque adoptará medidas para su corrección. El usuario es responsable del uso que haga de la información en su propia operativa."
-  );
+  drawP("La Plataforma se ofrece “tal cual”, con esfuerzos razonables de disponibilidad y seguridad. El titular no garantiza la inexistencia absoluta de interrupciones o errores, aunque adoptará medidas para su corrección. El usuario es responsable del uso que haga de la información en su propia operativa.");
 
   drawH2("7. Enlaces y terceros");
-  drawP(
-    "Pueden existir enlaces a sitios de terceros. El titular no se responsabiliza de sus contenidos, disponibilidad o políticas."
-  );
+  drawP("Pueden existir enlaces a sitios de terceros. El titular no se responsabiliza de sus contenidos, disponibilidad o políticas.");
 
   drawH2("8. Legislación y jurisdicción");
-  drawP(
-    "Este Aviso Legal se rige por la legislación española. Para cualquier controversia, las partes se someterán a los juzgados y tribunales competentes conforme a la normativa aplicable."
-  );
+  drawP("Este Aviso Legal se rige por la legislación española. Para cualquier controversia, las partes se someterán a los juzgados y tribunales competentes conforme a la normativa aplicable.");
 
   newPage();
 
-  // ===========================
   // DOC 2: TÉRMINOS Y CONDICIONES
-  // ===========================
   drawH1("Documento 2 · Términos y Condiciones");
-  drawP(
-    "Estos términos regulan el acceso y uso de la Plataforma Debacu Evaluation360. Al registrarte, solicitar acceso o utilizar la Plataforma, aceptas estas condiciones en la versión indicada."
-  );
+  drawP("Estos términos regulan el acceso y uso de la Plataforma Debacu Evaluation360. Al registrarte, solicitar acceso o utilizar la Plataforma, aceptas estas condiciones en la versión indicada.");
 
   drawH2("1. Definiciones");
   drawList([
@@ -423,9 +346,7 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   ]);
 
   drawH2("3. Uso profesional y limitaciones");
-  drawP(
-    "La Plataforma es privada y de uso profesional. Queda prohibida la difusión pública de información, la extracción masiva o automatizada no autorizada y cualquier uso contrario a la finalidad operativa interna."
-  );
+  drawP("La Plataforma es privada y de uso profesional. Queda prohibida la difusión pública de información, la extracción masiva o automatizada no autorizada y cualquier uso contrario a la finalidad operativa interna.");
 
   drawH2("4. Planes, suscripción y facturación (si aplica)");
   drawList([
@@ -443,39 +364,25 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   ]);
 
   drawH2("6. Contenidos y responsabilidad del Cliente");
-  drawP(
-    "El Cliente es responsable de los datos y contenidos que registra en la Plataforma, incluyendo su exactitud, pertinencia y adecuación legal. Se recomienda evitar datos excesivos o no pertinentes, así como expresiones ofensivas o valoraciones discriminatorias."
-  );
+  drawP("El Cliente es responsable de los datos y contenidos que registra en la Plataforma, incluyendo su exactitud, pertinencia y adecuación legal. Se recomienda evitar datos excesivos o no pertinentes, así como expresiones ofensivas o valoraciones discriminatorias.");
 
   drawH2("7. Limitación de responsabilidad");
-  drawP(
-    "La Plataforma ofrece herramientas de apoyo a procesos internos. Las decisiones que el Cliente adopte basadas en la información o en su uso operativo son responsabilidad del Cliente. No se garantiza ausencia total de errores, interrupciones o indisponibilidades, sin perjuicio de los esfuerzos razonables de continuidad y seguridad."
-  );
+  drawP("La Plataforma ofrece herramientas de apoyo a procesos internos. Las decisiones que el Cliente adopte basadas en la información o en su uso operativo son responsabilidad del Cliente. No se garantiza ausencia total de errores, interrupciones o indisponibilidades, sin perjuicio de los esfuerzos razonables de continuidad y seguridad.");
 
   drawH2("8. Soporte");
-  drawP(
-    "El soporte puede variar según el plan. El alcance y tiempos de respuesta podrán definirse en el plan contratado o en acuerdos de nivel de servicio (SLA) cuando existan."
-  );
+  drawP("El soporte puede variar según el plan. El alcance y tiempos de respuesta podrán definirse en el plan contratado o en acuerdos de nivel de servicio (SLA) cuando existan.");
 
   drawH2("9. Modificaciones");
-  drawP(
-    "Podemos actualizar estas condiciones por cambios legales o del servicio. La versión vigente estará publicada y se identificará por su versión/fecha."
-  );
+  drawP("Podemos actualizar estas condiciones por cambios legales o del servicio. La versión vigente estará publicada y se identificará por su versión/fecha.");
 
   newPage();
 
-  // ===========================
   // DOC 3: POLÍTICA ACCESO Y USO PROFESIONAL
-  // ===========================
   drawH1("Documento 3 · Política de Acceso y Uso Profesional");
-  drawP(
-    "Esta política concreta el carácter restringido, interno y profesional de la Plataforma y establece reglas de uso para garantizar trazabilidad, seguridad y calidad de la información."
-  );
+  drawP("Esta política concreta el carácter restringido, interno y profesional de la Plataforma y establece reglas de uso para garantizar trazabilidad, seguridad y calidad de la información.");
 
   drawH2("1. Acceso restringido");
-  drawP(
-    "Debacu Evaluation360 es una plataforma privada destinada a profesionales del sector alojamiento. El acceso se concede de forma controlada a organizaciones verificadas y usuarios autorizados."
-  );
+  drawP("Debacu Evaluation360 es una plataforma privada destinada a profesionales del sector alojamiento. El acceso se concede de forma controlada a organizaciones verificadas y usuarios autorizados.");
 
   drawH2("2. Uso interno y no público");
   drawList([
@@ -485,14 +392,10 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   ]);
 
   drawH2("3. Criterios estructurados y minimización");
-  drawP(
-    "El sistema fomenta el registro estructurado (motivos, tipologías, severidad, fechas y evidencias internas), minimizando opiniones y evitando datos excesivos. El Cliente se compromete a registrar solo información pertinente, verificable y relacionada con su operativa."
-  );
+  drawP("El sistema fomenta el registro estructurado (motivos, tipologías, severidad, fechas y evidencias internas), minimizando opiniones y evitando datos excesivos. El Cliente se compromete a registrar solo información pertinente, verificable y relacionada con su operativa.");
 
   drawH2("4. Auditoría y trazabilidad");
-  drawP(
-    "Para control interno y seguridad, se registran acciones relevantes (consultas, altas, modificaciones, cambios de permisos, exportaciones cuando existan) asociadas a la cuenta. Estos registros se usan para prevenir abuso, investigar incidencias y reforzar la trazabilidad."
-  );
+  drawP("Para control interno y seguridad, se registran acciones relevantes (consultas, altas, modificaciones, cambios de permisos, exportaciones cuando existan) asociadas a la cuenta. Estos registros se usan para prevenir abuso, investigar incidencias y reforzar la trazabilidad.");
 
   drawH2("5. Prohibiciones específicas");
   drawList([
@@ -503,19 +406,13 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   ]);
 
   drawH2("6. Medidas ante abuso");
-  drawP(
-    "En caso de uso indebido, el titular podrá suspender o cancelar accesos y/o limitar funcionalidades para proteger la Plataforma, sin perjuicio de las acciones legales que procedan."
-  );
+  drawP("En caso de uso indebido, el titular podrá suspender o cancelar accesos y/o limitar funcionalidades para proteger la Plataforma, sin perjuicio de las acciones legales que procedan.");
 
   newPage();
 
-  // ===========================
-  // DOC 4: DPA (ENCARGO TRATAMIENTO) + ANEXO TÉCNICO (ART. 28 / 32 RGPD)
-  // ===========================
+  // DOC 4: DPA
   drawH1("Documento 4 · Encargo de Tratamiento (DPA) · RGPD");
-  drawP(
-    "Este documento regula el encargo de tratamiento cuando el Cliente incorpora datos personales a la Plataforma. En un entorno B2B, normalmente el Cliente (hotel/alojamiento) actúa como Responsable del tratamiento y el proveedor de la Plataforma como Encargado del tratamiento, en los términos del art. 28 RGPD."
-  );
+  drawP("Este documento regula el encargo de tratamiento cuando el Cliente incorpora datos personales a la Plataforma. En un entorno B2B, normalmente el Cliente (hotel/alojamiento) actúa como Responsable del tratamiento y el proveedor de la Plataforma como Encargado del tratamiento, en los términos del art. 28 RGPD.");
 
   drawH2("1. Partes");
   drawList([
@@ -524,14 +421,10 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   ]);
 
   drawH2("2. Objeto del encargo");
-  drawP(
-    "Prestación del servicio de plataforma privada para gestión operativa con trazabilidad, conforme a instrucciones documentadas del Responsable, incluyendo: almacenamiento, consulta, registro, modificación, auditoría y soporte."
-  );
+  drawP("Prestación del servicio de plataforma privada para gestión operativa con trazabilidad, conforme a instrucciones documentadas del Responsable, incluyendo: almacenamiento, consulta, registro, modificación, auditoría y soporte.");
 
   drawH2("3. Duración");
-  drawP(
-    "Durante la vigencia de la relación contractual o de acceso autorizado al servicio, y mientras sea necesario para la prestación del mismo, sin perjuicio de obligaciones legales de conservación."
-  );
+  drawP("Durante la vigencia de la relación contractual o de acceso autorizado al servicio, y mientras sea necesario para la prestación del mismo, sin perjuicio de obligaciones legales de conservación.");
 
   drawH2("4. Naturaleza, finalidad y categorías de interesados");
   drawList([
@@ -541,9 +434,7 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   ]);
 
   drawH2("5. Tipos de datos");
-  drawP(
-    "Según el uso del Responsable. Se recomienda minimización. El Responsable se compromete a evitar el registro de datos excesivos, especialmente categorías especiales (art. 9 RGPD) salvo estricta necesidad, base jurídica y garantías adecuadas."
-  );
+  drawP("Según el uso del Responsable. Se recomienda minimización. El Responsable se compromete a evitar el registro de datos excesivos, especialmente categorías especiales (art. 9 RGPD) salvo estricta necesidad, base jurídica y garantías adecuadas.");
 
   drawH2("6. Obligaciones del Encargado (art. 28 RGPD)");
   drawList([
@@ -564,9 +455,7 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   ]);
 
   drawH2("8. Subencargados");
-  drawP(
-    "El Encargado podrá utilizar subencargados necesarios para la prestación del servicio (p. ej., infraestructura/hosting, correo transaccional, pasarela de pagos), garantizando obligaciones equivalentes mediante acuerdos adecuados."
-  );
+  drawP("El Encargado podrá utilizar subencargados necesarios para la prestación del servicio (p. ej., infraestructura/hosting, correo transaccional, pasarela de pagos), garantizando obligaciones equivalentes mediante acuerdos adecuados.");
   drawList([
     "Infraestructura/hosting (p. ej., Supabase/Cloud, según configuración).",
     "Correo transaccional (p. ej., Brevo), si se utiliza.",
@@ -574,24 +463,15 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   ]);
 
   drawH2("9. Transferencias internacionales");
-  drawP(
-    "Si algún proveedor tratase datos fuera del EEE, se aplicarán garantías adecuadas (p. ej., Cláusulas Contractuales Tipo) y/o decisiones de adecuación, según corresponda."
-  );
+  drawP("Si algún proveedor tratase datos fuera del EEE, se aplicarán garantías adecuadas (p. ej., Cláusulas Contractuales Tipo) y/o decisiones de adecuación, según corresponda.");
 
   drawH2("10. Finalización: devolución o supresión");
-  drawP(
-    "Al finalizar el servicio, el Encargado suprimirá o devolverá los datos personales, según instrucciones del Responsable, salvo obligación legal de conservación. Podrán mantenerse copias residuales en sistemas de respaldo por periodos limitados y bajo controles de seguridad."
-  );
+  drawP("Al finalizar el servicio, el Encargado suprimirá o devolverá los datos personales, según instrucciones del Responsable, salvo obligación legal de conservación. Podrán mantenerse copias residuales en sistemas de respaldo por periodos limitados y bajo controles de seguridad.");
 
   hr();
 
-  // ===========================
-  // ANEXO II (ART. 32 RGPD) - MEDIDAS TÉCNICAS Y ORGANIZATIVAS
-  // ===========================
   drawH1("Anexo II · Medidas Técnicas y Organizativas (art. 32 RGPD)");
-  drawP(
-    "Este anexo describe medidas orientativas aplicadas por el Encargado para proteger los datos tratados en la Plataforma. El nivel de medidas podrá variar según configuración, plan y alcance contratado, manteniendo un enfoque de seguridad razonable y proporcional al riesgo."
-  );
+  drawP("Este anexo describe medidas orientativas aplicadas por el Encargado para proteger los datos tratados en la Plataforma. El nivel de medidas podrá variar según configuración, plan y alcance contratado, manteniendo un enfoque de seguridad razonable y proporcional al riesgo.");
 
   drawH2("A. Control de acceso y autenticación");
   drawList([
@@ -608,22 +488,13 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   ]);
 
   drawH2("C. Cifrado y comunicaciones");
-  drawList([
-    "Cifrado en tránsito mediante HTTPS/TLS.",
-    "Uso de canales seguros para comunicaciones operativas y administrativas.",
-  ]);
+  drawList(["Cifrado en tránsito mediante HTTPS/TLS.", "Uso de canales seguros para comunicaciones operativas y administrativas."]);
 
   drawH2("D. Segregación y aislamiento");
-  drawList([
-    "Separación lógica por organización cuando aplica (controles de acceso y políticas).",
-    "Limitaciones de acceso a datos entre organizaciones y roles.",
-  ]);
+  drawList(["Separación lógica por organización cuando aplica (controles de acceso y políticas).", "Limitaciones de acceso a datos entre organizaciones y roles."]);
 
   drawH2("E. Disponibilidad y resiliencia");
-  drawList([
-    "Uso de infraestructura en la nube con capacidades de redundancia y continuidad (según proveedor).",
-    "Copias de seguridad y mecanismos de recuperación ante incidencias (según configuración).",
-  ]);
+  drawList(["Uso de infraestructura en la nube con capacidades de redundancia y continuidad (según proveedor).", "Copias de seguridad y mecanismos de recuperación ante incidencias (según configuración)."]);
 
   drawH2("F. Gestión de vulnerabilidades e incidentes");
   drawList([
@@ -632,10 +503,7 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   ]);
 
   drawH2("G. Confidencialidad y formación");
-  drawList([
-    "Compromisos de confidencialidad del personal con acceso a sistemas.",
-    "Buenas prácticas y controles organizativos razonables para limitar accesos.",
-  ]);
+  drawList(["Compromisos de confidencialidad del personal con acceso a sistemas.", "Buenas prácticas y controles organizativos razonables para limitar accesos."]);
 
   drawH2("H. Minimización y buenas prácticas del Cliente");
   drawList([
@@ -647,46 +515,34 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   hr();
 
   drawH2("Contacto y ejercicio de derechos (cuando proceda)");
-  drawP(
-    `Para cuestiones de privacidad y seguridad: ${org.privacy_email}. Para cuestiones contractuales o del servicio: ${org.provider_email}.`
-  );
+  drawP(`Para cuestiones de privacidad y seguridad: ${org.privacy_email}. Para cuestiones contractuales o del servicio: ${org.provider_email}.`);
 
-  // pie última página
   footer();
-
   return await pdfDoc.save();
 }
 
-
-
-
-
-
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+
+  if (req.method !== "POST") {
+    return json(req, 405, errPayload("method_not_allowed"));
+  }
+
   try {
-    if (req.method === "OPTIONS") {
-      return new Response("ok", { headers: corsHeaders });
-    }
+    // ✅ JWT-only
+    const user = await requireUser(req);
 
-    if (req.method !== "POST") {
-      return json(405, { error: "Method not allowed" });
-    }
-
-    const SUPABASE_URL = requireEnv("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-
-    const body = (await req.json()) as Body;
+    const body = (await req.json().catch(() => null)) as Body | null;
     if (!body?.request_id) {
-      return json(400, { error: "request_id required" });
+      return mapDbErrorToResponse(req, 400, "missing_request_id");
     }
 
-    // 🔐 Leer datos SOLO desde BD (nunca del frontend)
+    const supabase = supabaseServiceClient();
+
+    // 🔐 Leer datos SOLO desde BD (service role)
     const { data: row, error: reqErr } = await supabase
       .from("debacu_eval_access_requests")
-      .select(
-        `
+      .select(`
         id,
         status,
         company_name,
@@ -702,48 +558,81 @@ Deno.serve(async (req) => {
         contact_role,
         email,
         phone,
-        notes
-        `
-      )
+        notes,
+        auth_user_id,
+        accepted_terms,
+        accepted_terms_pdf_path,
+        accepted_terms_pdf_sha256,
+        accepted_terms_accepted_at,
+        terms_version
+      `)
       .eq("id", body.request_id)
       .maybeSingle();
 
-    if (reqErr) {
-      return json(500, { error: reqErr.message });
+    if (reqErr) return mapDbErrorToResponse(req, 500, "db_read_failed");
+    if (!row) return mapDbErrorToResponse(req, 404, "not_found");
+
+    // ✅ Autorización mínima segura:
+    // - si la request ya tiene auth_user_id -> debe ser el mismo
+    // - si no, se valida por email (match con email del JWT)
+    const rowAuthUserId = (row as any).auth_user_id as string | null;
+    const rowEmail = normalizeEmail((row as any).email);
+    const userEmail = normalizeEmail(user.email);
+
+    if (rowAuthUserId) {
+      if (rowAuthUserId !== user.id) return mapDbErrorToResponse(req, 403, "forbidden");
+    } else {
+      if (!rowEmail || !userEmail || rowEmail !== userEmail) return mapDbErrorToResponse(req, 403, "forbidden");
     }
 
-    if (!row) {
-      return json(404, { error: "request not found" });
+    // ✅ Idempotencia: si ya aceptó, devuelve lo existente (sin regenerar)
+    if ((row as any).accepted_terms === true && (row as any).accepted_terms_pdf_path) {
+      return json(req, 200, {
+        ok: true,
+        proof: {
+          request_id: row.id,
+          bucket: "debacu_legal_acceptances",
+          path: (row as any).accepted_terms_pdf_path,
+          sha256: (row as any).accepted_terms_pdf_sha256,
+          accepted_at: (row as any).accepted_terms_accepted_at,
+          terms_version: (row as any).terms_version ?? TERMS_VERSION,
+        },
+      });
     }
 
-    // 🧯 Validaciones mínimas reales
-    if (!row.company_name) return json(400, { error: "company_name missing" });
-    if (!row.cif) return json(400, { error: "cif missing" });
-    if (!row.contact_name) return json(400, { error: "contact_name missing" });
-    if (!row.email) return json(400, { error: "email missing" });
+    // 🧯 Validaciones mínimas reales (para PDF coherente)
+    if (!(row as any).company_name) return mapDbErrorToResponse(req, 400, "missing_company_name");
+    if (!(row as any).cif) return mapDbErrorToResponse(req, 400, "missing_cif");
+    if (!(row as any).contact_name) return mapDbErrorToResponse(req, 400, "missing_contact_name");
+    if (!(row as any).email) return mapDbErrorToResponse(req, 400, "missing_email");
 
-    const acceptedAt = new Date().toISOString();
+    const acceptedAt = nowIso();
+    const ip = getClientIp(req);
+    const userAgent = req.headers.get("user-agent") ?? null;
 
     const pdfData: PdfData = {
       request_id: row.id,
       terms_version: TERMS_VERSION,
 
-      company_name: row.company_name,
-      legal_name: row.legal_name,
-      cif: row.cif,
-      address: row.address,
-      city: row.city,
-      country: row.country,
-      property_type: row.property_type as PropertyType | null,
-      rooms_count: row.rooms_count,
-      website: row.website,
+      company_name: (row as any).company_name,
+      legal_name: (row as any).legal_name,
+      cif: (row as any).cif,
+      address: (row as any).address,
+      city: (row as any).city,
+      country: (row as any).country,
+      property_type: ((row as any).property_type as PropertyType | null) ?? null,
+      rooms_count: (row as any).rooms_count,
+      website: (row as any).website,
 
-      contact_name: row.contact_name,
-      contact_role: row.contact_role,
-      email: row.email,
-      phone: row.phone,
+      contact_name: (row as any).contact_name,
+      contact_role: (row as any).contact_role,
+      email: (row as any).email,
+      phone: (row as any).phone,
 
-      notes: row.notes,
+      notes: (row as any).notes,
+
+      accepted_ip: ip,
+      accepted_user_agent: userAgent,
     };
 
     // 📄 Generar PDF legal completo
@@ -753,31 +642,21 @@ Deno.serve(async (req) => {
     const digest = await crypto.subtle.digest("SHA-256", pdfBytes);
     const sha256 = toHex(digest);
 
-    const safeTs = acceptedAt.replace(/[:.]/g, "-");
     const bucket = "debacu_legal_acceptances";
-    const path = `debacu_eval/${row.id}/terms_acceptance_${safeTs}.pdf`;
+    const safeTs = safeTimestamp(acceptedAt);
+    const uniq = crypto.randomUUID(); // evita colisiones + evita necesitar upsert
+    const path = `debacu_eval/${row.id}/terms_acceptance_${safeTs}_${uniq}.pdf`;
 
-    // ☁️ Guardar PDF en Storage (idempotente)
+    // ☁️ Guardar PDF en Storage (NO upsert)
     const { error: uploadError } = await supabase.storage
       .from(bucket)
-      .upload(path, pdfBytes, {
-        contentType: "application/pdf",
-        upsert: true,
-      });
+      .upload(path, pdfBytes, { contentType: "application/pdf", upsert: false });
 
     if (uploadError) {
-      return json(500, { error: `upload failed: ${uploadError.message}` });
+      return mapDbErrorToResponse(req, 500, "storage_upload_failed");
     }
 
-    // 🧾 Evidencias legales
-    const ip =
-      req.headers.get("x-forwarded-for") ??
-      req.headers.get("cf-connecting-ip") ??
-      null;
-
-    const userAgent = req.headers.get("user-agent") ?? null;
-
-    // 🧷 Persistir aceptación
+    // 🧷 Persistir aceptación (y fijar auth_user_id si no estaba)
     const { error: updateError } = await supabase
       .from("debacu_eval_access_requests")
       .update({
@@ -788,15 +667,22 @@ Deno.serve(async (req) => {
         accepted_terms_ip: ip,
         accepted_terms_user_agent: userAgent,
         terms_version: TERMS_VERSION,
+        auth_user_id: rowAuthUserId ?? user.id,
       })
       .eq("id", row.id);
 
     if (updateError) {
-      return json(500, { error: updateError.message });
+      // 🧹 Higiene: evitar orphan file en Storage
+      try {
+        await supabase.storage.from(bucket).remove([path]);
+      } catch {
+        // best-effort: no romper respuesta por fallo de borrado
+      }
+      return mapDbErrorToResponse(req, 500, "db_update_failed");
     }
 
-    // ✅ OK
-    return json(200, {
+    return json(req, 200, {
+      ok: true,
       proof: {
         request_id: row.id,
         bucket,
@@ -807,8 +693,13 @@ Deno.serve(async (req) => {
       },
     });
   } catch (e: any) {
-    return json(500, {
-      error: e?.message ?? String(e),
-    });
+    const msg = e?.message ?? String(e);
+
+    // requireUser debería lanzar algo tipo UNAUTHENTICATED/UNAUTHORIZED
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
+      return json(req, 401, errPayload("UNAUTHENTICATED"));
+    }
+
+    return json(req, 500, errPayload("internal_error"));
   }
 });

@@ -1,93 +1,93 @@
+// supabase/functions/debacu_eval_username_to_email/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
 
-/* ENV */
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  };
+function mustEnv(name: string) {
+  const v = Deno.env.get(name);
+  if (!v) throw new Error(`Missing env var ${name}`);
+  return v;
 }
 
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8" },
+const SUPABASE_URL = mustEnv("SUPABASE_URL");
+const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+type Body = {
+  usernameOrEmail?: string;
+  appCode?: string; // default: "DEBACU_EVAL"
+};
+
+function norm(s: unknown) {
+  return String(s ?? "").trim();
+}
+
+function isEmail(s: string) {
+  return s.includes("@");
+}
+
+function serviceClient() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
   });
 }
 
-type Body = {
-  usernameOrEmail: string;
-  appCode?: string; // "DEBACU_EVAL"
-};
-
-function norm(s: string) {
-  return (s ?? "").trim();
+function err(
+  req: Request,
+  status: number,
+  detail:
+    | "UNAUTHENTICATED"
+    | "missing_usernameOrEmail"
+    | "missing_appCode"
+    | "user_not_found"
+    | "request_failed",
+) {
+  return json(req, status, { ok: false, error: "request_failed", detail });
 }
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders(req) });
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "METHOD_NOT_ALLOWED" });
-
-  try {
-    const body = (await req.json()) as Body;
-    const usernameOrEmail = norm(body.usernameOrEmail);
-    const appCode = norm(body.appCode ?? "DEBACU_EVAL");
-
-    if (!usernameOrEmail) {
-      return json(req, 400, {
-        ok: false,
-        error_obj: { code: "VALIDATION_ERROR", message: "usernameOrEmail required" },
-      });
-    }
-
-    // Si ya es email
-    if (usernameOrEmail.includes("@")) {
-      return json(req, 200, { ok: true, data: { email: usernameOrEmail.toLowerCase() } });
-    }
-
-    // Resolver username -> email (asunción típica: customers.service_username -> customers.email)
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-
-    const { data, error } = await admin
-      .from("customers")
-      .select("email")
-      .eq("app_id", appCode)
-      .eq("service_username", usernameOrEmail)
-      .maybeSingle();
-
-    if (error) {
-      return json(req, 500, {
-        ok: false,
-        error_obj: { code: "DB_ERROR", message: error.message },
-      });
-    }
-
-    const email = (data?.email ?? "").trim().toLowerCase();
-    if (!email) {
-      return json(req, 404, {
-        ok: false,
-        error_obj: { code: "USER_NOT_FOUND", message: "username not mapped to email" },
-      });
-    }
-
-    return json(req, 200, { ok: true, data: { email } });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "UNKNOWN";
-    return json(req, 500, { ok: false, error_obj: { code: "UNEXPECTED", message: msg } });
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "request_failed", detail: "METHOD_NOT_ALLOWED" });
   }
+
+  // ✅ JWT-only (si esto lo usas en login, aquí se romperá)
+  const user = await requireUser(req).catch(() => null);
+  if (!user?.id) return err(req, 401, "UNAUTHENTICATED");
+
+  let body: Body = {};
+  try {
+    body = (await req.json()) as Body;
+  } catch {
+    body = {};
+  }
+
+  const usernameOrEmail = norm(body.usernameOrEmail);
+  const appCode = norm(body.appCode || "DEBACU_EVAL");
+
+  if (!usernameOrEmail) return err(req, 400, "missing_usernameOrEmail");
+  if (!appCode) return err(req, 400, "missing_appCode");
+
+  // Si ya es email, devolvemos normalizado
+  if (isEmail(usernameOrEmail)) {
+    return json(req, 200, { ok: true, data: { email: usernameOrEmail.toLowerCase() } });
+  }
+
+  // Resolver username -> email (customers.service_username -> customers.email)
+  const sb = serviceClient();
+
+  const { data, error } = await sb
+    .from("customers")
+    .select("email")
+    .eq("app_id", appCode)
+    .eq("service_username", usernameOrEmail)
+    .maybeSingle();
+
+  if (error) return err(req, 500, "request_failed");
+
+  const email = norm(data?.email).toLowerCase();
+  if (!email) return err(req, 404, "user_not_found");
+
+  return json(req, 200, { ok: true, data: { email } });
 });

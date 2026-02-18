@@ -1,133 +1,164 @@
+// supabase/functions/debacu_eval_request_access/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+import { json, preflight } from "../_shared/cors.ts";
+import { supabaseServiceClient } from "../_shared/auth.ts";
+
+type Body = {
+  company_name?: string;
+  legal_name?: string | null;
+  cif?: string;
+
+  address?: string | null;
+  city?: string | null;
+  country?: string | null;
+
+  property_type?: string | null;
+  rooms_count?: number | null;
+
+  website?: string | null;
+
+  contact_name?: string;
+  contact_role?: string | null;
+
+  email?: string;
+  phone?: string | null;
+
+  accepted_terms?: boolean;
+  accepted_professional_use?: boolean;
+
+  notes?: string | null;
 };
 
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
 }
-
-function mustEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env var: ${name}`);
-  return v;
+function safeUpper(v: any) {
+  return typeof v === "string" ? v.trim().toUpperCase() : "";
 }
-
+function safeLower(v: any) {
+  return typeof v === "string" ? v.trim().toLowerCase() : "";
+}
+function safeNullableStr(v: any) {
+  const s = safeStr(v);
+  return s ? s : null;
+}
+function safeNullableNumber(v: any) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 function isEmail(s: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return json(200, { ok: true });
-
+async function readJsonSafe<T>(req: Request): Promise<T> {
   try {
-    const SUPABASE_URL = mustEnv("SUPABASE_URL");
-    const SERVICE_ROLE = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-
-    const body = await req.json().catch(() => ({}));
-
-    const company_name = String(body?.company_name ?? "").trim();
-    const legal_name = String(body?.legal_name ?? "").trim() || null;
-    const cif = String(body?.cif ?? "").trim();
-
-    const address = String(body?.address ?? "").trim() || null;
-    const city = String(body?.city ?? "").trim() || null;
-    const country = String(body?.country ?? "ESP").trim().toUpperCase() || "ESP";
-
-    const property_type = String(body?.property_type ?? "").trim();
-    const rooms_count_raw = body?.rooms_count;
-    const rooms_count =
-      typeof rooms_count_raw === "number" && Number.isFinite(rooms_count_raw)
-        ? rooms_count_raw
-        : null;
-
-    const website = String(body?.website ?? "").trim() || null;
-
-    const contact_name = String(body?.contact_name ?? "").trim();
-    const contact_role = String(body?.contact_role ?? "").trim() || null;
-
-    const email = String(body?.email ?? "").trim().toLowerCase();
-    const phone = String(body?.phone ?? "").trim() || null;
-
-    const accepted_terms = !!body?.accepted_terms;
-    const accepted_professional_use = !!body?.accepted_professional_use;
-
-    const notes = String(body?.notes ?? "").trim() || null;
-
-    // Validaciones mínimas
-    if (!company_name || !cif || !contact_name || !email) {
-      return json(400, { error: "Faltan campos obligatorios" });
-    }
-    if (!isEmail(email)) return json(400, { error: "Email inválido" });
-    if (!accepted_terms || !accepted_professional_use) {
-      return json(400, { error: "Debe aceptar términos y uso profesional" });
-    }
-
-    // Deduplicación: si hay una PENDING con ese email, no crear otra
-    const { data: existing, error: existingError } = await supabase
-      .from("debacu_eval_access_requests")
-      .select("id,status")
-      .eq("email", email)
-      .eq("status", "PENDING")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (existingError) {
-      console.error("existingError:", existingError);
-      return json(500, { error: "Error comprobando solicitud existente" });
-    }
-
-    if (existing?.id) {
-      return json(200, { ok: true, id: existing.id, duplicate: true });
-    }
-
-    const payload = {
-      status: "PENDING",
-      company_name,
-      legal_name,
-      cif,
-      address,
-      city,
-      country,
-      property_type,
-      rooms_count,
-      website,
-      contact_name,
-      contact_role,
-      email,
-      phone,
-      accepted_terms,
-      accepted_professional_use,
-      notes,
-    };
-
-    const { data, error } = await supabase
-      .from("debacu_eval_access_requests")
-      .insert(payload)
-      .select("id")
-      .single();
-
-    if (error) {
-      console.error("insert error:", error);
-      return json(500, { error: "Error creando solicitud", detail: error.message });
-    }
-
-    return json(200, { ok: true, id: data.id });
-  } catch (e) {
-    console.error("FATAL request access error:", e);
-    return json(500, { error: "Error", detail: String(e?.message ?? e) });
+    const t = await req.text();
+    if (!t) return {} as T;
+    return JSON.parse(t) as T;
+  } catch {
+    return {} as T;
   }
+}
+
+function fail(req: Request, status: number, detail: string, extra?: Record<string, unknown>) {
+  return json(req, status, {
+    ok: false,
+    error: "request_failed",
+    detail,
+    ...(extra ?? {}),
+  });
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return fail(req, 405, "method_not_allowed");
+
+  // Endpoint público: no JWT.
+  const body = await readJsonSafe<Body>(req);
+
+  const company_name = safeStr(body.company_name);
+  const legal_name = safeNullableStr(body.legal_name);
+
+  const cif = safeStr(body.cif);
+
+  const address = safeNullableStr(body.address);
+  const city = safeNullableStr(body.city);
+  const country = safeUpper(body.country || "ESP") || "ESP";
+
+  const property_type = safeNullableStr(body.property_type);
+  const rooms_count = safeNullableNumber(body.rooms_count);
+
+  const website = safeNullableStr(body.website);
+
+  const contact_name = safeStr(body.contact_name);
+  const contact_role = safeNullableStr(body.contact_role);
+
+  const email = safeLower(body.email);
+  const phone = safeNullableStr(body.phone);
+
+  const accepted_terms = !!body.accepted_terms;
+  const accepted_professional_use = !!body.accepted_professional_use;
+
+  const notes = safeNullableStr(body.notes);
+
+  // Validaciones mínimas
+  if (!company_name) return fail(req, 400, "missing_company_name");
+  if (!cif) return fail(req, 400, "missing_cif");
+  if (!contact_name) return fail(req, 400, "missing_contact_name");
+  if (!email) return fail(req, 400, "missing_email");
+  if (!isEmail(email)) return fail(req, 400, "invalid_email");
+
+  if (!accepted_terms || !accepted_professional_use) {
+    return fail(req, 400, "missing_acceptance");
+  }
+
+  const sb = supabaseServiceClient();
+
+  // Deduplicación: si hay una PENDING con ese email, devolver esa
+  const { data: existing, error: existingError } = await sb
+    .from("debacu_eval_access_requests")
+    .select("id,status")
+    .eq("email", email)
+    .eq("status", "PENDING")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existingError) return fail(req, 500, "db_read_failed");
+  if (existing?.id) {
+    return json(req, 200, { ok: true, id: existing.id, duplicate: true });
+  }
+
+  const payload = {
+    status: "PENDING",
+    company_name,
+    legal_name,
+    cif,
+    address,
+    city,
+    country,
+    property_type,
+    rooms_count,
+    website,
+    contact_name,
+    contact_role,
+    email,
+    phone,
+    accepted_terms,
+    accepted_professional_use,
+    notes,
+  };
+
+  const { data, error } = await sb
+    .from("debacu_eval_access_requests")
+    .insert(payload)
+    .select("id, created_at")
+    .single();
+
+  if (error) return fail(req, 500, "db_insert_failed");
+
+  // created_at real (por si lo necesitas en UI/logs)
+  return json(req, 200, { ok: true, id: data.id, created_at: data.created_at });
 });

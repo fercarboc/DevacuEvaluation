@@ -1,40 +1,11 @@
+// supabase/functions/debacu_eval_add/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
 
-/* ======================================================
- * CONST
- * ====================================================== */
 const APP_ID = "DEBACU_EVAL";
-
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-/* ======================================================
- * CORS + RESP
- * ====================================================== */
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    Vary: "Origin",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json; charset=utf-8" },
-  });
-}
 
 function mustEnv(name: string) {
   const v = Deno.env.get(name);
@@ -42,88 +13,36 @@ function mustEnv(name: string) {
   return v;
 }
 
+const SUPABASE_URL = mustEnv("SUPABASE_URL");
+const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+function sbService() {
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
 function logLine(payload: Record<string, unknown>) {
   console.log(JSON.stringify(payload));
 }
 
-/* ======================================================
- * Clients
- * ====================================================== */
-function userClient(req: Request, supabaseUrl: string, anonKey: string) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(supabaseUrl, anonKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
-
-function adminClient(supabaseUrl: string, serviceRole: string) {
-  return createClient(supabaseUrl, serviceRole, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
-
-/* ======================================================
- * AuthN (JWT)
- * ====================================================== */
-async function requireJwtUser(sbUser: ReturnType<typeof createClient>) {
-  const { data, error } = await sbUser.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
-
-/* ======================================================
- * AuthZ (tenant context)
- * ====================================================== */
-async function requireOrgMemberAndCustomerId(admin: ReturnType<typeof createClient>, userId: string) {
-  // 1) membership (coge el más reciente ACTIVE)
-  const { data: mem, error: memErr } = await admin
-    .from("debacu_eval_org_members")
-    .select("org_id, role, status, created_at")
-    .eq("user_id", userId)
-    .eq("status", "ACTIVE")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
-
-  const org_id = String(mem.org_id);
-  const role = mem.role ?? null;
-
-  // 2) customer_id: entitlements view (si existe)
-  let customer_id: string | null = null;
-  try {
-    const { data: ent, error: entErr } = await admin
-      .from("debacu_eval_org_entitlements_v")
-      .select("customer_id")
-      .eq("org_id", org_id)
-      .maybeSingle();
-
-    if (entErr) {
-      logLine({ fn: "debacu-eval-add", stage: "entitlements_err", org_id, detail: entErr.message });
-    } else if (ent?.customer_id) {
-      customer_id = String(ent.customer_id);
-    }
-  } catch {
-    // ignore (view may not exist)
-  }
-
-  // 3) fallback organizations
-  if (!customer_id) {
-    const { data: org, error: orgErr } = await admin
-      .from("debacu_eval_organizations")
-      .select("customer_id")
-      .eq("id", org_id)
-      .maybeSingle();
-
-    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
-    customer_id = String(org.customer_id);
-  }
-
-  return { org_id, role, customer_id, app_id: APP_ID };
+function err(
+  req: Request,
+  status: number,
+  detail:
+    | "UNAUTHENTICATED"
+    | "FORBIDDEN"
+    | "missing_org_id"
+    | "invalid_json_body"
+    | "missing_input"
+    | "must_accept_declaration"
+    | "ONBOARDING_REQUIRED"
+    | "missing_required_fields"
+    | "INCIDENT_INVALID"
+    | "insert_failed"
+    | "request_failed",
+) {
+  return json(req, status, { ok: false, error: "request_failed", detail });
 }
 
 /* ======================================================
@@ -132,23 +51,19 @@ async function requireOrgMemberAndCustomerId(admin: ReturnType<typeof createClie
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
-
 function str(v: unknown) {
   return String(v ?? "").trim();
 }
-
 function num(v: unknown): number | null {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(String(v).replace(",", "."));
   return Number.isFinite(n) ? n : null;
 }
-
 function clampInt(v: unknown, min: number, max: number) {
   const n = Math.trunc(Number(v));
   if (!Number.isFinite(n)) return min;
   return Math.min(max, Math.max(min, n));
 }
-
 function seasonMultiplier(season: string | null, profile: any) {
   const high = num(profile?.season_mult_high) ?? 1;
   const low = num(profile?.season_mult_low) ?? 1;
@@ -158,11 +73,56 @@ function seasonMultiplier(season: string | null, profile: any) {
 }
 
 /* ======================================================
+ * AuthZ tenant (STRICT: org_id requerido)
+ * ====================================================== */
+async function requireOrgContext(
+  admin: ReturnType<typeof sbService>,
+  user_id: string,
+  org_id: string,
+) {
+  // membership ACTIVE en org
+  const { data: mem, error: memErr } = await admin
+    .from("debacu_eval_org_members")
+    .select("org_id, role, status")
+    .eq("user_id", user_id)
+    .eq("org_id", org_id)
+    .eq("status", "ACTIVE")
+    .maybeSingle();
+
+  if (memErr || !mem?.org_id) return null;
+
+  // customer_id preferente por view
+  let customer_id: string | null = null;
+
+  const { data: ent, error: entErr } = await admin
+    .from("debacu_eval_org_entitlements_v")
+    .select("customer_id")
+    .eq("org_id", org_id)
+    .maybeSingle();
+
+  if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
+
+  // fallback organizations
+  if (!customer_id) {
+    const { data: org, error: orgErr } = await admin
+      .from("debacu_eval_organizations")
+      .select("customer_id")
+      .eq("id", org_id)
+      .maybeSingle();
+
+    if (orgErr || !org?.customer_id) return null;
+    customer_id = String(org.customer_id);
+  }
+
+  return { org_id, role: mem.role ?? null, customer_id, app_id: APP_ID };
+}
+
+/* ======================================================
  * Data fetchers
  * ====================================================== */
 
 /** ✅ TABLA CORRECTA: debacu_eval_hotel_profile */
-async function getHotelProfile(admin: ReturnType<typeof createClient>, customer_id: string) {
+async function getHotelProfile(admin: ReturnType<typeof sbService>, customer_id: string) {
   const { data, error } = await admin
     .from("debacu_eval_hotel_profile")
     .select("customer_id, hotel_category, adr_real, season_mult_high, season_mult_low, profile_completed")
@@ -173,7 +133,7 @@ async function getHotelProfile(admin: ReturnType<typeof createClient>, customer_
   return data ?? null;
 }
 
-async function getAdrReference(admin: ReturnType<typeof createClient>, hotel_category: number) {
+async function getAdrReference(admin: ReturnType<typeof sbService>, hotel_category: number) {
   const { data, error } = await admin
     .from("debacu_adr_reference_by_category")
     .select("adr_reference")
@@ -184,12 +144,10 @@ async function getAdrReference(admin: ReturnType<typeof createClient>, hotel_cat
   return num(data?.adr_reference);
 }
 
-async function getIncidentCatalog(admin: ReturnType<typeof createClient>, incident_type: string) {
+async function getIncidentCatalog(admin: ReturnType<typeof sbService>, incident_type: string) {
   const { data, error } = await admin
     .from("debacu_incident_catalog")
-    .select(
-      "incident_type, is_active, severity, default_gross_min, default_gross_max, default_recovery_pct, title, description, suggested_actions",
-    )
+    .select("incident_type, is_active, severity, default_gross_min, default_gross_max, default_recovery_pct, title, description, suggested_actions")
     .eq("incident_type", incident_type)
     .maybeSingle();
 
@@ -199,12 +157,10 @@ async function getIncidentCatalog(admin: ReturnType<typeof createClient>, incide
   return data;
 }
 
-async function getIncidentOverride(admin: ReturnType<typeof createClient>, customer_id: string, incident_type: string) {
+async function getIncidentOverride(admin: ReturnType<typeof sbService>, customer_id: string, incident_type: string) {
   const { data, error } = await admin
     .from("debacu_hotel_incident_overrides")
-    .select(
-      "incident_type, is_active, severity_override, default_gross_min_override, default_gross_max_override, default_recovery_pct_override, title_override, description_override, suggested_actions_override",
-    )
+    .select("incident_type, is_active, severity_override, default_gross_min_override, default_gross_max_override, default_recovery_pct_override, title_override, description_override, suggested_actions_override")
     .eq("customer_id", customer_id)
     .eq("incident_type", incident_type)
     .maybeSingle();
@@ -215,10 +171,8 @@ async function getIncidentOverride(admin: ReturnType<typeof createClient>, custo
   return data;
 }
 
-/**
- * Fuente de precio por hotel: debacu_hotel_item_catalog
- */
-async function getHotelItemUnitPrice(admin: ReturnType<typeof createClient>, customer_id: string, item_code: string) {
+/** Fuente de precio por hotel: debacu_hotel_item_catalog */
+async function getHotelItemUnitPrice(admin: ReturnType<typeof sbService>, customer_id: string, item_code: string) {
   const { data, error } = await admin
     .from("debacu_hotel_item_catalog")
     .select("unit_price, is_active")
@@ -235,43 +189,37 @@ async function getHotelItemUnitPrice(admin: ReturnType<typeof createClient>, cus
 /* ======================================================
  * MAIN
  * ====================================================== */
-serve(async (req) => {
-  const origin = req.headers.get("origin");
+Deno.serve(async (req) => {
   const FN = "debacu-eval-add";
 
-  // Preflight
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(origin) });
-  }
+  if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") {
-    return json(origin, 405, { ok: false, error: "method_not_allowed" });
+    return json(req, 405, { ok: false, error: "request_failed", detail: "METHOD_NOT_ALLOWED" });
   }
 
   try {
-    const SUPABASE_URL = mustEnv("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-    const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
+    // 1) JWT user (JWT-only)
+    const user = await requireUser(req);
+    if (!user?.id) return err(req, 401, "UNAUTHENTICATED");
 
-    const admin = adminClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-    const sbUser = userClient(req, SUPABASE_URL, ANON_KEY);
-
-    // 1) JWT
-    const user = await requireJwtUser(sbUser);
-
-    // 2) tenant context
-    const ctx = await requireOrgMemberAndCustomerId(admin, user.id);
-
-    // 3) body
+    // 2) body
     const body = await req.json().catch(() => null);
-    if (!body) return json(origin, 400, { ok: false, error: "invalid_json_body" });
+    if (!body) return err(req, 400, "invalid_json_body");
+
+    const org_id = str(body.org_id ?? body.orgId);
+    if (!org_id) return err(req, 400, "missing_org_id");
 
     const accept_declaration = body.accept_declaration ?? body.acceptDeclaration ?? true;
     const input = body.input;
 
-    if (!input) return json(origin, 400, { ok: false, error: "missing_input" });
-    if (accept_declaration !== true) {
-      return json(origin, 400, { ok: false, error: "must_accept_declaration" });
-    }
+    if (!input) return err(req, 400, "missing_input");
+    if (accept_declaration !== true) return err(req, 400, "must_accept_declaration");
+
+    const admin = sbService();
+
+    // 3) tenant context (STRICT)
+    const ctx = await requireOrgContext(admin, user.id, org_id);
+    if (!ctx) return err(req, 403, "FORBIDDEN");
 
     logLine({
       fn: FN,
@@ -282,24 +230,14 @@ serve(async (req) => {
       app_id: ctx.app_id,
     });
 
-    // 4) perfil (✅ ahora mira debacu_eval_hotel_profile)
+    // 4) perfil hotel (obligatorio)
     const profile = await getHotelProfile(admin, ctx.customer_id);
 
     const hotelCategoryOk = profile?.hotel_category !== null && profile?.hotel_category !== undefined;
     const profileCompletedOk = profile?.profile_completed === true;
 
     if (!profile || !hotelCategoryOk || !profileCompletedOk) {
-      return json(origin, 409, {
-        ok: false,
-        error: "ONBOARDING_REQUIRED",
-        detail: "Perfil de hotel incompleto (falta hotel_category o profile_completed).",
-        debug: {
-          customer_id: ctx.customer_id,
-          has_profile_row: !!profile,
-          hotel_category: profile?.hotel_category ?? null,
-          profile_completed: profile?.profile_completed ?? null,
-        },
-      });
+      return err(req, 409, "ONBOARDING_REQUIRED");
     }
 
     // 5) campos base
@@ -308,7 +246,7 @@ serve(async (req) => {
     const rating = clampInt(input.rating, 1, 5);
 
     if (!document || !full_name) {
-      return json(origin, 400, { ok: false, error: "missing_required_fields", detail: "document y full_name" });
+      return err(req, 400, "missing_required_fields");
     }
 
     const incident_type = str(input.incident_type ?? input.incidentType) || null;
@@ -329,9 +267,7 @@ serve(async (req) => {
 
     if (incident_type) {
       const cat = await getIncidentCatalog(admin, incident_type);
-      if (!cat) {
-        return json(origin, 400, { ok: false, error: "INCIDENT_INVALID", detail: incident_type });
-      }
+      if (!cat) return err(req, 400, "INCIDENT_INVALID");
 
       const ovr = await getIncidentOverride(admin, ctx.customer_id, incident_type);
       const mult = seasonMultiplier(season_applied, profile);
@@ -416,8 +352,8 @@ serve(async (req) => {
       .single();
 
     if (error) {
-      logLine({ fn: FN, stage: "insert_err", detail: error.message, code: (error as any).code });
-      return json(origin, 500, { ok: false, error: "insert_failed", detail: error.message });
+      logLine({ fn: FN, stage: "insert_err", code: (error as any)?.code ?? null, msg: error.message });
+      return err(req, 500, "insert_failed");
     }
 
     logLine({
@@ -427,24 +363,13 @@ serve(async (req) => {
       org_id: ctx.org_id,
       customer_id: ctx.customer_id,
       app_id: ctx.app_id,
-      status: 200,
       evaluation_id: data?.id ?? null,
     });
 
-    return json(origin, 200, { ok: true, row: data });
-  } catch (e: any) {
-    const msg = String(e?.message ?? e);
-
-    const status =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("MISSING_ENV:")
-        ? 500
-        : msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_") || msg.startsWith("FORBIDDEN")
-        ? 403
-        : 500;
-
-    logLine({ fn: "debacu-eval-add", stage: "error", status, detail: msg });
-    return json(origin, status, { ok: false, error: "request_failed", detail: msg });
+    return json(req, 200, { ok: true, row: data });
+  } catch (e) {
+    console.error("debacu-eval-add error:", e);
+    // No leaks
+    return err(req, 500, "request_failed");
   }
 });

@@ -1,97 +1,112 @@
+// supabase/functions/admin_audit_export_signed_url/index.ts
+// (ponle el nombre que uses en tu repo)
 // deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const corsHeaders: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Max-Age": "86400",
+import { json, preflight } from "../_shared/cors.ts";
+import { requireAdmin, supabaseServiceClient } from "../_shared/auth.ts";
+
+type Body = {
+  export_id?: string;
+  expires_seconds?: number;
 };
 
-function json(res: any, status = 200) {
-  return new Response(JSON.stringify(res), {
-    status,
-    headers: { ...corsHeaders, "content-type": "application/json; charset=utf-8" },
-  });
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
 }
 
-function requireEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env ${name}`);
-  return v;
+function clampInt(n: unknown, min: number, max: number, def: number) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return def;
+  return Math.max(min, Math.min(max, Math.trunc(x)));
 }
 
-type Body = { export_id: string; expires_seconds?: number };
+function fail(req: Request, status: number, detail: string, extra?: Record<string, unknown>) {
+  return json(req, status, { ok: false, error: "request_failed", detail, ...(extra ?? {}) });
+}
+
+async function readJsonSafe<T>(req: Request): Promise<T> {
+  try {
+    const t = await req.text();
+    if (!t) return {} as T;
+    return JSON.parse(t) as T;
+  } catch {
+    return {} as T;
+  }
+}
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return fail(req, 405, "method_not_allowed");
 
+  // 1) ADMIN JWT-only (sin emails hardcode)
+  let adminUser: any;
   try {
-    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+    const r = await requireAdmin(req);
+    adminUser = r.user;
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return fail(req, 401, "UNAUTHORIZED");
+    return fail(req, 403, "FORBIDDEN");
+  }
 
-    const SUPABASE_URL = requireEnv("SUPABASE_URL");
-    const SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  // 2) body
+  const body = await readJsonSafe<Body>(req);
+  const export_id = safeStr(body.export_id);
+  if (!export_id) return fail(req, 400, "missing_export_id");
 
-    const authHeader = req.headers.get("authorization") || "";
-    const jwt = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-    if (!jwt) return json({ error: "Missing Bearer token" }, 401);
+  // 3) expires clamp: 60..3600, default 600
+  const expires = clampInt(body.expires_seconds, 60, 3600, 600);
 
-    // ✅ Cliente para validar usuario usando el JWT
-    const sbUser = createClient(SUPABASE_URL, SERVICE_KEY, {
-      global: { headers: { Authorization: `Bearer ${jwt}` } },
+  // 4) service role (DB + Storage)
+  const sb = supabaseServiceClient();
+
+  // 5) load export
+  const { data: exp, error: expErr } = await sb
+    .from("debacu_eval_audit_exports")
+    .select("id, storage_bucket, storage_path")
+    .eq("id", export_id)
+    .maybeSingle();
+
+  if (expErr) return fail(req, 500, "DB_ERROR");
+  if (!exp?.id) return fail(req, 404, "EXPORT_NOT_FOUND");
+
+  const bucket = safeStr((exp as any).storage_bucket);
+  const path = safeStr((exp as any).storage_path);
+  if (!bucket || !path) return fail(req, 500, "DATA_INCONSISTENT");
+
+  // 6) download log (trazabilidad real)
+  const ip =
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    req.headers.get("x-real-ip") ??
+    null;
+
+  const userAgent = req.headers.get("user-agent") ?? null;
+
+  const { error: logErr } = await sb
+    .from("debacu_eval_audit_export_downloads")
+    .insert({
+      export_id: exp.id,
+      downloaded_by: adminUser.id,
+      ip,
+      user_agent: userAgent,
     });
 
-    const { data: userData, error: userErr } = await sbUser.auth.getUser();
-    if (userErr || !userData?.user) return json({ error: "Invalid auth" }, 401);
+  if (logErr) return fail(req, 500, "DB_ERROR");
 
-    const userId = userData.user.id;
-    const email = (userData.user.email || "").toLowerCase();
-    if (email !== "admin@debacu.com") return json({ error: "Forbidden" }, 403);
+  // 7) signed url
+  const { data: signed, error: signErr } = await sb.storage
+    .from(bucket)
+    .createSignedUrl(path, expires);
 
-    const body = (await req.json()) as Body;
-    if (!body.export_id) return json({ error: "export_id required" }, 400);
+  if (signErr) return fail(req, 500, "STORAGE_SIGN_FAILED");
 
-    const sb = createClient(SUPABASE_URL, SERVICE_KEY);
-
-    const { data: exp, error: expErr } = await sb
-      .from("debacu_eval_audit_exports")
-      .select("id, storage_bucket, storage_path")
-      .eq("id", body.export_id)
-      .maybeSingle();
-
-    if (expErr) return json({ error: expErr.message }, 400);
-    if (!exp) return json({ error: "Export not found" }, 404);
-
-    const expires = Math.min(Math.max(body.expires_seconds ?? 600, 60), 3600);
-
-    // ✅ LOG de descarga (trazabilidad real)
-    const ip =
-      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-      req.headers.get("x-real-ip") ??
-      null;
-
-    const userAgent = req.headers.get("user-agent") ?? null;
-
-    const { error: logErr } = await sb
-      .from("debacu_eval_audit_export_downloads")
-      .insert({
-        export_id: exp.id,
-        downloaded_by: userId,
-        ip,
-        user_agent: userAgent,
-      });
-
-    if (logErr) return json({ error: `Download log failed: ${logErr.message}` }, 400);
-
-    // ✅ Signed URL
-    const { data: signed, error: signErr } = await sb.storage
-      .from(exp.storage_bucket)
-      .createSignedUrl(exp.storage_path, expires);
-
-    if (signErr) return json({ error: signErr.message }, 400);
-
-    return json({ signed_url: signed?.signedUrl, expires_seconds: expires });
-  } catch (e: any) {
-    return json({ error: e?.message || "Unexpected error" }, 500);
-  }
+  return json(req, 200, {
+    ok: true,
+    data: {
+      signed_url: signed?.signedUrl ?? null,
+      expires_seconds: expires,
+    },
+  });
 });

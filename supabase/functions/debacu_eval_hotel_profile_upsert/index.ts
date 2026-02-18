@@ -1,47 +1,75 @@
+// supabase/functions/debacu_eval_hotel_profile_upsert/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-/** CORS */
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
+/** ======================================================
+ * Types
+ * ====================================================== */
+type Body = {
+  org_id?: string | null;
+  app_id?: string | null;
+  appId?: string | null;
+
+  hotel_name?: string | null;
+  property_type?: string | null;
+  hotel_category?: number | null;
+
+  country?: string | null;
+  province?: string | null;
+  city?: string | null;
+  address?: string | null;
+  postal_code?: string | null;
+
+  contact_email?: string | null;
+  contact_phone?: string | null;
+  contact_person?: string | null;
+  contact_role?: string | null;
+
+  monthly_stays_estimated?: any;
+  adr_real?: any;
+  season_mult_high?: any;
+  season_mult_low?: any;
+  currency?: string | null;
+
+  occupancy_target?: any;
+  cancellation_rate_target?: any;
+  revpar_target?: any;
+
+  timezone?: string | null;
+  checkin_time?: string | null;
+  checkout_time?: string | null;
+  rooms_count?: any;
+  max_occupancy?: any;
+
+  monthly_revenue_estimate?: any;
+
+  has_restaurant?: any;
+  has_spa?: any;
+  has_parking?: any;
+  allows_pets?: any;
+};
+
+type AuditState = { audit_ok: boolean; missing_fields: string[] };
+
+/** ======================================================
+ * Errors
+ * ====================================================== */
+function err(code: string, detail?: string) {
+  return { ok: false, error: "request_failed", detail: detail ? `${code}:${detail}` : code };
 }
 
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8" },
-  });
-}
-
-function mustEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`Missing env var ${name}`);
-  return v;
-}
-
+/** ======================================================
+ * Helpers
+ * ====================================================== */
 function safeStr(v: any) {
   return typeof v === "string" ? v.trim() : "";
 }
-
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
-
 function toNumOrNull(v: any): number | null {
   if (v === null || v === undefined || v === "") return null;
   const s = String(v).trim().replace(",", ".");
@@ -49,91 +77,23 @@ function toNumOrNull(v: any): number | null {
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
-
 function toIntOrNull(v: any): number | null {
   const n = toNumOrNull(v);
   if (n === null) return null;
   return Number.isFinite(n) ? Math.trunc(n) : null;
 }
-
 function toBool(v: any): boolean {
   if (typeof v === "boolean") return v;
-  if (v === "true") return true;
-  if (v === "false") return false;
+  const s = String(v ?? "").trim().toLowerCase();
+  if (s === "true" || s === "1" || s === "yes") return true;
+  if (s === "false" || s === "0" || s === "no") return false;
   return Boolean(v);
 }
-
 function isHHMM(v: any) {
   const s = safeStr(v);
-  if (!s) return true;
+  if (!s) return true; // allow null/empty
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
 }
-
-/** Clients */
-const SUPABASE_URL = mustEnv("SUPABASE_URL");
-const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
-const SERVICE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
-
-const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
-
-async function requireJwtUser(req: Request) {
-  const sb = userClient(req);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
-
-async function requireOrgMemberAndCustomerId(user_id: string) {
-  const { data: mem, error: memErr } = await admin
-    .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", user_id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
-
-  const org_id = String(mem.org_id);
-
-  let customer_id: string | null = null;
-  try {
-    const { data: ent, error: entErr } = await admin
-      .from("debacu_eval_org_entitlements_v")
-      .select("customer_id")
-      .eq("org_id", org_id)
-      .maybeSingle();
-    if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
-  } catch {}
-
-  if (!customer_id) {
-    const { data: org, error: orgErr } = await admin
-      .from("debacu_eval_organizations")
-      .select("customer_id")
-      .eq("id", org_id)
-      .maybeSingle();
-
-    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
-    customer_id = String(org.customer_id);
-  }
-
-  return { org_id, customer_id, role: mem.role ?? null };
-}
-
-/** Audit */
-type AuditState = { audit_ok: boolean; missing_fields: string[] };
 
 function computeAudit(params: {
   country: string | null;
@@ -170,23 +130,88 @@ function computeAudit(params: {
   return { audit_ok: miss.length === 0, missing_fields: miss };
 }
 
-/** Handler */
-export default Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+/** ======================================================
+ * Multi-org resolution
+ * ====================================================== */
+async function resolveOrgId(
+  supabase: ReturnType<typeof supabaseServiceClient>,
+  authUserId: string,
+  orgIdFromBody: string | null | undefined,
+): Promise<string | null> {
+  const orgId = safeStr(orgIdFromBody);
+  if (orgId) {
+    const { data, error } = await supabase
+      .from("debacu_eval_org_members")
+      .select("org_id")
+      .eq("org_id", orgId)
+      .eq("auth_user_id", authUserId) // ⚠️ si tu columna es user_id, cambia aquí
+      .eq("status", "ACTIVE")
+      .maybeSingle();
+    if (error) return null;
+    return data?.org_id ? String(data.org_id) : null;
+  }
+
+  const { data: rows, error } = await supabase
+    .from("debacu_eval_org_members")
+    .select("org_id, created_at")
+    .eq("auth_user_id", authUserId) // ⚠️ si tu columna es user_id, cambia aquí
+    .eq("status", "ACTIVE")
+    .order("created_at", { ascending: true })
+    .limit(1);
+
+  if (error) return null;
+  return rows?.[0]?.org_id ? String(rows[0].org_id) : null;
+}
+
+async function resolveCustomerId(
+  supabase: ReturnType<typeof supabaseServiceClient>,
+  orgId: string,
+): Promise<string | null> {
+  try {
+    const { data: ent, error: entErr } = await supabase
+      .from("debacu_eval_org_entitlements_v")
+      .select("customer_id")
+      .eq("org_id", orgId)
+      .maybeSingle();
+    if (!entErr && ent?.customer_id) return String(ent.customer_id);
+  } catch {
+    // ignore (view may not exist)
+  }
+
+  const { data: org, error: orgErr } = await supabase
+    .from("debacu_eval_organizations")
+    .select("customer_id")
+    .eq("id", orgId)
+    .maybeSingle();
+
+  if (orgErr) return null;
+  return org?.customer_id ? String(org.customer_id) : null;
+}
+
+/** ======================================================
+ * Handler
+ * ====================================================== */
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, err("method_not_allowed"));
 
   try {
-    const authHeader = req.headers.get("authorization") || "";
-    if (!authHeader.toLowerCase().startsWith("bearer ")) {
-      return json(req, 401, { ok: false, error: "Missing Authorization Bearer token" });
-    }
+    const user = await requireUser(req);
 
-    const body = await req.json().catch(() => ({}));
-    const appId = String(body?.app_id ?? body?.appId ?? "DEBACU_EVAL");
+    const body = (await req.json().catch(() => null)) as Body | null;
+    if (!body) return json(req, 400, err("invalid_json"));
 
-    const user = await requireJwtUser(req);
-    const { customer_id: customerId } = await requireOrgMemberAndCustomerId(user.id);
+    const appId = safeStr(body.app_id ?? body.appId) || "DEBACU_EVAL";
+    const supabase = supabaseServiceClient();
 
+    // ✅ multi-org
+    const orgId = await resolveOrgId(supabase, user.id, body.org_id);
+    if (!orgId) return json(req, 403, err("FORBIDDEN", "NO_ACTIVE_MEMBERSHIP"));
+
+    const customerId = await resolveCustomerId(supabase, orgId);
+    if (!customerId) return json(req, 403, err("FORBIDDEN", "NO_CUSTOMER_FOR_ORG"));
+
+    // ---- validations / transforms
     const hotel_category = clamp(Number(body?.hotel_category ?? 3), 1, 5);
 
     const occupancy_target =
@@ -203,15 +228,16 @@ export default Deno.serve(async (req) => {
 
     const checkin_time = body?.checkin_time ?? null;
     const checkout_time = body?.checkout_time ?? null;
-    if (!isHHMM(checkin_time)) throw new Error("VALIDATION_CHECKIN_TIME");
-    if (!isHHMM(checkout_time)) throw new Error("VALIDATION_CHECKOUT_TIME");
+    if (!isHHMM(checkin_time)) return json(req, 400, err("invalid_checkin_time"));
+    if (!isHHMM(checkout_time)) return json(req, 400, err("invalid_checkout_time"));
 
     const rooms_count = toIntOrNull(body?.rooms_count);
     const max_occupancy = toIntOrNull(body?.max_occupancy);
 
     const nowIso = new Date().toISOString();
 
-    const row: any = {
+    // Primera pasada: preparar campos principales
+    const baseRow: any = {
       customer_id: customerId,
       app_id: appId,
 
@@ -254,16 +280,19 @@ export default Deno.serve(async (req) => {
       allows_pets: toBool(body?.allows_pets),
 
       updated_at: nowIso,
+      updated_by: user.id, // si no existe esta columna, quítala
     };
 
-    const { data: upserted, error: upErr } = await admin
+    // Upsert y obtener row
+    const { data: upserted, error: upErr } = await supabase
       .from("debacu_eval_hotel_profile")
-      .upsert(row, { onConflict: "customer_id,app_id" })
+      .upsert(baseRow, { onConflict: "customer_id,app_id" })
       .select("*")
       .single();
 
-    if (upErr) throw new Error(`DB_UPSERT:${upErr.message}`);
+    if (upErr) return json(req, 500, err("db_upsert_failed"));
 
+    // Calcular audit sobre el resultado persistido
     const audit = computeAudit({
       country: upserted?.country ?? null,
       province: upserted?.province ?? null,
@@ -275,7 +304,7 @@ export default Deno.serve(async (req) => {
       rooms_count: upserted?.rooms_count ?? null,
     });
 
-    // flags profile_completed/profile_completed_at
+    // Flags en 1 write adicional SOLO si cambia (pero sin lógica frágil)
     const prevCompleted = Boolean(upserted?.profile_completed);
     const nextCompleted = audit.audit_ok;
 
@@ -285,46 +314,40 @@ export default Deno.serve(async (req) => {
 
     let finalRow = upserted;
 
-    if (
+    const needPatch =
       prevCompleted !== nextCompleted ||
-      String(upserted?.profile_completed_at ?? "") !== String(nextCompletedAt ?? "")
-    ) {
-      const { data: patched, error: patchErr } = await admin
+      String(upserted?.profile_completed_at ?? "") !== String(nextCompletedAt ?? "");
+
+    if (needPatch) {
+      const { data: patched, error: patchErr } = await supabase
         .from("debacu_eval_hotel_profile")
         .update({
           profile_completed: nextCompleted,
           profile_completed_at: nextCompletedAt,
           updated_at: nowIso,
+          updated_by: user.id, // si no existe, quítala
         })
         .eq("customer_id", customerId)
         .eq("app_id", appId)
         .select("*")
         .single();
 
-      if (patchErr) throw new Error(`DB_PROFILE_FLAGS_UPDATE:${patchErr.message}`);
+      if (patchErr) return json(req, 500, err("db_update_failed"));
       finalRow = patched;
     }
 
     return json(req, 200, {
       ok: true,
+      meta: { org_id: orgId, customer_id: customerId, app_id: appId },
       profile: finalRow,
       audit_ok: audit.audit_ok,
       missing_fields: audit.missing_fields,
     });
   } catch (e: any) {
-    const msg = String(e?.message ?? e);
-    const code =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED")
-        ? 403
-        : msg.startsWith("VALIDATION_")
-        ? 400
-        : msg.startsWith("DB_")
-        ? 500
-        : 500;
-
-    console.error("debacu_eval_hotel_profile_upsert error:", e);
-    return json(req, code, { ok: false, error: "request_failed", detail: msg });
+    const msg = String(e?.message ?? e ?? "");
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
+      return json(req, 401, err("UNAUTHENTICATED"));
+    }
+    return json(req, 500, err("internal_error"));
   }
 });

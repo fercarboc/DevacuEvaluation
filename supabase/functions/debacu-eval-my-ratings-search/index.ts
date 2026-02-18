@@ -1,38 +1,40 @@
 // supabase/functions/debacu-eval-my-ratings-search/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+import { json, preflight } from "../_shared/cors.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
+type Body = {
+  org_id?: string;
+  q?: string;
+  limit?: number;
+};
 
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    // ✅ JWT-only
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Max-Age": "86400",
-  };
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
+}
+function clampInt(n: any, min: number, max: number, def: number) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return def;
+  return Math.max(min, Math.min(max, Math.trunc(x)));
+}
+async function readJsonSafe<T>(req: Request): Promise<T> {
+  try {
+    const t = await req.text();
+    if (!t) return {} as T;
+    return JSON.parse(t) as T;
+  } catch {
+    return {} as T;
+  }
+}
+function err(req: Request, status: number, detail: string) {
+  return json(req, status, { ok: false, error: "request_failed", detail });
 }
 
-function json(req: Request, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8" },
-  });
-}
-
+/* =========================
+ * Parse controlled comment
+ * ========================= */
 function parseControlledComment(comment?: string | null) {
   const raw = (comment || "").trim();
   const out: Record<string, string> = {};
@@ -82,7 +84,6 @@ function bucketTimeWindow(m: number) {
 }
 
 type Pattern = "LOW" | "MODERATE" | "HIGH";
-
 function patternFromCount(n: number): Pattern {
   if (n <= 1) return "LOW";
   if (n <= 3) return "MODERATE";
@@ -109,7 +110,7 @@ function dominantSignalFromRow(row: any) {
 }
 
 /** -----------------------
- * Econ bucketing (MISMO ESTILO que global: "0–100", "101–200", etc)
+ * Econ bucketing
  * ---------------------- */
 const ECON_BUCKETS = [
   { min: 0, max: 0, label: "0 €" },
@@ -143,7 +144,6 @@ function countBucket(n: number): CountBucket {
   return "10+";
 }
 type RiskLevel = "BAJO" | "MEDIO" | "ALTO" | "NO_CONCLUYENTE";
-
 function riskFromAvgStars(avg: number | null): RiskLevel {
   if (avg == null) return "NO_CONCLUYENTE";
   if (avg >= 4) return "BAJO";
@@ -152,46 +152,73 @@ function riskFromAvgStars(avg: number | null): RiskLevel {
 }
 
 /* ======================================================
- * JWT + tenant resolution
+ * Multi-org: resolve org + customer_id (service role)
  * ====================================================== */
-function userClient(req: Request) {
-  const auth = req.headers.get("Authorization") ?? "";
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
-}
+async function resolveOrgAndCustomerId(sb: ReturnType<typeof supabaseServiceClient>, authUserId: string, orgIdIn?: string) {
+  const requested = safeStr(orgIdIn);
 
-async function requireJwtUser(req: Request) {
-  const sb = userClient(req);
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("UNAUTHENTICATED");
-  return data.user;
-}
+  if (requested) {
+    const { data: mem, error: memErr } = await sb
+      .from("debacu_eval_org_members")
+      .select("org_id, role, status")
+      .eq("org_id", requested)
+      .eq("auth_user_id", authUserId)
+      .eq("status", "ACTIVE")
+      .maybeSingle();
 
-const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
+    if (memErr) throw new Error("DB_ERROR");
+    if (!mem?.org_id) throw new Error("FORBIDDEN");
 
-async function requireOrgMemberAndCustomerId(user_id: string) {
-  const { data: mem, error: memErr } = await admin
+    const org_id = String(mem.org_id);
+
+    // customer_id: entitlements view -> organizations fallback
+    let customer_id: string | null = null;
+
+    try {
+      const { data: ent, error: entErr } = await sb
+        .from("debacu_eval_org_entitlements_v")
+        .select("customer_id")
+        .eq("org_id", org_id)
+        .maybeSingle();
+      if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
+    } catch {
+      // ignore
+    }
+
+    if (!customer_id) {
+      const { data: org, error: orgErr } = await sb
+        .from("debacu_eval_organizations")
+        .select("customer_id")
+        .eq("id", org_id)
+        .maybeSingle();
+
+      if (orgErr) throw new Error("DB_ERROR");
+      if (!org?.customer_id) throw new Error("FORBIDDEN");
+      customer_id = String(org.customer_id);
+    }
+
+    return { org_id, customer_id };
+  }
+
+  // fallback determinista
+  const { data: mem, error: memErr } = await sb
     .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", user_id)
+    .select("org_id, role, status, created_at")
+    .eq("auth_user_id", authUserId)
+    .eq("status", "ACTIVE")
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
-  if (memErr) throw new Error(`MEMBERSHIP_FAILED:${memErr.message}`);
-  if (!mem?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+  if (memErr) throw new Error("DB_ERROR");
+  if (!mem?.org_id) throw new Error("FORBIDDEN");
 
-  const org_id = mem.org_id as string;
+  const org_id = String(mem.org_id);
 
-  // customer_id: entitlements view -> organizations fallback
   let customer_id: string | null = null;
 
   try {
-    const { data: ent, error: entErr } = await admin
+    const { data: ent, error: entErr } = await sb
       .from("debacu_eval_org_entitlements_v")
       .select("customer_id")
       .eq("org_id", org_id)
@@ -202,49 +229,44 @@ async function requireOrgMemberAndCustomerId(user_id: string) {
   }
 
   if (!customer_id) {
-    const { data: org, error: orgErr } = await admin
+    const { data: org, error: orgErr } = await sb
       .from("debacu_eval_organizations")
       .select("customer_id")
       .eq("id", org_id)
       .maybeSingle();
 
-    if (orgErr) throw new Error(`ORG_LOOKUP_FAILED:${orgErr.message}`);
-    if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
-
+    if (orgErr) throw new Error("DB_ERROR");
+    if (!org?.customer_id) throw new Error("FORBIDDEN");
     customer_id = String(org.customer_id);
   }
 
   return { org_id, customer_id };
 }
 
-export default Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return err(req, 405, "method_not_allowed");
 
   try {
     // 1) JWT obligatorio
-    const user = await requireJwtUser(req);
+    const user = await requireUser(req);
 
-    // 2) tenant (customerId) por membership
-    const { customer_id: customerId } = await requireOrgMemberAndCustomerId(user.id);
-
-    let body: any = {};
-    try {
-      body = await req.json();
-    } catch {
-      body = {};
-    }
-
-    const query = String(body?.q ?? "").trim();
-    const lim = Math.min(100, Math.max(1, Number(body?.limit ?? 50)));
+    const body = await readJsonSafe<Body>(req);
+    const org_id = safeStr((body as any)?.org_id ?? (body as any)?.orgId ?? "");
+    const query = safeStr((body as any)?.q ?? "");
+    const lim = clampInt((body as any)?.limit, 1, 100, 50);
 
     if (!query) {
       return json(req, 200, { ok: true, rows: [], signals: null });
     }
 
-    // ✅ filtro “Mis registros” por hotel (customer_id)
-    // Si quieres “solo lo creado por ESTE usuario”, añade .eq("created_by_user_id", user.id)
-    const { data, error } = await admin
+    // 2) tenant por membership (service role)
+    const sb = supabaseServiceClient();
+    const { customer_id: customerId } = await resolveOrgAndCustomerId(sb, user.id, org_id || undefined);
+
+    // 3) Query “Mis registros” por hotel (customer_id)
+    // Nota: tu comentario decía "solo creado por ESTE usuario" sería created_by_user_id, lo dejamos fuera por ahora.
+    const { data, error } = await sb
       .from("debacu_evaluations")
       .select(
         [
@@ -256,7 +278,6 @@ export default Deno.serve(async (req: Request) => {
           "email",
           "rating",
           "comment",
-          // ojo: campos legacy (si los sigues guardando, ok; si no, elimínalos)
           "creator_customer_id",
           "creator_customer_name",
           "creator_customer_uuid",
@@ -286,7 +307,7 @@ export default Deno.serve(async (req: Request) => {
       .order("created_at", { ascending: false })
       .limit(lim);
 
-    if (error) return json(req, 500, { ok: false, error: error.message });
+    if (error) return err(req, 500, "db_read_failed");
 
     const rows = (data ?? []).map((r: any) => {
       const cc = parseControlledComment(r?.comment);
@@ -326,11 +347,9 @@ export default Deno.serve(async (req: Request) => {
         ? outRows.reduce((acc: number, x: any) => acc + (Number(x?.rating ?? 0) || 0), 0) / countExact
         : null;
 
-    // Econ: suma gross y net
     let grossSum = 0;
     let netSum = 0;
 
-    // Tipologías top
     const typCount: Record<string, number> = {};
     let lastSeen: Date | null = null;
 
@@ -378,14 +397,10 @@ export default Deno.serve(async (req: Request) => {
     return json(req, 200, { ok: true, rows: outRows, signals });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
-    const code =
-      msg === "UNAUTHENTICATED"
-        ? 401
-        : msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED")
-        ? 403
-        : 500;
 
-    console.error("debacu-eval-my-ratings-search error:", e);
-    return json(req, code, { ok: false, error: "request_failed", detail: msg });
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return err(req, 401, "UNAUTHORIZED");
+    if (msg === "FORBIDDEN") return err(req, 403, "FORBIDDEN");
+
+    return err(req, 500, "internal_error");
   }
 });
