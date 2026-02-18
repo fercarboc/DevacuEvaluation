@@ -245,7 +245,7 @@ const HistoryViewAuditor: React.FC = () => {
   };
 
   // ✅ Export masivo (filtrado)
- const exportFiltered = async (type: ExportType) => {
+  const exportFiltered = async (type: ExportType) => {
   try {
     setExportLoading(type);
 
@@ -263,7 +263,12 @@ const HistoryViewAuditor: React.FC = () => {
 
     if (!gen?.ok) throw new Error(gen?.detail || gen?.error || "export_generate_failed");
 
-    const url = gen?.signed_url;
+    const url =
+      gen?.data?.signed_url ??
+      gen?.data?.download_url ??
+      gen?.signed_url ??
+      gen?.download_url;
+
     if (!url) throw new Error("missing_signed_url");
 
     window.open(url, "_blank", "noopener,noreferrer");
@@ -274,6 +279,7 @@ const HistoryViewAuditor: React.FC = () => {
     setExportLoading(null);
   }
 };
+
 
   // ✅ PDF desde ficha (audit seleccionado)
  const exportFicha = async (type: ExportType) => {
@@ -296,7 +302,12 @@ const HistoryViewAuditor: React.FC = () => {
 
     if (!gen?.ok) throw new Error(gen?.detail || gen?.error || "export_generate_failed");
 
-    const url = gen?.signed_url; // <- viene del generate
+    const url =
+      gen?.data?.signed_url ??
+      gen?.data?.download_url ??
+      gen?.signed_url ??
+      gen?.download_url;
+
     if (!url) throw new Error("missing_signed_url");
 
     window.open(url, "_blank", "noopener,noreferrer");

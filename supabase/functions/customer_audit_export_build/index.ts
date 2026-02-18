@@ -27,7 +27,6 @@ type ExportScope =
 type PeriodField = "evaluation_date" | "created_at";
 
 type BuildReq = {
-  // ✅ multi-org: recomendado obligatorio en UI
   org_id?: string | null;
 
   export_type: ExportType;
@@ -41,9 +40,9 @@ type BuildReq = {
 };
 
 type TenantResolved = {
-  org_id: string;
-  customer_id: string;
-  customer_name: string;
+  org_id: string;        // UUID string
+  customer_id: string;   // UUID string (customer)
+  customer_name: string; // org/hotel name
   app_code: string;
 };
 
@@ -53,7 +52,7 @@ type EntitlementsRow = {
   seats_used: number | null;
   plan_code: string | null;
   max_users: number | null;
-  subscription_status: string | null; // ACTIVE | null
+  subscription_status: string | null;
 };
 
 /* ======================================================
@@ -103,17 +102,13 @@ async function resolveOrgId(
   userId: string,
   requestedOrgId?: string | null
 ): Promise<string> {
-  // 1) si viene org_id, validar membership (preferido)
   if (requestedOrgId) {
-    // Intento con status=ACTIVE si existe la columna; si no, fallback sin status.
     try {
       const { data, error } = await admin
         .from("debacu_eval_org_members")
         .select("org_id")
         .eq("org_id", requestedOrgId)
         .eq("user_id", userId)
-        // si existe status, esto valida “activa”
-        // (si no existe, saltará error y caemos al catch)
         .eq("status", "ACTIVE")
         .maybeSingle();
 
@@ -134,7 +129,6 @@ async function resolveOrgId(
     }
   }
 
-  // 2) fallback determinista: primera membership (idealmente ACTIVE)
   try {
     const { data, error } = await admin
       .from("debacu_eval_org_members")
@@ -188,7 +182,6 @@ async function requirePlanActiveForOrg(
   admin: ReturnType<typeof createClient>,
   orgId: string
 ): Promise<EntitlementsRow> {
-  // ✅ usa la vista (sin RPC) que ya creaste
   const { data, error } = await admin
     .from("debacu_eval_org_entitlements_v")
     .select("org_id, customer_id, seats_used, plan_code, max_users, subscription_status")
@@ -198,9 +191,7 @@ async function requirePlanActiveForOrg(
   if (error) throw new Error(`ENTITLEMENTS_FAILED:${error.message}`);
   if (!data?.org_id || !data?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
 
-  // Regla estricta: si no hay ACTIVE, no hay export
   if (data.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
-
   return data as EntitlementsRow;
 }
 
@@ -225,7 +216,6 @@ async function fetchEvaluationsForRange(
   from: string,
   to: string
 ): Promise<EvalRow[]> {
-  // Preferimos debacu_eval_evaluations, pero soportamos fallback por si tu entorno aún tiene debacu_evaluations.
   const primary = Deno.env.get("EVALUATIONS_TABLE") || "debacu_eval_evaluations";
   const fallback = "debacu_evaluations";
 
@@ -249,6 +239,7 @@ async function fetchEvaluationsForRange(
         .gte("evaluation_date", from)
         .lte("evaluation_date", to)
         .order("evaluation_date", { ascending: true });
+
       if (error) throw error;
       return (data ?? []) as any;
     }
@@ -263,6 +254,7 @@ async function fetchEvaluationsForRange(
       .gte("created_at", fromTs)
       .lte("created_at", toTs)
       .order("created_at", { ascending: true });
+
     if (error) throw error;
     return (data ?? []) as any;
   }
@@ -271,7 +263,6 @@ async function fetchEvaluationsForRange(
     return await run(primary);
   } catch (e: any) {
     const msg = String(e?.message ?? "");
-    // fallback solo si el error apunta a tabla inexistente
     if (msg.toLowerCase().includes("does not exist") || msg.toLowerCase().includes("relation")) {
       return await run(fallback);
     }
@@ -481,11 +472,11 @@ function buildDailyHoyAyerByType(
 }
 
 type WeeklyDailySeriesRow = {
-  day: string; // YYYY-MM-DD
+  day: string;
   incidents: number;
-  risk_high: number; // rating 1-2
-  risk_medium: number; // rating 3
-  risk_low: number; // rating 4-5
+  risk_high: number;
+  risk_medium: number;
+  risk_low: number;
   gross: number;
   recovered: number;
   net: number;
@@ -862,7 +853,7 @@ async function buildPdfLandscape(table: PdfTable): Promise<Uint8Array> {
 }
 
 /* ======================================================
- * STORAGE UPLOAD + SIGNED URL (higiene: no orphan)
+ * STORAGE UPLOAD + SIGNED URL
  * ====================================================== */
 async function uploadBytes(
   sb: ReturnType<typeof createClient>,
@@ -873,7 +864,6 @@ async function uploadBytes(
 ) {
   const { error } = await sb.storage.from(bucket).upload(path, bytes, {
     contentType,
-    // ✅ sin upsert:true (path lleva UUID, no debe pisarse)
     upsert: false,
   });
   if (error) throw new Error(`STORAGE_UPLOAD_FAILED:${error.message}`);
@@ -889,27 +879,24 @@ async function deletePathBestEffort(sb: ReturnType<typeof createClient>, bucket:
   try {
     await sb.storage.from(bucket).remove([path]);
   } catch {
-    // best-effort: no throw
+    // best-effort
   }
 }
 
 /* ======================================================
- * ERROR MAPPING (no stack traces)
+ * ERROR MAPPING
  * ====================================================== */
 function mapError(e: unknown): { status: number; detail: string } {
   const msg = String((e as any)?.message ?? e ?? "request_failed");
 
-  // 401
   if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED" || msg.includes("JWT")) {
     return { status: 401, detail: "UNAUTHENTICATED" };
   }
 
-  // 402
   if (msg === "PLAN_NOT_ACTIVE") {
     return { status: 402, detail: "PLAN_NOT_ACTIVE" };
   }
 
-  // 403
   if (
     msg.startsWith("FORBIDDEN") ||
     msg.startsWith("MEMBERSHIP_FAILED") ||
@@ -919,17 +906,16 @@ function mapError(e: unknown): { status: number; detail: string } {
     return { status: 403, detail: msg.startsWith("FORBIDDEN") ? msg : "FORBIDDEN" };
   }
 
-  // 400
   if (
     msg.startsWith("missing_") ||
     msg.startsWith("invalid_") ||
     msg === "invalid_json" ||
-    msg === "method_not_allowed"
+    msg === "method_not_allowed" ||
+    msg === "unsupported_scope"
   ) {
     return { status: 400, detail: msg };
   }
 
-  // 500 genérico (sin stack)
   return { status: 500, detail: "INTERNAL" };
 }
 
@@ -938,18 +924,18 @@ function mapError(e: unknown): { status: number; detail: string } {
  * ====================================================== */
 export default Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return preflight(req);
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed", detail: "method_not_allowed" });
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "method_not_allowed", detail: "method_not_allowed" });
+  }
 
   let storageUploaded = false;
   let storagePath = "";
   let exportId = "";
-  const admin = supabaseServiceClient(); // ✅ service role centralizado
+  const admin = supabaseServiceClient();
 
   try {
-    // 1) JWT required (no x-session-token)
     const user = await requireUser(req);
 
-    // 2) parse body
     let body: BuildReq;
     try {
       body = (await req.json()) as BuildReq;
@@ -959,14 +945,11 @@ export default Deno.serve(async (req: Request) => {
 
     const orgIdInput = body.org_id ? String(body.org_id) : null;
 
-    // 3) org resolve + tenant
     const org_id = await resolveOrgId(admin, user.id, orgIdInput);
     const tenant = await resolveTenant(admin, org_id);
 
-    // 4) plan gate (ACTIVE obligatorio para export)
     await requirePlanActiveForOrg(admin, org_id);
 
-    // 5) validar request
     const exportType = body.export_type;
     const exportScope = body.export_scope;
     const periodFrom = String(body.period_from ?? "");
@@ -983,18 +966,15 @@ export default Deno.serve(async (req: Request) => {
     const periodField: PeriodField =
       (filters?.period_field as PeriodField) || (filters?.use_created_at ? "created_at" : "evaluation_date");
 
-    // 6) fetch raw rows (scoped by customer_id)
     const evalRows = await fetchEvaluationsForRange(admin, tenant.customer_id, periodField, periodFrom, periodTo);
 
     let fileBytes: Uint8Array;
     let contentType: string;
     let rowCount = 0;
 
-    const subtitle = `Hotel: ${tenant.customer_name || "-"} | Periodo: ${periodFrom} -> ${periodTo} | Campo: ${periodField} | Generado: ${isoDate(
-      new Date()
-    )}`;
+    const subtitle =
+      `Hotel: ${tenant.customer_name || "-"} | Periodo: ${periodFrom} -> ${periodTo} | Campo: ${periodField} | Generado: ${isoDate(new Date())}`;
 
-    // 7) build export
     if (exportScope === "INCIDENTS_BY_PLATFORM_MONTHLY") {
       const agg = buildIncidentsByPlatformMonthly(evalRows, periodField);
       rowCount = agg.length;
@@ -1087,6 +1067,7 @@ export default Deno.serve(async (req: Request) => {
         contentType = "application/pdf";
       }
     } else if (exportScope === "DAILY_HOY_AYER_BY_TYPE") {
+      // Nota: aquí interpretas period_from = ayer y period_to = hoy (según tu UI actual).
       const agg = buildDailyHoyAyerByType(evalRows, periodField, periodFrom, periodTo);
       rowCount = agg.length;
 
@@ -1152,7 +1133,6 @@ export default Deno.serve(async (req: Request) => {
       throw new Error("unsupported_scope");
     }
 
-    // 8) storage path
     exportId = crypto.randomUUID();
     const ext = exportType === "PDF" ? "pdf" : "csv";
     const dateFolder = isoDate(new Date());
@@ -1163,29 +1143,25 @@ export default Deno.serve(async (req: Request) => {
     const sha = await sha256Hex(fileBytes);
     const sizeBytes = fileBytes.byteLength;
 
-    // 9) upload + sign (si falla luego el insert => borrar)
     await uploadBytes(admin, DEFAULT_BUCKET, storagePath, fileBytes, contentType);
     storageUploaded = true;
 
     const downloadUrl = await signUrl(admin, DEFAULT_BUCKET, storagePath);
 
-    // 10) audit insert + devolver created_at real
+    // ✅ INSERT alineado 1:1 con debacu_eval_audit_exports (SIN org_id/customer_id como columnas)
     const insertRow = {
       id: exportId,
-
-      org_id: tenant.org_id, // si existe la columna en tu tabla, útil; si no, quítalo
-      customer_id: tenant.customer_id, // si existe; si no, quítalo
 
       generated_by_user_id: user.id,
       generated_by_email: user.email ?? null,
 
-      delivered_to_name: "Team Hotel",
-      delivered_to_org: tenant.customer_name || "SELF",
+      delivered_to_name: tenant.customer_name || "Hotel",
+      delivered_to_org: tenant.org_id,                 // ✅ aquí guardamos el ORG_ID (lo que usas luego para listar)
       delivered_to_reason: "SELF_SERVICE_EXPORT",
       delivered_to_reference: exportScope,
 
       filter_source: exportScope,
-      filter_customer: tenant.customer_name || null,
+      filter_customer: tenant.customer_id,             // ✅ recomendable: customer_id (texto) para índices/filtrado
       filter_type: periodField,
       filter_from: periodFrom,
       filter_to: periodTo,
@@ -1208,8 +1184,6 @@ export default Deno.serve(async (req: Request) => {
       },
     };
 
-    // ⚠️ Si tu tabla debacu_eval_audit_exports NO tiene org_id/customer_id como columnas,
-    // elimina esas dos propiedades del insertRow.
     const { data: ins, error: insErr } = await admin
       .from("debacu_eval_audit_exports")
       .insert(insertRow as any)
@@ -1231,13 +1205,11 @@ export default Deno.serve(async (req: Request) => {
       download_url: downloadUrl,
     });
   } catch (e) {
-    // higiene: si ya subiste a storage y luego falló DB/sign => borrar best-effort
     if (storageUploaded && storagePath) {
       await deletePathBestEffort(admin, DEFAULT_BUCKET, storagePath);
     }
 
     const mapped = mapError(e);
-    // ✅ no stack traces al cliente
     return json(req, mapped.status, { ok: false, error: "request_failed", detail: mapped.detail });
   }
 });

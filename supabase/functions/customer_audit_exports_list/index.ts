@@ -5,8 +5,6 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { json, preflight } from "../_shared/cors.ts";
 import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
-const APP_ID = "DEBACU_EVAL";
-
 type ReqBody = {
   org_id?: string | null;
 
@@ -16,8 +14,8 @@ type ReqBody = {
   status?: "ALL" | "PENDING" | "READY" | "FAILED" | "EXPIRED";
   export_type?: "ALL" | "PDF" | "CSV";
 
-  from?: string; // yyyy-mm-dd  (date_from >= from)
-  to?: string; // yyyy-mm-dd    (date_to <= to)
+  from?: string; // yyyy-mm-dd
+  to?: string;   // yyyy-mm-dd
 };
 
 function assertDateMaybe(s: unknown, name: string) {
@@ -32,15 +30,11 @@ function clampInt(v: unknown, def: number, min: number, max: number) {
   return Math.min(Math.max(Math.trunc(n), min), max);
 }
 
-/** ======================================================
- * MULTI-ORG membership (service role)
- * - Valida org_id si viene
- * - Si no viene, usa primera membership ACTIVE de forma determinista
- * ====================================================== */
+/** MULTI-ORG */
 async function resolveOrgIdForUserOrThrow(
   admin: ReturnType<typeof createClient>,
   userId: string,
-  requestedOrgId?: string | null,
+  requestedOrgId?: string | null
 ): Promise<string> {
   if (requestedOrgId) {
     // prefer ACTIVE si existe status
@@ -72,20 +66,13 @@ async function resolveOrgIdForUserOrThrow(
   return String(data.org_id);
 }
 
-/** ======================================================
- * ENTITLEMENTS
- * - Si quieres bloquear si plan no está ACTIVE, lo mantenemos
- * ====================================================== */
 type EntitlementsRow = {
   org_id: string;
   subscription_status: string | null;
   plan_code: string | null;
 };
 
-async function loadEntitlementsOrThrow(
-  admin: ReturnType<typeof createClient>,
-  orgId: string,
-): Promise<EntitlementsRow> {
+async function loadEntitlementsOrThrow(admin: ReturnType<typeof createClient>, orgId: string) {
   const { data, error } = await admin
     .from("debacu_eval_org_entitlements_v")
     .select("org_id, subscription_status, plan_code")
@@ -101,21 +88,14 @@ function assertOrgActiveOrThrow(ent: EntitlementsRow) {
   if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
 }
 
-/** ======================================================
- * ERROR MAP (STRICT)
- * ====================================================== */
+/** ERROR MAP (STRICT) */
 function mapError(e: unknown): { status: number; detail: string } {
   const msg = String((e as any)?.message ?? e ?? "request_failed");
 
   if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return { status: 401, detail: "UNAUTHENTICATED" };
   if (msg === "PLAN_NOT_ACTIVE") return { status: 402, detail: "PLAN_NOT_ACTIVE" };
 
-  if (
-    msg.startsWith("FORBIDDEN") ||
-    msg === "MEMBERSHIP_LOOKUP_FAILED" ||
-    msg === "ENTITLEMENTS_FAILED" ||
-    msg === "FORBIDDEN_NO_ENTITLEMENTS"
-  ) {
+  if (msg.startsWith("FORBIDDEN") || msg === "MEMBERSHIP_LOOKUP_FAILED" || msg === "ENTITLEMENTS_FAILED") {
     return { status: 403, detail: "FORBIDDEN" };
   }
 
@@ -124,10 +104,7 @@ function mapError(e: unknown): { status: number; detail: string } {
   return { status: 500, detail: "INTERNAL" };
 }
 
-/** ======================================================
- * MAIN
- * ====================================================== */
-Deno.serve(async (req: Request) => {
+export default Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") {
     return json(req, 405, { ok: false, error: "method_not_allowed", detail: "method_not_allowed" });
@@ -145,22 +122,21 @@ Deno.serve(async (req: Request) => {
     assertDateMaybe(body.from, "from");
     assertDateMaybe(body.to, "to");
 
-    // org_id obligatorio recomendado; si no viene, fallback determinista
     const org_id = await resolveOrgIdForUserOrThrow(
       admin,
       user.id,
-      body.org_id ? String(body.org_id) : null,
+      body.org_id ? String(body.org_id) : null
     );
 
-    // Si quieres permitir ver histórico incluso sin plan ACTIVE: comenta estas 2 líneas.
+    // Si quieres BLOQUEAR cuando no hay plan activo, deja esto.
+    // Si quieres permitir ver histórico aunque estén sin plan, comenta estas 2 líneas.
     const ent = await loadEntitlementsOrThrow(admin, org_id);
     assertOrgActiveOrThrow(ent);
 
+    const TABLE = "debacu_eval_audit_exports";
+
     const status = body.status ?? "ALL";
     const export_type = body.export_type ?? "ALL";
-
-    // ✅ Tabla correcta para listados (tiene status, file_name, mime_type, etc.)
-    const TABLE = "audit_exports";
 
     let q = admin
       .from(TABLE)
@@ -168,65 +144,56 @@ Deno.serve(async (req: Request) => {
         [
           "id",
           "created_at",
-          "status",
           "format",
           "row_count",
           "storage_bucket",
           "storage_path",
           "file_sha256",
-          "mime_type",
-          "file_name",
-          "customer_id",
-          "app_id",
-          "date_from",
-          "date_to",
-          "source",
-          "type",
-          "filters_json",
+          "file_bytes",
+          "filter_from",
+          "filter_to",
+          "filter_source",
+          "filter_type",
+          "status",
+          "meta",
+          "delivered_to_name",
+          "delivered_to_org",
         ].join(","),
-        { count: "exact" },
+        { count: "exact" }
       )
-      // org_id (uuid) se guarda como text en audit_exports.customer_id
-      .eq("customer_id", org_id)
-      .eq("app_id", APP_ID)
+      // ✅ AQUÍ ESTABA EL BUG: no existe org_id en esta tabla
+      .eq("delivered_to_org", org_id)
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
     if (status !== "ALL") q = q.eq("status", status);
     if (export_type !== "ALL") q = q.eq("format", export_type);
 
-    if (body.from) q = q.gte("date_from", String(body.from));
-    if (body.to) q = q.lte("date_to", String(body.to));
+    if (body.from) q = q.gte("filter_from", String(body.from));
+    if (body.to) q = q.lte("filter_to", String(body.to));
 
     const { data: rows, error, count } = await q;
-
-    if (error) {
-      // IMPORTANT: no filtramos stack al cliente; pero sí log interno para debug
-      console.error("[customer_audit_exports_list] LIST ERROR", error);
-      throw new Error("LIST_FAILED");
-    }
+    if (error) throw new Error("LIST_FAILED");
 
     const exports = (rows ?? []).map((r: any) => ({
       id: r.id,
       created_at: r.created_at,
       status: r.status ?? null,
       export_type: r.format ?? null,
-      export_scope: r.source ?? null,
-      period_from: r.date_from ?? null,
-      period_to: r.date_to ?? null,
+      export_scope: r.filter_source ?? null,
+      period_from: r.filter_from ?? null,
+      period_to: r.filter_to ?? null,
       row_count: r.row_count ?? 0,
       storage_bucket: r.storage_bucket ?? null,
       storage_path: r.storage_path ?? null,
       sha256: r.file_sha256 ?? null,
-      file_name: r.file_name ?? null,
-      mime_type: r.mime_type ?? null,
-      filters: r.filters_json ?? null,
+      file_size_bytes: r.file_bytes ?? null,
+      meta: r.meta ?? null,
     }));
 
     return json(req, 200, {
       ok: true,
       org_id,
-      app_id: APP_ID,
       exports,
       total: count ?? 0,
       limit,

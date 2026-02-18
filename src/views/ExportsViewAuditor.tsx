@@ -401,11 +401,14 @@ const ExportsViewAuditor: React.FC<ExportsViewAuditorProps> = ({ currentPlan }) 
       if (cancelRef.current.cancelled) return;
 
       const signedUrl =
-        (r as any)?.url ??
-        (r as any)?.download_url ??
-        (r as any)?.data?.url ??
-        (r as any)?.data?.download_url ??
-        null;
+  (r as any)?.signed_url ??
+  (r as any)?.url ??
+  (r as any)?.download_url ??
+  (r as any)?.data?.signed_url ??
+  (r as any)?.data?.url ??
+  (r as any)?.data?.download_url ??
+  null;
+
 
       if (signedUrl) {
         const label = safeFilename(scopeLabel(exportScope));
