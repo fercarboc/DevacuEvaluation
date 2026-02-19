@@ -1,4 +1,5 @@
-// supabase/functions/debacu_eval_audit_exports_build/index.ts
+// supabase/functions/customer_audit_export_build/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { PDFDocument, StandardFonts, rgb } from "https://esm.sh/pdf-lib@1.17.1";
@@ -9,7 +10,7 @@ import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 /* ======================================================
  * ENV
  * ====================================================== */
-const DEFAULT_BUCKET = Deno.env.get("EXPORTS_BUCKET") || "audit-exports";
+const DEFAULT_BUCKET = Deno.env.get("EXPORTS_BUCKET") || "system-exports";
 const DEFAULT_APP_CODE = "DEBACU_EVAL";
 
 /* ======================================================
@@ -103,58 +104,31 @@ async function resolveOrgId(
   requestedOrgId?: string | null
 ): Promise<string> {
   if (requestedOrgId) {
-    try {
-      const { data, error } = await admin
-        .from("debacu_eval_org_members")
-        .select("org_id")
-        .eq("org_id", requestedOrgId)
-        .eq("user_id", userId)
-        .eq("status", "ACTIVE")
-        .maybeSingle();
-
-      if (error) throw error;
-      if (!data?.org_id) throw new Error("FORBIDDEN_NOT_MEMBER");
-      return String(data.org_id);
-    } catch {
-      const { data, error } = await admin
-        .from("debacu_eval_org_members")
-        .select("org_id")
-        .eq("org_id", requestedOrgId)
-        .eq("user_id", userId)
-        .maybeSingle();
-
-      if (error) throw new Error(`MEMBERSHIP_FAILED:${error.message}`);
-      if (!data?.org_id) throw new Error("FORBIDDEN_NOT_MEMBER");
-      return String(data.org_id);
-    }
-  }
-
-  try {
     const { data, error } = await admin
       .from("debacu_eval_org_members")
-      .select("org_id, created_at")
+      .select("org_id,status")
+      .eq("org_id", requestedOrgId)
       .eq("user_id", userId)
-      .eq("status", "ACTIVE")
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) throw error;
-    if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
-    return String(data.org_id);
-  } catch {
-    const { data, error } = await admin
-      .from("debacu_eval_org_members")
-      .select("org_id, created_at")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: true })
-      .limit(1)
       .maybeSingle();
 
     if (error) throw new Error(`MEMBERSHIP_FAILED:${error.message}`);
-    if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+    if (!data?.org_id) throw new Error("FORBIDDEN_NOT_MEMBER");
+    if (String(data.status ?? "") !== "ACTIVE") throw new Error("FORBIDDEN_NOT_ACTIVE_MEMBER");
     return String(data.org_id);
   }
+
+  const { data, error } = await admin
+    .from("debacu_eval_org_members")
+    .select("org_id, created_at, status")
+    .eq("user_id", userId)
+    .eq("status", "ACTIVE")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`MEMBERSHIP_FAILED:${error.message}`);
+  if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
+  return String(data.org_id);
 }
 
 async function resolveTenant(
@@ -190,7 +164,6 @@ async function requirePlanActiveForOrg(
 
   if (error) throw new Error(`ENTITLEMENTS_FAILED:${error.message}`);
   if (!data?.org_id || !data?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
-
   if (data.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
   return data as EntitlementsRow;
 }
@@ -209,15 +182,26 @@ type EvalRow = {
   economic_net_loss: string | number | null;
 };
 
+// Detecta el típico error de PostgREST “schema cache”
+function isSchemaCacheMissingTable(err: any) {
+  const msg = String(err?.message ?? err ?? "").toLowerCase();
+  return msg.includes("schema cache") && (msg.includes("could not find the table") || msg.includes("could not find relation"));
+}
+
 async function fetchEvaluationsForRange(
   sb: ReturnType<typeof createClient>,
   creatorCustomerUuid: string,
   periodField: PeriodField,
   from: string,
   to: string
-): Promise<EvalRow[]> {
-  const primary = Deno.env.get("EVALUATIONS_TABLE") || "debacu_eval_evaluations";
-  const fallback = "debacu_evaluations";
+): Promise<{ table_used: string; rows: EvalRow[] }> {
+  // OJO: pon aquí primero la REAL (según tú: debacu_evaluations)
+  const candidates = [
+    "debacu_evaluations",
+    "debacu_eval_evaluations",
+    "public.debacu_evaluations",
+    "public.debacu_eval_evaluations",
+  ];
 
   const cols = [
     "platform",
@@ -241,7 +225,7 @@ async function fetchEvaluationsForRange(
         .order("evaluation_date", { ascending: true });
 
       if (error) throw error;
-      return (data ?? []) as any;
+      return (data ?? []) as EvalRow[];
     }
 
     const fromTs = `${from}T00:00:00.000Z`;
@@ -256,48 +240,35 @@ async function fetchEvaluationsForRange(
       .order("created_at", { ascending: true });
 
     if (error) throw error;
-    return (data ?? []) as any;
+    return (data ?? []) as EvalRow[];
   }
 
-  try {
-    return await run(primary);
-  } catch (e: any) {
-    const msg = String(e?.message ?? "");
-    if (msg.toLowerCase().includes("does not exist") || msg.toLowerCase().includes("relation")) {
-      return await run(fallback);
+  let lastErr: any = null;
+
+  for (const t of candidates) {
+    try {
+      const rows = await run(t);
+      return { table_used: t, rows };
+    } catch (e: any) {
+      lastErr = e;
+      // si es schema cache/missing table, probamos el siguiente candidato
+      if (isSchemaCacheMissingTable(e)) continue;
+
+      // si no es “missing table”, lo devolvemos directo (para no ocultar RLS, columnas, etc.)
+      throw new Error(`QUERY_FAILED(${t}):${String(e?.message ?? e)}`);
     }
-    throw new Error(`QUERY_FAILED:${msg}`);
   }
+
+  // Si llegó aquí, ninguno existía/estaba expuesto
+  throw new Error(`QUERY_FAILED:No candidate evaluations table is visible to PostgREST. Last=${String(lastErr?.message ?? lastErr)}`);
 }
 
 /* ======================================================
  * AGGREGATIONS
  * ====================================================== */
-type PlatformMonthlyRow = {
-  month: string;
-  platform: string;
-  incidents: number;
-  gross: number;
-  recovered: number;
-  net: number;
-};
-
-type TypeMonthlyRow = {
-  month: string;
-  incident_type: string;
-  incidents: number;
-  gross: number;
-  recovered: number;
-  net: number;
-};
-
-type EconMonthlyRow = {
-  month: string;
-  incidents: number;
-  gross: number;
-  recovered: number;
-  net: number;
-};
+type PlatformMonthlyRow = { month: string; platform: string; incidents: number; gross: number; recovered: number; net: number; };
+type TypeMonthlyRow = { month: string; incident_type: string; incidents: number; gross: number; recovered: number; net: number; };
+type EconMonthlyRow = { month: string; incidents: number; gross: number; recovered: number; net: number; };
 
 function computeNet(gross: number, recovered: number, netStored: number | null) {
   if (netStored != null && Number.isFinite(netStored)) return Math.max(0, netStored);
@@ -314,7 +285,6 @@ function getRowDateKey(r: EvalRow, periodField: PeriodField): string {
 
 function buildIncidentsByPlatformMonthly(rows: EvalRow[], periodField: PeriodField): PlatformMonthlyRow[] {
   const map = new Map<string, PlatformMonthlyRow>();
-
   for (const r of rows) {
     const dKey = getRowDateKey(r, periodField);
     const month = monthKeyFromDateStr(dKey);
@@ -333,7 +303,6 @@ function buildIncidentsByPlatformMonthly(rows: EvalRow[], periodField: PeriodFie
     cur.net += net;
     map.set(k, cur);
   }
-
   return Array.from(map.values()).sort((a, b) =>
     a.month === b.month ? a.platform.localeCompare(b.platform) : a.month.localeCompare(b.month)
   );
@@ -341,7 +310,6 @@ function buildIncidentsByPlatformMonthly(rows: EvalRow[], periodField: PeriodFie
 
 function buildIncidentsByTypeMonthly(rows: EvalRow[], periodField: PeriodField): TypeMonthlyRow[] {
   const map = new Map<string, TypeMonthlyRow>();
-
   for (const r of rows) {
     const dKey = getRowDateKey(r, periodField);
     const month = monthKeyFromDateStr(dKey);
@@ -360,7 +328,6 @@ function buildIncidentsByTypeMonthly(rows: EvalRow[], periodField: PeriodField):
     cur.net += net;
     map.set(k, cur);
   }
-
   return Array.from(map.values()).sort((a, b) =>
     a.month === b.month ? a.incident_type.localeCompare(b.incident_type) : a.month.localeCompare(b.month)
   );
@@ -368,7 +335,6 @@ function buildIncidentsByTypeMonthly(rows: EvalRow[], periodField: PeriodField):
 
 function buildEconomicImpactMonthly(rows: EvalRow[], periodField: PeriodField): EconMonthlyRow[] {
   const map = new Map<string, EconMonthlyRow>();
-
   for (const r of rows) {
     const dKey = getRowDateKey(r, periodField);
     const month = monthKeyFromDateStr(dKey);
@@ -385,7 +351,6 @@ function buildEconomicImpactMonthly(rows: EvalRow[], periodField: PeriodField): 
     cur.net += net;
     map.set(month, cur);
   }
-
   return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
 }
 
@@ -397,11 +362,9 @@ type DailyHoyAyerRow = {
   incidents_today: number;
   incidents_yesterday: number;
   delta: number;
-
   gross_today: number;
   recovered_today: number;
   net_today: number;
-
   gross_yesterday: number;
   recovered_yesterday: number;
   net_yesterday: number;
@@ -643,7 +606,7 @@ function toCsvWeekly7dDailySeries(rows: WeeklyDailySeriesRow[]) {
 }
 
 /* ======================================================
- * PDF helpers (WinAnsi safe + layout)
+ * PDF helpers
  * ====================================================== */
 function sanitizeWinAnsi(s: string) {
   return String(s ?? "")
@@ -853,7 +816,7 @@ async function buildPdfLandscape(table: PdfTable): Promise<Uint8Array> {
 }
 
 /* ======================================================
- * STORAGE UPLOAD + SIGNED URL
+ * STORAGE
  * ====================================================== */
 async function uploadBytes(
   sb: ReturnType<typeof createClient>,
@@ -903,7 +866,7 @@ function mapError(e: unknown): { status: number; detail: string } {
     msg.startsWith("ORG_LOOKUP_FAILED") ||
     msg.startsWith("ENTITLEMENTS_FAILED")
   ) {
-    return { status: 403, detail: msg.startsWith("FORBIDDEN") ? msg : "FORBIDDEN" };
+    return { status: 403, detail: msg };
   }
 
   if (
@@ -911,16 +874,23 @@ function mapError(e: unknown): { status: number; detail: string } {
     msg.startsWith("invalid_") ||
     msg === "invalid_json" ||
     msg === "method_not_allowed" ||
-    msg === "unsupported_scope"
+    msg === "unsupported_scope" ||
+    msg === "invalid_export_type" ||
+    msg === "invalid_period_range"
   ) {
     return { status: 400, detail: msg };
   }
 
-  return { status: 500, detail: "INTERNAL" };
+  // No lo tapes: si es QUERY_FAILED, devuélvelo
+  if (msg.startsWith("QUERY_FAILED")) {
+    return { status: 500, detail: msg };
+  }
+
+  return { status: 500, detail: msg.startsWith("STORAGE_") ? msg : "INTERNAL" };
 }
 
 /* ======================================================
- * MAIN (JWT-only)
+ * MAIN
  * ====================================================== */
 export default Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return preflight(req);
@@ -931,11 +901,23 @@ export default Deno.serve(async (req: Request) => {
   let storageUploaded = false;
   let storagePath = "";
   let exportId = "";
+
   const admin = supabaseServiceClient();
 
   try {
+    // AUTH
     const user = await requireUser(req);
 
+    // email NOT NULL en exports
+    let email = user.email ?? null;
+    if (!email) {
+      const { data, error } = await admin.auth.admin.getUserById(user.id);
+      if (error) console.error("EMAIL_LOOKUP_FAILED", error);
+      email = data?.user?.email ?? null;
+    }
+    if (!email) email = "unknown@debacu.com";
+
+    // BODY
     let body: BuildReq;
     try {
       body = (await req.json()) as BuildReq;
@@ -945,11 +927,12 @@ export default Deno.serve(async (req: Request) => {
 
     const orgIdInput = body.org_id ? String(body.org_id) : null;
 
+    // TENANT + ENTITLEMENTS
     const org_id = await resolveOrgId(admin, user.id, orgIdInput);
     const tenant = await resolveTenant(admin, org_id);
-
     await requirePlanActiveForOrg(admin, org_id);
 
+    // VALIDATION
     const exportType = body.export_type;
     const exportScope = body.export_scope;
     const periodFrom = String(body.period_from ?? "");
@@ -966,14 +949,17 @@ export default Deno.serve(async (req: Request) => {
     const periodField: PeriodField =
       (filters?.period_field as PeriodField) || (filters?.use_created_at ? "created_at" : "evaluation_date");
 
-    const evalRows = await fetchEvaluationsForRange(admin, tenant.customer_id, periodField, periodFrom, periodTo);
+    // FETCH DATA (con fallback de tablas)
+    const fetched = await fetchEvaluationsForRange(admin, tenant.customer_id, periodField, periodFrom, periodTo);
+    const evalRows = fetched.rows;
 
+    // BUILD FILE
     let fileBytes: Uint8Array;
     let contentType: string;
     let rowCount = 0;
 
     const subtitle =
-      `Hotel: ${tenant.customer_name || "-"} | Periodo: ${periodFrom} -> ${periodTo} | Campo: ${periodField} | Generado: ${isoDate(new Date())}`;
+      `Hotel: ${tenant.customer_name || "-"} | Periodo: ${periodFrom} -> ${periodTo} | Campo: ${periodField} | Tabla: ${fetched.table_used} | Generado: ${isoDate(new Date())}`;
 
     if (exportScope === "INCIDENTS_BY_PLATFORM_MONTHLY") {
       const agg = buildIncidentsByPlatformMonthly(evalRows, periodField);
@@ -1067,7 +1053,6 @@ export default Deno.serve(async (req: Request) => {
         contentType = "application/pdf";
       }
     } else if (exportScope === "DAILY_HOY_AYER_BY_TYPE") {
-      // Nota: aquí interpretas period_from = ayer y period_to = hoy (según tu UI actual).
       const agg = buildDailyHoyAyerByType(evalRows, periodField, periodFrom, periodTo);
       rowCount = agg.length;
 
@@ -1133,6 +1118,7 @@ export default Deno.serve(async (req: Request) => {
       throw new Error("unsupported_scope");
     }
 
+    // STORAGE
     exportId = crypto.randomUUID();
     const ext = exportType === "PDF" ? "pdf" : "csv";
     const dateFolder = isoDate(new Date());
@@ -1148,23 +1134,24 @@ export default Deno.serve(async (req: Request) => {
 
     const downloadUrl = await signUrl(admin, DEFAULT_BUCKET, storagePath);
 
-    // ✅ INSERT alineado 1:1 con debacu_eval_audit_exports (SIN org_id/customer_id como columnas)
+    // DB INSERT (alineado con tu tabla debacu_eval_audit_exports)
     const insertRow = {
       id: exportId,
+      created_at: new Date().toISOString(),
 
       generated_by_user_id: user.id,
-      generated_by_email: user.email ?? null,
+      generated_by_email: email,
 
       delivered_to_name: tenant.customer_name || "Hotel",
-      delivered_to_org: tenant.org_id,                 // ✅ aquí guardamos el ORG_ID (lo que usas luego para listar)
+      delivered_to_org: tenant.org_id, // text nullable, aquí metemos uuid string
       delivered_to_reason: "SELF_SERVICE_EXPORT",
-      delivered_to_reference: exportScope,
+      delivered_to_reference: String(exportScope),
 
-      filter_source: exportScope,
-      filter_customer: tenant.customer_id,             // ✅ recomendable: customer_id (texto) para índices/filtrado
-      filter_type: periodField,
-      filter_from: periodFrom,
-      filter_to: periodTo,
+      filter_source: String(exportScope),
+      filter_customer: tenant.customer_id, // text
+      filter_type: String(periodField),    // text
+      filter_from: periodFrom,             // date
+      filter_to: periodTo,                 // date
 
       format: exportType,
       row_count: rowCount,
@@ -1181,7 +1168,11 @@ export default Deno.serve(async (req: Request) => {
         customer_id: tenant.customer_id,
         period_field: periodField,
         export_scope: exportScope,
+        evaluations_table: fetched.table_used,
       },
+
+      org_id: tenant.org_id,
+      status: "READY",
     };
 
     const { data: ins, error: insErr } = await admin
@@ -1190,7 +1181,10 @@ export default Deno.serve(async (req: Request) => {
       .select("id, created_at")
       .maybeSingle();
 
-    if (insErr) throw new Error(`EXPORT_INSERT_FAILED:${insErr.message}`);
+    if (insErr) {
+      console.error("EXPORT_INSERT_FAILED", insErr);
+      throw new Error(`EXPORT_INSERT_FAILED:${insErr.message}`);
+    }
 
     return json(req, 200, {
       ok: true,
@@ -1203,6 +1197,7 @@ export default Deno.serve(async (req: Request) => {
       storage_bucket: DEFAULT_BUCKET,
       storage_path: storagePath,
       download_url: downloadUrl,
+      evaluations_table: fetched.table_used,
     });
   } catch (e) {
     if (storageUploaded && storagePath) {
@@ -1213,3 +1208,4 @@ export default Deno.serve(async (req: Request) => {
     return json(req, mapped.status, { ok: false, error: "request_failed", detail: mapped.detail });
   }
 });
+

@@ -9,6 +9,7 @@ import { useEvalAuth } from "@/context/EvalAuthContext";
 import { useSearchParams } from "react-router-dom";
 
 import PaywallPlansModal from "./PaywallPlansModal";
+import { setEvalOrgId } from "@/services/callEvalFn";
 
 export interface LoginProps {
   onLoginSuccess: (user: User) => void;
@@ -81,8 +82,8 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     const username = String(customer?.service_username ?? email);
 
     const u: User = {
-      id: String(customer.id),          // ✅ customerId
-      customerId: String(customer.id),  // opcional (duplicado)
+      id: String(customer.id), // ✅ customerId
+      customerId: String(customer.id), // opcional (duplicado)
       username,
       fullName,
       email,
@@ -120,6 +121,19 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
       // 2) Post-login AUTHZ (Edge Function): org/membership/plan/paywall
       const post = await evalPostLogin(accessToken);
+
+      // ✅ Guardar org_id para que callEvalFn lo inyecte en todas las Edge calls
+      // Estructura esperada de tu postlogin: { ok:true, data:{ membership:{org_id}... } }
+      const orgId =
+        (post as any)?.data?.membership?.org_id ??
+        (post as any)?.membership?.org_id ??
+        (post as any)?.data?.org_id ??
+        (post as any)?.org_id ??
+        "";
+
+      if (typeof orgId === "string" && orgId.trim()) {
+        setEvalOrgId(orgId.trim());
+      }
 
       // compat: si no existe session_token interno, guardamos ""
       localStorage.setItem("debacu_eval_session_token", String((post as any)?.session_token ?? ""));

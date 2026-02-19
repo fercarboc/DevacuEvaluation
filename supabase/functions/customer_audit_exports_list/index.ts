@@ -1,4 +1,5 @@
 // supabase/functions/customer_audit_exports_list/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
@@ -11,11 +12,11 @@ type ReqBody = {
   limit?: number; // default 25
   offset?: number; // default 0
 
-  status?: "ALL" | "PENDING" | "READY" | "FAILED" | "EXPIRED";
+  status?: "ALL" | "CREATED" | "PROCESSING" | "READY" | "FAILED" | "EXPIRED";
   export_type?: "ALL" | "PDF" | "CSV";
 
   from?: string; // yyyy-mm-dd
-  to?: string;   // yyyy-mm-dd
+  to?: string; // yyyy-mm-dd
 };
 
 function assertDateMaybe(s: unknown, name: string) {
@@ -37,7 +38,6 @@ async function resolveOrgIdForUserOrThrow(
   requestedOrgId?: string | null
 ): Promise<string> {
   if (requestedOrgId) {
-    // prefer ACTIVE si existe status
     const { data, error } = await admin
       .from("debacu_eval_org_members")
       .select("org_id")
@@ -51,7 +51,6 @@ async function resolveOrgIdForUserOrThrow(
     return String(data.org_id);
   }
 
-  // fallback determinista: primera ACTIVE por created_at
   const { data, error } = await admin
     .from("debacu_eval_org_members")
     .select("org_id, created_at")
@@ -122,47 +121,49 @@ export default Deno.serve(async (req: Request) => {
     assertDateMaybe(body.from, "from");
     assertDateMaybe(body.to, "to");
 
-    const org_id = await resolveOrgIdForUserOrThrow(
-      admin,
-      user.id,
-      body.org_id ? String(body.org_id) : null
-    );
+    const org_id = await resolveOrgIdForUserOrThrow(admin, user.id, body.org_id ? String(body.org_id) : null);
 
-    // Si quieres BLOQUEAR cuando no hay plan activo, deja esto.
-    // Si quieres permitir ver histórico aunque estén sin plan, comenta estas 2 líneas.
+    // Bloquear si no hay plan activo (como ya estabas haciendo)
     const ent = await loadEntitlementsOrThrow(admin, org_id);
     assertOrgActiveOrThrow(ent);
 
-    const TABLE = "debacu_eval_audit_exports";
+    // ✅ Usamos la VIEW con last_download + download_count
+    const VIEW = "debacu_eval_audit_exports_with_last_download";
 
     const status = body.status ?? "ALL";
     const export_type = body.export_type ?? "ALL";
 
     let q = admin
-      .from(TABLE)
+      .from(VIEW)
       .select(
         [
           "id",
+          "org_id",
           "created_at",
+          "status",
           "format",
           "row_count",
           "storage_bucket",
           "storage_path",
           "file_sha256",
           "file_bytes",
-          "filter_from",
-          "filter_to",
+          "meta",
           "filter_source",
           "filter_type",
-          "status",
-          "meta",
+          "filter_from",
+          "filter_to",
           "delivered_to_name",
           "delivered_to_org",
+          "delivered_to_reason",
+          "delivered_to_reference",
+          "last_download_at",
+          "last_downloaded_by",
+          "last_downloaded_by_email",
+          "download_count",
         ].join(","),
         { count: "exact" }
       )
-      // ✅ AQUÍ ESTABA EL BUG: no existe org_id en esta tabla
-      .eq("delivered_to_org", org_id)
+      .eq("org_id", org_id)
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -177,18 +178,31 @@ export default Deno.serve(async (req: Request) => {
 
     const exports = (rows ?? []).map((r: any) => ({
       id: r.id,
+      org_id: r.org_id,
       created_at: r.created_at,
       status: r.status ?? null,
+
       export_type: r.format ?? null,
       export_scope: r.filter_source ?? null,
       period_from: r.filter_from ?? null,
       period_to: r.filter_to ?? null,
+
       row_count: r.row_count ?? 0,
       storage_bucket: r.storage_bucket ?? null,
       storage_path: r.storage_path ?? null,
       sha256: r.file_sha256 ?? null,
       file_size_bytes: r.file_bytes ?? null,
       meta: r.meta ?? null,
+
+      delivered_to_name: r.delivered_to_name ?? null,
+      delivered_to_org: r.delivered_to_org ?? null,
+      delivered_to_reason: r.delivered_to_reason ?? null,
+      delivered_to_reference: r.delivered_to_reference ?? null,
+
+      last_download_at: r.last_download_at ?? null,
+      last_downloaded_by: r.last_downloaded_by ?? null,
+      last_downloaded_by_email: r.last_downloaded_by_email ?? null,
+      download_count: r.download_count ?? 0,
     }));
 
     return json(req, 200, {

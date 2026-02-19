@@ -415,7 +415,8 @@ export default Deno.serve(async (req: Request) => {
         app_code: APP_CODE,
 
         generated_by_user_id: user.id,
-        generated_by_email: user.email ?? null,
+        generated_by_email: user.email,
+
 
         delivered_to_name: "Team Hotel",
         delivered_to_org: null,
