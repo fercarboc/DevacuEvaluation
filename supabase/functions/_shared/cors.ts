@@ -1,45 +1,22 @@
 ﻿// supabase/functions/_shared/cors.ts
 // deno-lint-ignore-file no-explicit-any
 
-/**
- * CORS compartido (Debacu)
- * - Permite origins explícitos (local + debacu.com)
- * - Permite cualquier subdominio *.vercel.app (preview + prod en Vercel)
- * - NO usa "*" (porque usamos Authorization Bearer)
- * - Refleja Access-Control-Request-Headers en preflight (robusto)
- */
-
-const EXPLICIT_ALLOWED_ORIGINS = new Set<string>([
+const ALLOWED_ORIGINS = new Set<string>([
   "http://localhost:3000",
   "http://localhost:5173",
   "https://debacu.com",
   "https://www.debacu.com",
-  "https://debacu-evaluation.vercel.app",
+
+  // ✅ Tu Vercel (prod)
   "https://devacu-evaluation.vercel.app",
 ]);
 
-function isAllowedOrigin(origin: string): boolean {
-  if (!origin) return false;
-
-  // allow exact
-  if (EXPLICIT_ALLOWED_ORIGINS.has(origin)) return true;
-
-  // allow Vercel preview/prod subdomains
-  // examples:
-  // - https://debacu-evaluation.vercel.app
-  // - https://debacu-evaluation-xxxx-team.vercel.app
+function isAllowedVercelOrigin(origin: string) {
+  // ✅ Permite previews tipo: https://xxx.vercel.app
+  // Si NO quieres permitir previews, borra esta función y su uso.
   try {
     const u = new URL(origin);
-    const host = u.hostname.toLowerCase();
-
-    // only https on vercel
-    if (u.protocol !== "https:") return false;
-
-    // allow *.vercel.app
-    if (host === "vercel.app") return false; // (no root)
-    if (host.endsWith(".vercel.app")) return true;
-
-    return false;
+    return u.protocol === "https:" && u.hostname.endsWith(".vercel.app");
   } catch {
     return false;
   }
@@ -48,7 +25,13 @@ function isAllowedOrigin(origin: string): boolean {
 function getAllowOrigin(req: Request): string {
   const origin = req.headers.get("Origin") ?? "";
   if (!origin) return ""; // non-browser / server-to-server
-  return isAllowedOrigin(origin) ? origin : "";
+
+  if (ALLOWED_ORIGINS.has(origin)) return origin;
+
+  // ✅ opcional: permitir todos los subdominios de vercel.app
+  if (isAllowedVercelOrigin(origin)) return origin;
+
+  return ""; // IMPORTANT: si no está permitido, NO devuelvas debacu.com
 }
 
 export function corsHeaders(req: Request): Headers {
@@ -57,26 +40,15 @@ export function corsHeaders(req: Request): Headers {
   const allowOrigin = getAllowOrigin(req);
   if (allowOrigin) {
     h.set("Access-Control-Allow-Origin", allowOrigin);
-    // Evita cache incorrecto entre orígenes
     h.set("Vary", "Origin");
   }
 
-  // Reflejar headers solicitados en preflight (más compatible)
+  // Refleja headers solicitados para no romper cuando el SDK cambie
   const reqHeaders = req.headers.get("Access-Control-Request-Headers");
-  h.set(
-    "Access-Control-Allow-Headers",
-    reqHeaders ??
-      "authorization, apikey, content-type, x-client-info, x-supabase-client",
-  );
+  if (reqHeaders) h.set("Access-Control-Allow-Headers", reqHeaders);
+  else h.set("Access-Control-Allow-Headers", "authorization, x-client-info, apikey, content-type");
 
-  // Métodos típicos
-  h.set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-
-  // Si NO usas cookies, NO habilitar credentials
-  // (JWT Bearer + apikey es suficiente)
-  // h.set("Access-Control-Allow-Credentials", "true");
-
-  // Cache de preflight
+  h.set("Access-Control-Allow-Methods", "POST, OPTIONS");
   h.set("Access-Control-Max-Age", "86400");
 
   return h;
@@ -86,12 +58,8 @@ export function preflight(req: Request): Response {
   return new Response(null, { status: 204, headers: corsHeaders(req) });
 }
 
-export function json(
-  req: Request,
-  status: number,
-  body: Record<string, any>,
-): Response {
-  const headers = corsHeaders(req);
-  headers.set("Content-Type", "application/json; charset=utf-8");
-  return new Response(JSON.stringify(body), { status, headers });
+export function json(req: Request, status: number, body: any): Response {
+  const h = corsHeaders(req);
+  h.set("content-type", "application/json; charset=utf-8");
+  return new Response(JSON.stringify(body), { status, headers: h });
 }
