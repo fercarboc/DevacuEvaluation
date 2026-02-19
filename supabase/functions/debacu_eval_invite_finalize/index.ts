@@ -23,11 +23,59 @@ function safeStr(v: any) {
   return typeof v === "string" ? v.trim() : "";
 }
 
-async function getApprovedRequestByEmail(
+/**
+ * ======================================================
+ * HELPERS
+ * ======================================================
+ */
+
+async function promoteInviteIfExists(
   supabase: ReturnType<typeof supabaseServiceClient>,
   email: string,
+  authUserId: string,
 ) {
   const { data, error } = await supabase
+    .from("debacu_eval_org_members")
+    .update({
+      status: "ACTIVE",
+      auth_user_id: authUserId,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("status", "INVITED")
+    .ilike("invited_email", email)
+    .select("org_id, role, status")
+    .maybeSingle();
+
+  if (error) return { ok: false as const, code: "db_write_failed" };
+  if (!data?.org_id) return { ok: false as const, code: "not_found" };
+
+  return { ok: true as const, row: data };
+}
+
+async function findActiveMembership(
+  supabase: ReturnType<typeof supabaseServiceClient>,
+  authUserId: string,
+) {
+  const { data, error } = await supabase
+    .from("debacu_eval_org_members")
+    .select("org_id, role, status")
+    .eq("auth_user_id", authUserId)
+    .eq("status", "ACTIVE")
+    .limit(1)
+    .maybeSingle();
+
+  if (error) return { row: null, code: "db_read_failed" as const };
+  return { row: data ?? null, code: null as const };
+}
+
+async function ensureOwnerFromApprovedRequest(params: {
+  supabase: ReturnType<typeof supabaseServiceClient>;
+  email: string;
+  authUserId: string;
+}) {
+  const { supabase, email, authUserId } = params;
+
+  const { data: reqRow, error } = await supabase
     .from("debacu_eval_access_requests")
     .select("id, status, customer_id, org_id, reviewed_at")
     .eq("email", email)
@@ -36,74 +84,50 @@ async function getApprovedRequestByEmail(
     .limit(1)
     .maybeSingle();
 
-  if (error) return { row: null, code: "db_read_failed" as const };
-  return { row: data ?? null, code: null as const };
-}
+  if (error) return { ok: false as const, code: "db_read_failed" };
+  if (!reqRow?.customer_id) return { ok: false as const, code: "not_found" };
 
-async function resolveOrgIdForCustomer(
-  supabase: ReturnType<typeof supabaseServiceClient>,
-  customerId: string,
-) {
-  const { data, error } = await supabase
-    .from("debacu_eval_organizations")
-    .select("id, created_at")
-    .eq("customer_id", customerId)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+  let orgId = reqRow.org_id;
 
-  if (error) return null;
-  return data?.id ? String(data.id) : null;
-}
+  if (!orgId) {
+    const { data: org } = await supabase
+      .from("debacu_eval_organizations")
+      .select("id")
+      .eq("customer_id", reqRow.customer_id)
+      .limit(1)
+      .maybeSingle();
 
-async function ensureOwnerMembershipActive(params: {
-  supabase: ReturnType<typeof supabaseServiceClient>;
-  orgId: string;
-  authUserId: string;
-}) {
-  const { supabase, orgId, authUserId } = params;
+    if (!org?.id) return { ok: false as const, code: "org_not_found" };
+    orgId = org.id;
+  }
 
-  // ⚠️ Si tu columna real es user_id, cambia auth_user_id -> user_id en SELECT/INSERT/UPDATE
-  const { data: existing, error } = await supabase
+  // Insert o update OWNER
+  const { data: existing } = await supabase
     .from("debacu_eval_org_members")
-    .select("id, role, status")
+    .select("id")
     .eq("org_id", orgId)
     .eq("auth_user_id", authUserId)
     .maybeSingle();
 
-  if (error) return { ok: false as const, code: "db_read_failed" as const };
-
-  if (!existing?.id) {
+  if (!existing) {
     const { error: insErr } = await supabase.from("debacu_eval_org_members").insert({
       org_id: orgId,
       auth_user_id: authUserId,
       role: "OWNER",
       status: "ACTIVE",
-    } as any);
+    });
 
-    if (insErr) return { ok: false as const, code: "db_write_failed" as const };
-    return { ok: true as const };
+    if (insErr) return { ok: false as const, code: "db_write_failed" };
   }
 
-  // si existe, forzamos OWNER + ACTIVE (postlogin debe dejarlo limpio)
-  const needRole = String(existing.role ?? "").toUpperCase() !== "OWNER";
-  const needStatus = String(existing.status ?? "").toUpperCase() !== "ACTIVE";
-
-  if (needRole || needStatus) {
-    const patch: any = {};
-    if (needRole) patch.role = "OWNER";
-    if (needStatus) patch.status = "ACTIVE";
-
-    const { error: updErr } = await supabase
-      .from("debacu_eval_org_members")
-      .update(patch)
-      .eq("id", existing.id);
-
-    if (updErr) return { ok: false as const, code: "db_write_failed" as const };
-  }
-
-  return { ok: true as const };
+  return { ok: true as const, orgId, customerId: reqRow.customer_id };
 }
+
+/**
+ * ======================================================
+ * MAIN
+ * ======================================================
+ */
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return preflight(req);
@@ -111,59 +135,63 @@ Deno.serve(async (req) => {
 
   try {
     const user = await requireUser(req);
-
     const body = (await req.json().catch(() => null)) as Body | null;
     if (!body) return json(req, 400, err("invalid_json"));
 
     const appId = safeStr(body.app_id ?? body.appId) || APP_ID;
-
     const supabase = supabaseServiceClient();
 
     const email = safeLowerEmail(user.email);
     if (!email) return json(req, 400, err("invalid_user", "USER_NO_EMAIL"));
 
-    // 1) org_id preferido desde UI
-    let orgId = safeStr(body.org_id) || null;
-    let customerId: string | null = null;
+    /**
+     * 1️⃣ ¿Ya tiene membership ACTIVE?
+     */
+    const active = await findActiveMembership(supabase, user.id);
+    if (active.code) return json(req, 500, err(active.code));
 
-    // 2) buscar access_request APPROVED
-    const { row: reqRow, code: reqCode } = await getApprovedRequestByEmail(supabase, email);
-    if (reqCode) return json(req, 500, err(reqCode));
-
-    if (!reqRow?.customer_id) {
-      // sin solicitud aprobada -> no hay tenant
-      return json(req, 404, err("APPROVED_REQUEST_NOT_FOUND"));
+    if (active.row?.org_id) {
+      return json(req, 200, {
+        ok: true,
+        app_id: appId,
+        org_id: active.row.org_id,
+      });
     }
 
-    customerId = String(reqRow.customer_id);
-
-    // 3) si no vino orgId, usar el del request o fallback a organizations
-    if (!orgId) orgId = reqRow.org_id ? String(reqRow.org_id) : null;
-
-    if (!orgId) {
-      const fallbackOrgId = await resolveOrgIdForCustomer(supabase, customerId);
-      if (!fallbackOrgId) return json(req, 404, err("ORG_NOT_FOUND_FOR_CUSTOMER"));
-      orgId = fallbackOrgId;
-
-      // best-effort backfill en access_requests
-      await supabase.from("debacu_eval_access_requests").update({ org_id: orgId }).eq("id", reqRow.id);
+    /**
+     * 2️⃣ ¿Está invitado como STAFF?
+     */
+    const promoted = await promoteInviteIfExists(supabase, email, user.id);
+    if (promoted.ok) {
+      return json(req, 200, {
+        ok: true,
+        app_id: appId,
+        org_id: promoted.row.org_id,
+      });
     }
 
-    // 4) asegurar membership OWNER+ACTIVE para este usuario
-    const ensured = await ensureOwnerMembershipActive({
+    /**
+     * 3️⃣ ¿Es OWNER vía access_request APPROVED?
+     */
+    const owner = await ensureOwnerFromApprovedRequest({
       supabase,
-      orgId,
+      email,
       authUserId: user.id,
     });
 
-    if (!ensured.ok) return json(req, 500, err(ensured.code));
+    if (owner.ok) {
+      return json(req, 200, {
+        ok: true,
+        app_id: appId,
+        org_id: owner.orgId,
+        customer_id: owner.customerId,
+      });
+    }
 
-    return json(req, 200, {
-      ok: true,
-      app_id: appId,
-      org_id: orgId,
-      customer_id: customerId,
-    });
+    /**
+     * 4️⃣ Nada encontrado → no tiene tenant
+     */
+    return json(req, 404, err("NO_ORG_MEMBERSHIP"));
   } catch (e: any) {
     const msg = String(e?.message ?? e ?? "");
     if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
