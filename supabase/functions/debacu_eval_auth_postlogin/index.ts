@@ -73,7 +73,6 @@ Deno.serve(async (req) => {
   const body = (await readJsonSafe<Body>(req)) ?? {};
   const appCode = safeStr(body.appCode) || DEFAULT_APP_CODE;
   const appId = appCode || DEFAULT_APP_ID;
-
   const requestedOrgId = safeStr(body.org_id ?? "");
 
   // 3) Service client (consistencia + evitar líos de RLS en postlogin)
@@ -86,6 +85,7 @@ Deno.serve(async (req) => {
    * Regla: CANÓNICO = auth_user_id
    * Soportamos legacy (user_id) SOLO para auto-fix (si existe).
    */
+
   async function fixLegacyMembershipAuthUserId(orgId: string) {
     // Si existe una fila legacy ACTIVE con user_id==authUserId y auth_user_id null, la reparamos.
     const { data: legacy, error: legacyErr } = await sb
@@ -99,6 +99,8 @@ Deno.serve(async (req) => {
     if (legacyErr) return { ok: false as const, err: legacyErr };
     if (!legacy?.id) return { ok: true as const, changed: false as const };
 
+    // OJO: si tienes un UNIQUE que impide múltiples ACTIVE por auth_user_id,
+    // aquí podría fallar si el usuario ya está ACTIVE en otra org.
     const { error: upErr } = await sb
       .from("debacu_eval_org_members")
       .update({
@@ -114,8 +116,6 @@ Deno.serve(async (req) => {
   async function promoteInviteToActive(orgId: string) {
     if (!authEmail) return { ok: false as const, reason: "no_email" as const };
 
-    // Promociona INVITED -> ACTIVE vinculando auth_user_id (canónico).
-    // Nota: NO tocamos user_id (puede quedarse null).
     const { data, error } = await sb
       .from("debacu_eval_org_members")
       .update({
@@ -171,36 +171,100 @@ Deno.serve(async (req) => {
     return { kind: "none" as const };
   }
 
+  /**
+   * ======================================================
+   * ORG RESOLUTION (determinista)
+   * ======================================================
+   * Regla nueva:
+   * - Si NO viene org_id, solo resolvemos automáticamente si hay EXACTAMENTE 1 membership ACTIVE.
+   * - Si hay >1 -> devolvemos missing_org_id con lista de org_ids para que el frontend elija.
+   *
+   * Además, soportamos legacy user_id:
+   * - Si no hay memberships por auth_user_id, buscamos por user_id (ACTIVE).
+   * - Si hay exactamente 1 por user_id, intentamos canonizar (fixLegacyMembershipAuthUserId) y devolvemos.
+   * - Si hay >1 por user_id, también es ambiguo.
+   */
   async function resolveOrgIdFallback() {
-    // 1) Primera membership ACTIVE por auth_user_id
-    const { data: memA, error: memAErr } = await sb
+    // 1) Canonical: memberships ACTIVE por auth_user_id
+    const { data: mems, error: memsErr } = await sb
       .from("debacu_eval_org_members")
       .select("org_id, role, status, created_at")
       .eq("auth_user_id", authUserId)
       .eq("status", "ACTIVE")
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
+      .order("created_at", { ascending: true });
 
-    if (memAErr) return { kind: "error" as const, error: memAErr };
-    if (memA?.org_id) return { kind: "found" as const, orgId: String(memA.org_id), role: memA.role, status: memA.status };
+    if (memsErr) return { kind: "error" as const, error: memsErr };
 
-    // 2) Si no hay ACTIVE, intenta encontrar una invitación (INVITED) por email y promoverla.
+    if (mems && mems.length === 1 && mems[0]?.org_id) {
+      return {
+        kind: "found" as const,
+        orgId: String(mems[0].org_id),
+        role: mems[0].role ?? null,
+        status: mems[0].status ?? "ACTIVE",
+      };
+    }
+
+    if (mems && mems.length > 1) {
+      return {
+        kind: "ambiguous" as const,
+        orgIds: mems.map((m) => String(m.org_id)),
+      };
+    }
+
+    // 2) Legacy: memberships ACTIVE por user_id
+    const { data: memsLegacy, error: memsLegacyErr } = await sb
+      .from("debacu_eval_org_members")
+      .select("org_id, role, status, created_at, auth_user_id, user_id")
+      .eq("user_id", authUserId)
+      .eq("status", "ACTIVE")
+      .order("created_at", { ascending: true });
+
+    if (memsLegacyErr) return { kind: "error" as const, error: memsLegacyErr };
+
+    if (memsLegacy && memsLegacy.length === 1 && memsLegacy[0]?.org_id) {
+      const orgId = String(memsLegacy[0].org_id);
+
+      // Intento de canonización (si auth_user_id está a null)
+      await fixLegacyMembershipAuthUserId(orgId);
+
+      return {
+        kind: "found" as const,
+        orgId,
+        role: memsLegacy[0].role ?? null,
+        status: memsLegacy[0].status ?? "ACTIVE",
+      };
+    }
+
+    if (memsLegacy && memsLegacy.length > 1) {
+      return {
+        kind: "ambiguous" as const,
+        orgIds: memsLegacy.map((m) => String(m.org_id)),
+      };
+    }
+
+    // 3) Si no hay ACTIVE, intenta encontrar una invitación (INVITED) por email y promoverla,
+    // pero SOLO si hay exactamente 1 invitación (si hay varias también es ambiguo).
     if (!authEmail) return { kind: "none" as const };
 
-    const { data: inv, error: invErr } = await sb
+    const { data: invs, error: invErr } = await sb
       .from("debacu_eval_org_members")
       .select("org_id, created_at")
       .eq("status", "INVITED")
       .ilike("invited_email", authEmail)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
+      .order("created_at", { ascending: true });
 
     if (invErr) return { kind: "error" as const, error: invErr };
-    if (!inv?.org_id) return { kind: "none" as const };
+    if (!invs || invs.length === 0) return { kind: "none" as const };
 
-    const promoted = await promoteInviteToActive(String(inv.org_id));
+    if (invs.length > 1) {
+      return {
+        kind: "ambiguous" as const,
+        orgIds: invs.map((i) => String(i.org_id)),
+      };
+    }
+
+    const onlyOrgId = String(invs[0].org_id);
+    const promoted = await promoteInviteToActive(onlyOrgId);
     if (!promoted.ok) return { kind: "none" as const };
 
     return { kind: "found" as const, orgId: String(promoted.mem.org_id), role: promoted.mem.role, status: promoted.mem.status };
@@ -225,6 +289,10 @@ Deno.serve(async (req) => {
   } else {
     const res = await resolveOrgIdFallback();
     if (res.kind === "error") return fail(req, 500, "DB_ERROR");
+    if (res.kind === "ambiguous") {
+      // frontend debe mandar org_id explícito
+      return fail(req, 400, "missing_org_id", { org_ids: res.orgIds });
+    }
     if (res.kind === "none") return fail(req, 403, "NO_ORG_MEMBERSHIP");
 
     orgId = res.orgId;
