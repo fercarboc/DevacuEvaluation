@@ -1,4 +1,4 @@
-// supabase/functions/debacu_eval_weekly_series_get/index.ts
+// supabase/functions/customer_operational_weekly_series_get/index.ts
 // deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
@@ -126,7 +126,7 @@ function fillMissingDays(rows: WeeklySeriesRow[], from: string, to: string): Wee
 }
 
 /* ======================================================
- * MULTI-ORG + ENTITLEMENTS (FIX user_id/auth_user_id)
+ * MULTI-ORG + ENTITLEMENTS (JWT-only, tolerant user_id/auth_user_id)
  * ====================================================== */
 async function resolveOrgIdForUserOrThrow(
   admin: ReturnType<typeof supabaseServiceClient>,
@@ -206,7 +206,7 @@ async function fetchEvaluationsForRange(
   ].join(",");
 
   // compat datos sucios: customer_id o creator_customer_uuid
-  let q = admin
+  const q = admin
     .from("debacu_evaluations")
     .select(selectCols)
     .or(`customer_id.eq.${customerId},creator_customer_uuid.eq.${customerId}`);
@@ -221,11 +221,13 @@ async function fetchEvaluationsForRange(
     return (data ?? []) as any;
   }
 
-  // created_at: rango inclusivo por día (mejor hacerlo [from, to+1) pero mantengo tu lógica)
   const fromTs = `${from}T00:00:00.000Z`;
   const toTs = `${to}T23:59:59.999Z`;
 
-  const { data, error } = await q.gte("created_at", fromTs).lte("created_at", toTs).order("created_at", { ascending: true });
+  const { data, error } = await q
+    .gte("created_at", fromTs)
+    .lte("created_at", toTs)
+    .order("created_at", { ascending: true });
 
   if (error) throw new Error("request_failed");
   return (data ?? []) as any;
@@ -276,7 +278,7 @@ function buildDailySeries(rows: EvalRow[], periodField: PeriodField): WeeklySeri
 }
 
 /* ======================================================
- * ERRORS (STRICT)
+ * ERRORS
  * ====================================================== */
 function mapErrorToHttp(e: unknown): { status: number; detail: string } {
   const msg = String((e as any)?.message ?? e ?? "request_failed");
@@ -304,6 +306,9 @@ export default Deno.serve(async (req: Request) => {
   const admin = supabaseServiceClient();
 
   try {
+    // Log mínimo útil (puedes quitarlo luego)
+    console.log("customer_operational_weekly_series_get hit");
+
     const user = await requireUser(req);
 
     const body = (await req.json().catch(() => null)) as BuildReq | null;
@@ -326,10 +331,8 @@ export default Deno.serve(async (req: Request) => {
       return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_period_range" });
     }
 
-    // multi-org (FIX user_id/auth_user_id)
     const orgId = await resolveOrgIdForUserOrThrow(admin, user.id, body.org_id ? String(body.org_id) : null);
 
-    // entitlements + plan gate
     const ent = await loadEntitlementsOrThrow(admin, orgId);
     assertPlanActiveOrThrow(ent);
 
