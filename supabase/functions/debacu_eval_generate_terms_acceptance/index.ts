@@ -4,7 +4,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { PDFDocument, StandardFonts, rgb } from "https://esm.sh/pdf-lib@1.17.1";
 
 import { json, preflight } from "../_shared/cors.ts";
-import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
+import { supabaseServiceClient } from "../_shared/auth.ts";
 
 /**
  * ✅ Server-side versioning (NO confiar en frontend)
@@ -20,8 +20,11 @@ type PropertyType = "HOTEL" | "RURAL" | "APARTMENTS" | "HOSTEL" | "OTHER";
 
 type Body = {
   request_id?: string;
-  // opcional (si en el futuro quieres blindar el endpoint)
-  request_token?: string;
+  /**
+   * Recomendado: envíalo desde el frontend para validar que quien acepta
+   * es el mismo email de la solicitud.
+   */
+  email?: string;
 };
 
 type PdfData = {
@@ -407,7 +410,7 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   drawH2("1. Partes");
   drawList([
     `Responsable (Cliente): ${data.legal_name ?? data.company_name} · CIF ${data.cif} · ${data.address ?? "-"} · ${data.city ?? "-"} · ${data.country ?? "-"}`,
-    `Encargado (Proveedor): ${org.provider_name} · CIF ${org.provider_cif} · ${org.provider_address} · ${org.provider_email}`,
+    `Encargado (Proveedor): DEBACU HOTELS SL · CIF B-55381214 · C/CANTALEJO,13-1º A · informacion@debacu.com`,
   ]);
   drawH2("2. Objeto del encargo");
   drawP("Prestación del servicio de plataforma privada para gestión operativa con trazabilidad, conforme a instrucciones documentadas del Responsable, incluyendo: almacenamiento, consulta, registro, modificación, auditoría y soporte.");
@@ -450,7 +453,6 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   drawP("Al finalizar el servicio, el Encargado suprimirá o devolverá los datos personales, según instrucciones del Responsable, salvo obligación legal de conservación. Podrán mantenerse copias residuales en sistemas de respaldo por periodos limitados y bajo controles de seguridad.");
 
   hr();
-
   drawH1("Anexo II · Medidas Técnicas y Organizativas (art. 32 RGPD)");
   drawP("Este anexo describe medidas orientativas aplicadas por el Encargado para proteger los datos tratados en la Plataforma. El nivel de medidas podrá variar según configuración, plan y alcance contratado, manteniendo un enfoque de seguridad razonable y proporcional al riesgo.");
   drawH2("A. Control de acceso y autenticación");
@@ -487,7 +489,7 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
 
   hr();
   drawH2("Contacto y ejercicio de derechos (cuando proceda)");
-  drawP(`Para cuestiones de privacidad y seguridad: ${org.privacy_email}. Para cuestiones contractuales o del servicio: ${org.provider_email}.`);
+  drawP(`Para cuestiones de privacidad y seguridad: privacidad@debacu.com. Para cuestiones contractuales o del servicio: informacion@debacu.com.`);
 
   footer();
   return await pdfDoc.save();
@@ -495,30 +497,27 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return preflight(req);
-
   if (req.method !== "POST") return json(req, 405, errPayload("method_not_allowed"));
 
   const started = Date.now();
 
   try {
-    // ✅ JWT-only (y nos da el email para autorizar)
-    const user = await requireUser(req);
-
     const body = (await req.json().catch(() => null)) as Body | null;
     const requestId = (body?.request_id ?? "").trim();
-    const requestToken = (body?.request_token ?? "").trim();
+    const providedEmail = normalizeEmail(body?.email);
 
     if (!requestId) return badRequest(req, "missing_request_id");
 
     const supabase = supabaseServiceClient();
 
     // 1) Leer la solicitud (service role)
-    // ✅ FIX: quitado auth_user_id porque tu tabla NO tiene esa columna (te daba 500)
-    // 🧯 OJO: request_token solo si existe en BD; si no existe, quita también del select y del bloque de validación.
+    // ⚠️ IMPORTANTE: NO seleccionar columnas inexistentes (auth_user_id / request_token)
     const { data: row, error: readErr } = await supabase
       .from("debacu_eval_access_requests")
-      .select(`
+      .select(
+        `
         id,
+        created_at,
         status,
         company_name,
         legal_name,
@@ -539,8 +538,9 @@ Deno.serve(async (req) => {
         accepted_terms_pdf_sha256,
         accepted_terms_accepted_at,
         terms_version,
-        request_token
-      `)
+        accepted_terms_pdf_bucket
+      `,
+      )
       .eq("id", requestId)
       .maybeSingle();
 
@@ -557,19 +557,21 @@ Deno.serve(async (req) => {
 
     if (!row) return notFound(req);
 
-    // 1.1) ✅ Autorización mínima segura: email del row debe coincidir con email del JWT
     const rowEmail = normalizeEmail((row as any).email);
-    const userEmail = normalizeEmail(user.email);
-    if (!rowEmail || !userEmail || rowEmail !== userEmail) {
-      return forbidden(req, "forbidden");
-    }
+    const rowStatus = String((row as any).status ?? "").toUpperCase();
 
-    // 2) (Opcional) validación de token si existe en BD o si viene en body
-    // - Si tu tabla NO tiene request_token, quita este bloque y el campo del select.
-    const rowToken = ((row as any).request_token as string | null) ?? null;
-    if (rowToken) {
-      if (!requestToken || requestToken !== rowToken) {
-        return forbidden(req, "invalid_request_token");
+    // 2) Autorización mínima SIN usuario:
+    // - Ideal: validar email del body contra email en BD
+    // - Si no viene email, limitar a status PENDING y created_at < 24h
+    if (providedEmail) {
+      if (!rowEmail || providedEmail !== rowEmail) return forbidden(req, "email_mismatch");
+    } else {
+      // Sin email: no lo recomiendo, pero al menos no aceptes requests viejas o ya revisadas.
+      if (rowStatus !== "PENDING") return forbidden(req, "forbidden_status");
+      const createdAt = new Date((row as any).created_at);
+      const ageMs = Date.now() - createdAt.getTime();
+      if (!Number.isFinite(ageMs) || ageMs > 24 * 60 * 60 * 1000) {
+        return forbidden(req, "request_expired");
       }
     }
 
@@ -579,7 +581,7 @@ Deno.serve(async (req) => {
         ok: true,
         proof: {
           request_id: (row as any).id,
-          bucket: LEGAL_BUCKET,
+          bucket: (row as any).accepted_terms_pdf_bucket ?? LEGAL_BUCKET,
           path: (row as any).accepted_terms_pdf_path,
           sha256: (row as any).accepted_terms_pdf_sha256,
           accepted_at: (row as any).accepted_terms_accepted_at,
@@ -588,7 +590,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // 4) Validaciones mínimas
+    // 4) Validaciones mínimas para PDF coherente
     if (!(row as any).company_name) return badRequest(req, "missing_company_name");
     if (!(row as any).cif) return badRequest(req, "missing_cif");
     if (!(row as any).contact_name) return badRequest(req, "missing_contact_name");
@@ -626,7 +628,7 @@ Deno.serve(async (req) => {
 
     const pdfBytes = await buildPdf(pdfData, acceptedAt);
 
-    // 6) Hash
+    // 6) Hash SHA256
     const digest = await crypto.subtle.digest("SHA-256", pdfBytes);
     const sha256 = toHex(digest);
 
@@ -648,13 +650,13 @@ Deno.serve(async (req) => {
       return serverError(req, "storage_upload_failed", uploadError.message);
     }
 
-    // 8) Persistir aceptación
+    // 8) Persistir aceptación en BD
     const { error: updateError } = await supabase
       .from("debacu_eval_access_requests")
       .update({
         accepted_terms: true,
+        accepted_terms_pdf_bucket: LEGAL_BUCKET,
         accepted_terms_pdf_path: path,
-        accepted_terms_pdf_bucket: LEGAL_BUCKET, // ✅ tu tabla tiene este campo
         accepted_terms_pdf_sha256: sha256,
         accepted_terms_accepted_at: acceptedAt,
         accepted_terms_ip: ip,
@@ -696,17 +698,11 @@ Deno.serve(async (req) => {
       },
     });
   } catch (e: any) {
-    const msg = e?.message ?? String(e);
-    // requireUser suele lanzar UNAUTHENTICATED/UNAUTHORIZED
-    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
-      return json(req, 401, errPayload("UNAUTHENTICATED"));
-    }
-
     console.error("internal_error", {
-      message: msg,
+      message: e?.message ?? String(e),
       stack: e?.stack,
       ms: Date.now() - started,
     });
-    return serverError(req, "internal_error", msg);
+    return serverError(req, "internal_error", e?.message ?? String(e));
   }
 });
