@@ -13,6 +13,7 @@ type Body = {
   lastName?: string | null;
   title?: string | null;
   phone?: string | null;
+  siteUrl?: string | null; // ✅ para local/prod
 };
 
 function safeStr(v: any) {
@@ -28,20 +29,21 @@ function normRole(v: any) {
   const r = safeStr(v).toUpperCase();
   return r || "STAFF";
 }
+function upper(v: any) {
+  return String(v ?? "").trim().toUpperCase();
+}
 
 function err(detail: string, extra?: any) {
   return { ok: false, error: "request_failed", detail, ...(extra ? { extra } : {}) };
 }
 
-const SITE_URL = Deno.env.get("SITE_URL") ?? "https://debacu.com";
-const INVITE_REDIRECT_TO = `${SITE_URL}/auth/activate`;
+const DEFAULT_SITE_URL = Deno.env.get("SITE_URL") ?? "https://debacu.com";
 
 async function requireOrgPrivileged(
   sb: ReturnType<typeof supabaseServiceClient>,
   authUserId: string,
   orgId: string,
 ) {
-  // probamos con user_id y auth_user_id
   const { data: a, error: ea } = await sb
     .from("debacu_eval_org_members")
     .select("role,status")
@@ -63,8 +65,8 @@ async function requireOrgPrivileged(
     row = b;
   }
 
-  if (!row || String(row.status) !== "ACTIVE") throw new Error("FORBIDDEN");
-  const role = String(row.role ?? "").toUpperCase();
+  if (!row || upper(row.status) !== "ACTIVE") throw new Error("FORBIDDEN");
+  const role = upper(row.role);
   if (role !== "OWNER" && role !== "ADMIN") throw new Error("FORBIDDEN");
 }
 
@@ -113,11 +115,8 @@ Deno.serve(async (req) => {
     if (!isValidEmail(email)) return json(req, 400, err("invalid_email"));
     if (role !== "STAFF" && role !== "ADMIN") return json(req, 400, err("invalid_role"));
 
-    const ent = await getEntitlements(sb, orgId);
-    if (String(ent.subscription_status ?? "").toUpperCase() !== "ACTIVE") {
-      return json(req, 402, err("PLAN_NOT_ACTIVE"));
-    }
-    if (ent.seats_available <= 0) return json(req, 409, err("SEATS_EXCEEDED"));
+    const siteUrl = safeStr(body.siteUrl) || DEFAULT_SITE_URL;
+    const redirectTo = `${siteUrl}/auth/activate`;
 
     // ¿Ya existe membership para ese email?
     const { data: existing, error: exErr } = await sb
@@ -129,18 +128,36 @@ Deno.serve(async (req) => {
 
     if (exErr) return json(req, 500, err("db_read_failed"));
 
+    const existingStatus = upper(existing?.status);
+
     // Si existe ACTIVE o SUSPENDED => no invitamos
-    if (existing?.id) {
-      const st = String(existing.status ?? "").toUpperCase();
-      if (st === "ACTIVE" || st === "SUSPENDED") {
-        return json(req, 409, err("ALREADY_MEMBER"));
+    if (existing?.id && (existingStatus === "ACTIVE" || existingStatus === "SUSPENDED")) {
+      return json(req, 409, err("ALREADY_MEMBER"));
+    }
+
+    // ✅ Seats / plan: solo bloquea si vas a CREAR un INVITED nuevo.
+    // Si ya existía INVITED, permitimos RESEND aunque seats_available = 0.
+    if (!existing?.id) {
+      const ent = await getEntitlements(sb, orgId);
+
+      if (upper(ent.subscription_status) !== "ACTIVE") {
+        return json(req, 402, err("PLAN_NOT_ACTIVE"));
       }
-      // Si existe INVITED => lo tratamos como RESEND
+      if (ent.seats_available <= 0) return json(req, 409, err("SEATS_EXCEEDED"));
+    }
+
+    let memberId = existing?.id as string | undefined;
+
+    // Si existe INVITED y cambias role, lo actualizamos.
+    if (memberId && existingStatus === "INVITED" && upper(existing?.role) !== role) {
+      const { error: upRoleErr } = await sb
+        .from("debacu_eval_org_members")
+        .update({ role, updated_at: new Date().toISOString() })
+        .eq("id", memberId);
+      if (upRoleErr) return json(req, 500, err("db_write_failed"));
     }
 
     // Si no existe, creamos INVITED
-    let memberId = existing?.id as string | undefined;
-
     if (!memberId) {
       const { data: member, error: insErr } = await sb
         .from("debacu_eval_org_members")
@@ -153,7 +170,7 @@ Deno.serve(async (req) => {
           user_id: null,
           created_by_user_id: user.id,
         })
-        .select("id, created_at, org_id, role, status, invited_email")
+        .select("id")
         .single();
 
       if (insErr || !member?.id) return json(req, 500, err("db_write_failed"));
@@ -171,30 +188,58 @@ Deno.serve(async (req) => {
         });
 
       if (profileErr) {
-        // rollback
         await sb.from("debacu_eval_org_members").delete().eq("id", memberId);
         return json(req, 500, err("db_write_failed"));
       }
     }
 
-    // INVITE por Auth (puede fallar si el email ya existe en auth)
+    // INVITE por Auth
     const { error: inviteErr } = await sb.auth.admin.inviteUserByEmail(email, {
-      redirectTo: INVITE_REDIRECT_TO,
-      data: { app: "DEBACU_EVAL", org_id: orgId, invited_by: user.id },
+      redirectTo,
+      data: { app: "DEBACU_EVAL", org_id: orgId, member_id: memberId, invited_by: user.id, role },
     });
 
     if (inviteErr) {
-      // NO borro el membership si ya existía INVITED (porque es útil para reintentos)
-      // Si lo acabamos de crear, sí podemos rollback para no dejar basura
+      // ✅ Si falla por "user already exists", aquí lo sensato es RECOVERY (reset password).
+      const msg = String(inviteErr.message ?? "");
+      const looksLikeExists =
+        msg.toLowerCase().includes("already") ||
+        msg.toLowerCase().includes("exists") ||
+        msg.toLowerCase().includes("registered");
+
+      if (looksLikeExists) {
+        // OJO: generateLink devuelve link, NO garantiza envío de email.
+        const { data: linkData, error: linkErr } = await sb.auth.admin.generateLink({
+          type: "recovery",
+          email,
+          options: { redirectTo },
+        });
+
+        if (linkErr) return json(req, 400, err("invite_failed", { message: msg }));
+
+        return json(req, 200, {
+          ok: true,
+          data: {
+            member_id: memberId,
+            org_id: orgId,
+            email,
+            role,
+            mode: "RECOVERY_LINK_GENERATED",
+            action_link: linkData?.properties?.action_link ?? null,
+          },
+        });
+      }
+
+      // rollback solo si lo acabamos de crear
       if (!existing?.id && memberId) {
         await sb.from("debacu_eval_org_member_profiles").delete().eq("member_id", memberId);
         await sb.from("debacu_eval_org_members").delete().eq("id", memberId);
       }
 
-      return json(req, 400, err("invite_failed", { message: inviteErr.message }));
+      return json(req, 400, err("invite_failed", { message: msg }));
     }
 
-    return json(req, 200, { ok: true, data: { member_id: memberId, org_id: orgId, email, role } });
+    return json(req, 200, { ok: true, data: { member_id: memberId, org_id: orgId, email, role, mode: "INVITE" } });
   } catch (e: any) {
     const msg = String(e?.message ?? "");
     if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return json(req, 401, err("UNAUTHENTICATED"));
