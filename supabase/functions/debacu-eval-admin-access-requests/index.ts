@@ -1,4 +1,4 @@
-// supabase/functions/debacu_eval_admin_access_requests/index.ts
+// supabase/functions/debacu-eval-admin-access-requests/index.ts
 // deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
@@ -32,7 +32,6 @@ function safeUpper(v: any) {
 const toDate = (d: Date) => d.toISOString().slice(0, 10);
 
 async function readJson(req: Request) {
-  // Evita throws por body vacío / inválido
   try {
     const t = await req.text();
     if (!t) return {};
@@ -49,7 +48,6 @@ function supabaseServiceClient() {
 }
 
 function supabaseAnonClientNoAuth() {
-  // Para resetPasswordForEmail (no necesita user JWT)
   return createClient(SUPABASE_URL, ANON_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
@@ -75,10 +73,8 @@ async function getAuthUserIdByEmail(sbAdmin: ReturnType<typeof supabaseServiceCl
 
 /**
  * Envía email automático:
- * - si user NO existe: INVITE (Supabase manda email por SMTP)
- * - si user existe: RECOVERY (Supabase manda email por SMTP)
- *
- * Devuelve SIEMPRE (mode + user_id si lo pudo resolver).
+ * - si user NO existe: INVITE
+ * - si user existe: RECOVERY
  */
 async function sendInviteOrRecovery(params: {
   sbAdmin: ReturnType<typeof supabaseServiceClient>;
@@ -96,7 +92,6 @@ async function sendInviteOrRecovery(params: {
       data: { customer_id, org_id, app: "DEBACU_EVAL" },
     });
     if (error) throw new Error("invite_failed");
-
     const newId = data?.user?.id ?? null;
     return { mode: "INVITED" as const, user_id: newId };
   }
@@ -258,7 +253,9 @@ async function ensureOrganization(
 }
 
 /** ======================================================
- *  Membership: asegura OWNER ACTIVE con user_id
+ *  Membership: asegura OWNER ACTIVE CANÓNICO
+ *  - auth_user_id es canónico
+ *  - user_id se mantiene == auth_user_id para no romper legacy
  *  ====================================================== */
 async function ensureOwnerActiveMembership(
   sbAdmin: ReturnType<typeof supabaseServiceClient>,
@@ -270,26 +267,28 @@ async function ensureOwnerActiveMembership(
   },
 ) {
   const org_id = params.org_id;
-  const auth_user_id = params.auth_user_id;
+  const auth_user_id = safeStr(params.auth_user_id);
   const invited_email = safeLowerEmail(params.invited_email);
 
   if (!org_id || !auth_user_id) throw new Error("missing_member_inputs");
 
-  // 1) ya existe por (org_id, user_id)
-  const { data: byUser, error: byUserErr } = await sbAdmin
+  // 1) ya existe por (org_id, auth_user_id) -> canónico
+  const { data: byAuth, error: byAuthErr } = await sbAdmin
     .from("debacu_eval_org_members")
-    .select("id, role, status, invited_email, user_id")
+    .select("id, role, status, invited_email, auth_user_id, user_id")
     .eq("org_id", org_id)
-    .eq("user_id", auth_user_id)
+    .eq("auth_user_id", auth_user_id)
     .maybeSingle();
 
-  if (byUserErr) throw new Error("db_member_find_by_user_failed");
+  if (byAuthErr) throw new Error("db_member_find_by_auth_failed");
 
-  if (byUser?.id) {
+  if (byAuth?.id) {
     const needsUpdate =
-      String(byUser.role || "").toUpperCase() !== "OWNER" ||
-      String(byUser.status || "").toUpperCase() !== "ACTIVE" ||
-      (invited_email && safeLowerEmail(byUser.invited_email) !== invited_email);
+      String(byAuth.role || "").toUpperCase() !== "OWNER" ||
+      String(byAuth.status || "").toUpperCase() !== "ACTIVE" ||
+      (invited_email && safeLowerEmail(byAuth.invited_email) !== invited_email) ||
+      // keep legacy mirror
+      safeStr(byAuth.user_id) !== auth_user_id;
 
     if (needsUpdate) {
       const { error: updErr } = await sbAdmin
@@ -298,22 +297,52 @@ async function ensureOwnerActiveMembership(
           role: "OWNER",
           status: "ACTIVE",
           invited_email: invited_email || null,
+          user_id: auth_user_id, // legacy mirror
+          updated_at: new Date().toISOString(),
         })
-        .eq("id", byUser.id);
+        .eq("id", byAuth.id);
 
       if (updErr) throw new Error("db_member_update_failed");
     }
 
-    return { member_id: byUser.id as string, mode: "UPDATED_BY_USER" as const };
+    return { member_id: byAuth.id as string, mode: "UPDATED_BY_AUTH" as const };
   }
 
-  // 2) existe INVITED por email (huérfana) -> reclamar y activar
+  // 2) existe legacy por (org_id, user_id==auth_user_id, auth_user_id null) -> canonizar
+  const { data: legacy, error: legacyErr } = await sbAdmin
+    .from("debacu_eval_org_members")
+    .select("id, role, status, invited_email, auth_user_id, user_id")
+    .eq("org_id", org_id)
+    .eq("user_id", auth_user_id)
+    .is("auth_user_id", null)
+    .maybeSingle();
+
+  if (legacyErr) throw new Error("db_member_find_legacy_failed");
+
+  if (legacy?.id) {
+    const { error: updErr } = await sbAdmin
+      .from("debacu_eval_org_members")
+      .update({
+        auth_user_id,
+        user_id: auth_user_id, // keep mirror
+        role: "OWNER",
+        status: "ACTIVE",
+        invited_email: invited_email || legacy.invited_email || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", legacy.id);
+
+    if (updErr) throw new Error("db_member_legacy_canonize_failed");
+    return { member_id: legacy.id as string, mode: "CANONIZED_LEGACY" as const };
+  }
+
+  // 3) existe INVITED por email -> reclamar y activar (canónico)
   if (invited_email) {
     const { data: byEmail, error: byEmailErr } = await sbAdmin
       .from("debacu_eval_org_members")
-      .select("id, status, role, user_id, invited_email")
+      .select("id, status, role, auth_user_id, user_id, invited_email")
       .eq("org_id", org_id)
-      .eq("invited_email", invited_email)
+      .ilike("invited_email", invited_email)
       .in("status", ["INVITED", "PENDING", "ACTIVE"])
       .order("created_at", { ascending: true })
       .limit(1)
@@ -325,9 +354,11 @@ async function ensureOwnerActiveMembership(
       const { error: updErr } = await sbAdmin
         .from("debacu_eval_org_members")
         .update({
-          user_id: auth_user_id,
+          auth_user_id,
+          user_id: auth_user_id, // legacy mirror
           role: "OWNER",
           status: "ACTIVE",
+          updated_at: new Date().toISOString(),
         })
         .eq("id", byEmail.id);
 
@@ -337,7 +368,7 @@ async function ensureOwnerActiveMembership(
     }
   }
 
-  // 3) crear nueva
+  // 4) crear nueva (canónica)
   const { data: inserted, error: insErr } = await sbAdmin
     .from("debacu_eval_org_members")
     .insert({
@@ -345,14 +376,16 @@ async function ensureOwnerActiveMembership(
       role: "OWNER",
       status: "ACTIVE",
       invited_email: invited_email || null,
-      user_id: auth_user_id,
+      auth_user_id,
+      user_id: auth_user_id, // legacy mirror
       created_by_user_id: params.created_by_user_id,
+      updated_at: new Date().toISOString(),
     })
     .select("id")
     .single();
 
   if (insErr) throw new Error("db_member_insert_failed");
-  return { member_id: inserted.id as string, mode: "CREATED" as const };
+  return { member_id: inserted.id as string, mode: "CREATED_CANONICAL" as const };
 }
 
 /** ======================================================
@@ -414,7 +447,6 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return preflight(req);
 
   try {
-    // Admin JWT-only
     const adminUser = await requireAdmin(req);
 
     const sbAdmin = supabaseServiceClient();
@@ -477,7 +509,6 @@ Deno.serve(async (req) => {
 
       const customer_id = await getOrCreateCustomerByEmail(sbAdmin, email, company_name);
 
-      // update customers (best-effort, pero si falla es error)
       const { error: custUpdErr } = await sbAdmin
         .from("customers")
         .update({
@@ -522,11 +553,11 @@ Deno.serve(async (req) => {
 
       const subRes = await ensureFreeTrialSubscription(sbAdmin, customer_id);
 
-      // Email Supabase SMTP: invite o recovery
+      // Email: invite o recovery
       let email_sent = false;
       let email_detail: string | null = null;
       let last_email_status: string | null = null;
-      let last_email_at: string | null = new Date().toISOString();
+      const last_email_at: string | null = new Date().toISOString();
 
       let resolved_auth_user_id: string | null = null;
 
@@ -680,12 +711,10 @@ Deno.serve(async (req) => {
   } catch (e: any) {
     const msg = e?.message ?? String(e);
 
-    // Mapping estricto de códigos
     if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return errResp(req, 401, "UNAUTHORIZED");
     if (msg === "FORBIDDEN") return errResp(req, 403, "FORBIDDEN");
     if (String(msg).startsWith("missing_") || String(msg).startsWith("invalid_")) return errResp(req, 400, msg);
 
-    // No filtrar stack traces ni mensajes internos
     return errResp(req, 500, "internal_error");
   }
 });
