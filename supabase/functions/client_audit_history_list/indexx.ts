@@ -1,40 +1,41 @@
 // supabase/functions/client_audit_history_list/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 import { json, preflight } from "../_shared/cors.ts";
-import { requireUser } from "../_shared/auth.ts";
-
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
 const APP_ID = "DEBACU_EVAL";
 
 /**
- * Ajusta si tu schema usa otra columna/valor para estado de miembro.
- * Si no tienes estado, quita estas líneas (pero lo ideal es tenerlo).
+ * Si tu tabla org_members usa status (ACTIVE/INVITED/...), mantenlo.
+ * Si no, ajusta MEMBERSHIP_*.
  */
 const MEMBERSHIP_STATUS_COLUMN = "status";
 const MEMBERSHIP_ACTIVE_VALUE = "ACTIVE";
 
 type ReqBody = {
-  org_id?: string;       // recomendado: UI siempre manda org_id
-  page?: number;         // 1..n
-  pageSize?: number;     // 5..100
-  q?: string;            // search
-  event_type?: string;   // default CHECK_SIGNALS
+  org_id?: string; // recomendado: UI siempre manda org_id
+  page?: number; // 1..n
+  pageSize?: number; // 5..100
+  q?: string; // search
+  event_type?: string; // default CHECK_SIGNALS
 };
 
-function supabaseServiceClient() {
-  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
+type OrgResolvedBy = "requested" | "first_active" | "first_any";
+
+type EntitlementsRow = {
+  org_id: string;
+  customer_id: string | null;
+  subscription_status: string | null; // ACTIVE | TRIAL_ACTIVE | ...
+  plan_code: string | null;
+  max_users: number | null;
+  seats_used: number | null;
+};
 
 function isUuid(v: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    v,
-  );
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
 
 function clamp(n: number, min: number, max: number) {
@@ -46,75 +47,101 @@ function safeStr(v: unknown) {
 }
 
 /** ======================================================
- * ORG (multi-org)
+ * ORG (multi-org) - FIX STAFF: user_id OR auth_user_id
  * ====================================================== */
 async function resolveOrgAndRoleOrThrow(
-  admin: ReturnType<typeof supabaseServiceClient>,
+  admin: SupabaseClient,
   userId: string,
   requestedOrgId?: string | null,
-) {
+): Promise<{ org_id: string; role: string | null; resolvedBy: OrgResolvedBy }> {
+  const uid = String(userId);
+
   if (requestedOrgId) {
     const orgId = String(requestedOrgId).trim();
     if (!isUuid(orgId)) throw new Error("invalid_org_id");
 
-    const { data, error } = await admin
-      .from("debacu_eval_org_members")
-      .select("org_id, role")
-      .eq("user_id", userId)
-      .eq("org_id", orgId)
-      .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
-      .maybeSingle();
+    // Primero intentamos ACTIVE (ideal)
+    try {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id, role")
+        .eq("org_id", orgId)
+        .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+        .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
+        .maybeSingle();
 
-    if (error) throw new Error(`membership_lookup_failed:${error.message}`);
-    if (!data?.org_id) throw new Error("FORBIDDEN");
+      if (error) throw error;
+      if (!data?.org_id) throw new Error("FORBIDDEN");
 
-    return { org_id: String(data.org_id), role: (data.role ?? null) as string | null };
+      return { org_id: String(data.org_id), role: (data.role ?? null) as string | null, resolvedBy: "requested" };
+    } catch {
+      // Fallback: si por lo que sea no hay status, permitimos membership existente
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id, role")
+        .eq("org_id", orgId)
+        .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+        .maybeSingle();
+
+      if (error || !data?.org_id) throw new Error("FORBIDDEN");
+      return { org_id: String(data.org_id), role: (data.role ?? null) as string | null, resolvedBy: "requested" };
+    }
   }
 
-  // Fallback determinista: primera membership ACTIVE (por created_at asc)
-  const { data, error } = await admin
-    .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", userId)
-    .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+  // Fallback determinista: primera membership ACTIVE (created_at asc)
+  try {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, role, created_at")
+      .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+      .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
 
-  if (error) throw new Error(`membership_lookup_failed:${error.message}`);
-  if (!data?.org_id) throw new Error("FORBIDDEN");
+    if (error) throw error;
+    if (!data?.org_id) throw new Error("FORBIDDEN");
 
-  return { org_id: String(data.org_id), role: (data.role ?? null) as string | null };
+    return { org_id: String(data.org_id), role: (data.role ?? null) as string | null, resolvedBy: "first_active" };
+  } catch {
+    // Fallback: primera membership (sin status)
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, role, created_at")
+      .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data?.org_id) throw new Error("FORBIDDEN");
+    return { org_id: String(data.org_id), role: (data.role ?? null) as string | null, resolvedBy: "first_any" };
+  }
 }
 
-type EntitlementsRow = {
-  org_id: string;
-  customer_id: string | null;
-  subscription_status: string | null; // ACTIVE o null en tu view hoy
-  plan_code: string | null;
-  max_users: number | null;
-  seats_used: number | null;
-};
-
-async function loadEntitlementsOrThrow(
-  admin: ReturnType<typeof supabaseServiceClient>,
-  orgId: string,
-) {
+/** ======================================================
+ * Entitlements
+ * ====================================================== */
+async function loadEntitlementsOrThrow(admin: SupabaseClient, orgId: string) {
   const { data, error } = await admin
     .from("debacu_eval_org_entitlements_v")
     .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used")
     .eq("org_id", orgId)
     .maybeSingle();
 
-  if (error) throw new Error(`entitlements_failed:${error.message}`);
-  if (!data) throw new Error("FORBIDDEN");
-  if (!data.customer_id) throw new Error("FORBIDDEN");
-
+  if (error || !data?.org_id) throw new Error("FORBIDDEN");
   return data as EntitlementsRow;
 }
 
-function assertPlanActiveOrThrow(ent: EntitlementsRow) {
-  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+/**
+ * Auditoría: normalmente quieres permitir:
+ * - ACTIVE
+ * - TRIAL_ACTIVE (si lo usas)
+ * Ajusta según tu modelo real.
+ */
+function assertAuditAllowedOrThrow(ent: EntitlementsRow) {
+  const st = String(ent.subscription_status ?? "").toUpperCase();
+  if (st !== "ACTIVE" && st !== "TRIAL_ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+  if (!ent.customer_id) throw new Error("FORBIDDEN");
 }
 
 /** ======================================================
@@ -130,14 +157,14 @@ export default Deno.serve(async (req: Request) => {
     const user = await requireUser(req);
     const body = (await req.json().catch(() => ({}))) as ReqBody;
 
-    const { org_id, role: currentRole } = await resolveOrgAndRoleOrThrow(
+    const { org_id, role: currentRole, resolvedBy: org_id_resolved_by } = await resolveOrgAndRoleOrThrow(
       admin,
       user.id,
       body?.org_id ?? null,
     );
 
     const ent = await loadEntitlementsOrThrow(admin, org_id);
-    assertPlanActiveOrThrow(ent);
+    assertAuditAllowedOrThrow(ent);
 
     const customer_id = String(ent.customer_id);
 
@@ -177,35 +204,52 @@ export default Deno.serve(async (req: Request) => {
 
     if (q) {
       const like = `%${q}%`;
-      // Nota: .or() en PostgREST puede ser caro; mantenemos solo campos indexables si existen.
+      // Nota: .or() en PostgREST puede ser caro. Si hay índices en id/action/search_value_masked, mejor.
       query = query.or(`id.ilike.${like},search_value_masked.ilike.${like},action.ilike.${like}`);
     }
 
     const { data: rows, error, count } = await query;
     if (error) throw new Error(`list_failed:${error.message}`);
 
-    const actorIds = Array.from(
-      new Set((rows ?? []).map((r: any) => r.actor_user_id).filter(Boolean)),
-    ) as string[];
+    // Roles de los actores (si tienes actor_user_id histórico)
+    const actorIds = Array.from(new Set((rows ?? []).map((r: any) => r.actor_user_id).filter(Boolean))) as string[];
 
     let roleByUserId: Record<string, string> = {};
     if (actorIds.length > 0) {
-      const { data: mems, error: memErr } = await admin
+      // FIX STAFF: user_id OR auth_user_id
+      // No podemos hacer OR con .in() directo en ambos campos en un solo query limpio,
+      // así que intentamos por user_id primero, y si falta, por auth_user_id.
+      const { data: mems1, error: memErr1 } = await admin
         .from("debacu_eval_org_members")
         .select("user_id, role")
         .eq("org_id", org_id)
         .in("user_id", actorIds);
 
-      if (memErr) throw new Error(`members_lookup_failed:${memErr.message}`);
+      if (memErr1) throw new Error(`members_lookup_failed:${memErr1.message}`);
 
-      roleByUserId = Object.fromEntries(
-        (mems ?? []).map((m: any) => [String(m.user_id), String(m.role ?? "—")]),
-      );
+      const map1 = Object.fromEntries((mems1 ?? []).map((m: any) => [String(m.user_id), String(m.role ?? "—")]));
+      roleByUserId = { ...map1 };
+
+      const missing = actorIds.filter((id) => !roleByUserId[id]);
+      if (missing.length > 0) {
+        const { data: mems2, error: memErr2 } = await admin
+          .from("debacu_eval_org_members")
+          .select("auth_user_id, role")
+          .eq("org_id", org_id)
+          .in("auth_user_id", missing);
+
+        if (memErr2) throw new Error(`members_lookup_failed:${memErr2.message}`);
+
+        for (const m of mems2 ?? []) {
+          const k = String((m as any).auth_user_id ?? "");
+          if (k) roleByUserId[k] = String((m as any).role ?? "—");
+        }
+      }
     }
 
     const items = (rows ?? []).map((r: any) => {
       const meta = (r.meta ?? {}) as any;
-      const risk = (meta?.risk ?? "NO_CONCLUYENTE") as string;
+      const risk = String(meta?.risk ?? "NO_CONCLUYENTE");
       const avgStars = meta?.avg_stars ?? null;
 
       const typeLabel =
@@ -215,10 +259,7 @@ export default Deno.serve(async (req: Request) => {
             ? "Exportación PDF"
             : String(r.action ?? "Evento");
 
-      const detailLabel =
-        r.entity === "EVALUATION_SEARCH"
-          ? "Consulta de registro"
-          : String(r.entity ?? "—");
+      const detailLabel = r.entity === "EVALUATION_SEARCH" ? "Consulta de registro" : String(r.entity ?? "—");
 
       const userRole = r.actor_user_id
         ? roleByUserId[String(r.actor_user_id)] ?? "—"
@@ -240,6 +281,13 @@ export default Deno.serve(async (req: Request) => {
 
     return json(req, 200, {
       ok: true,
+      meta: {
+        org_id,
+        org_id_resolved_by,
+        customer_id,
+        plan_code: ent.plan_code ?? null,
+        subscription_status: ent.subscription_status ?? null,
+      },
       page,
       pageSize,
       total: count ?? 0,
@@ -261,6 +309,9 @@ export default Deno.serve(async (req: Request) => {
     // 400 (validaciones)
     if (msg.startsWith("missing_") || msg.startsWith("invalid_")) {
       return json(req, 400, { ok: false, error: msg });
+    }
+    if (msg === "invalid_org_id") {
+      return json(req, 400, { ok: false, error: "invalid_org_id" });
     }
 
     // 403

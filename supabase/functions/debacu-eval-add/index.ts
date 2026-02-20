@@ -74,17 +74,20 @@ function seasonMultiplier(season: string | null, profile: any) {
 
 /* ======================================================
  * AuthZ tenant (STRICT: org_id requerido)
+ * - FIX: membership lookup soporta user_id OR auth_user_id
  * ====================================================== */
 async function requireOrgContext(
   admin: ReturnType<typeof sbService>,
   user_id: string,
   org_id: string,
 ) {
-  // membership ACTIVE en org
+  const uid = String(user_id);
+
+  // membership ACTIVE en org (OR user_id/auth_user_id)
   const { data: mem, error: memErr } = await admin
     .from("debacu_eval_org_members")
     .select("org_id, role, status")
-    .eq("user_id", user_id)
+    .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
     .eq("org_id", org_id)
     .eq("status", "ACTIVE")
     .maybeSingle();
@@ -122,10 +125,15 @@ async function requireOrgContext(
  * ====================================================== */
 
 /** ✅ TABLA CORRECTA: debacu_eval_hotel_profile */
-async function getHotelProfile(admin: ReturnType<typeof sbService>, customer_id: string) {
+async function getHotelProfile(
+  admin: ReturnType<typeof sbService>,
+  customer_id: string,
+) {
   const { data, error } = await admin
     .from("debacu_eval_hotel_profile")
-    .select("customer_id, hotel_category, adr_real, season_mult_high, season_mult_low, profile_completed")
+    .select(
+      "customer_id, hotel_category, adr_real, season_mult_high, season_mult_low, profile_completed",
+    )
     .eq("customer_id", customer_id)
     .maybeSingle();
 
@@ -133,7 +141,10 @@ async function getHotelProfile(admin: ReturnType<typeof sbService>, customer_id:
   return data ?? null;
 }
 
-async function getAdrReference(admin: ReturnType<typeof sbService>, hotel_category: number) {
+async function getAdrReference(
+  admin: ReturnType<typeof sbService>,
+  hotel_category: number,
+) {
   const { data, error } = await admin
     .from("debacu_adr_reference_by_category")
     .select("adr_reference")
@@ -144,10 +155,15 @@ async function getAdrReference(admin: ReturnType<typeof sbService>, hotel_catego
   return num(data?.adr_reference);
 }
 
-async function getIncidentCatalog(admin: ReturnType<typeof sbService>, incident_type: string) {
+async function getIncidentCatalog(
+  admin: ReturnType<typeof sbService>,
+  incident_type: string,
+) {
   const { data, error } = await admin
     .from("debacu_incident_catalog")
-    .select("incident_type, is_active, severity, default_gross_min, default_gross_max, default_recovery_pct, title, description, suggested_actions")
+    .select(
+      "incident_type, is_active, severity, default_gross_min, default_gross_max, default_recovery_pct, title, description, suggested_actions",
+    )
     .eq("incident_type", incident_type)
     .maybeSingle();
 
@@ -157,10 +173,16 @@ async function getIncidentCatalog(admin: ReturnType<typeof sbService>, incident_
   return data;
 }
 
-async function getIncidentOverride(admin: ReturnType<typeof sbService>, customer_id: string, incident_type: string) {
+async function getIncidentOverride(
+  admin: ReturnType<typeof sbService>,
+  customer_id: string,
+  incident_type: string,
+) {
   const { data, error } = await admin
     .from("debacu_hotel_incident_overrides")
-    .select("incident_type, is_active, severity_override, default_gross_min_override, default_gross_max_override, default_recovery_pct_override, title_override, description_override, suggested_actions_override")
+    .select(
+      "incident_type, is_active, severity_override, default_gross_min_override, default_gross_max_override, default_recovery_pct_override, title_override, description_override, suggested_actions_override",
+    )
     .eq("customer_id", customer_id)
     .eq("incident_type", incident_type)
     .maybeSingle();
@@ -172,7 +194,11 @@ async function getIncidentOverride(admin: ReturnType<typeof sbService>, customer
 }
 
 /** Fuente de precio por hotel: debacu_hotel_item_catalog */
-async function getHotelItemUnitPrice(admin: ReturnType<typeof sbService>, customer_id: string, item_code: string) {
+async function getHotelItemUnitPrice(
+  admin: ReturnType<typeof sbService>,
+  customer_id: string,
+  item_code: string,
+) {
   const { data, error } = await admin
     .from("debacu_hotel_item_catalog")
     .select("unit_price, is_active")
@@ -194,7 +220,11 @@ Deno.serve(async (req) => {
 
   if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") {
-    return json(req, 405, { ok: false, error: "request_failed", detail: "METHOD_NOT_ALLOWED" });
+    return json(req, 405, {
+      ok: false,
+      error: "request_failed",
+      detail: "METHOD_NOT_ALLOWED",
+    });
   }
 
   try {
@@ -209,7 +239,8 @@ Deno.serve(async (req) => {
     const org_id = str(body.org_id ?? body.orgId);
     if (!org_id) return err(req, 400, "missing_org_id");
 
-    const accept_declaration = body.accept_declaration ?? body.acceptDeclaration ?? true;
+    const accept_declaration =
+      body.accept_declaration ?? body.acceptDeclaration ?? true;
     const input = body.input;
 
     if (!input) return err(req, 400, "missing_input");
@@ -217,7 +248,7 @@ Deno.serve(async (req) => {
 
     const admin = sbService();
 
-    // 3) tenant context (STRICT)
+    // 3) tenant context (STRICT) + FIX membership
     const ctx = await requireOrgContext(admin, user.id, org_id);
     if (!ctx) return err(req, 403, "FORBIDDEN");
 
@@ -228,12 +259,14 @@ Deno.serve(async (req) => {
       org_id: ctx.org_id,
       customer_id: ctx.customer_id,
       app_id: ctx.app_id,
+      role: ctx.role,
     });
 
     // 4) perfil hotel (obligatorio)
     const profile = await getHotelProfile(admin, ctx.customer_id);
 
-    const hotelCategoryOk = profile?.hotel_category !== null && profile?.hotel_category !== undefined;
+    const hotelCategoryOk =
+      profile?.hotel_category !== null && profile?.hotel_category !== undefined;
     const profileCompletedOk = profile?.profile_completed === true;
 
     if (!profile || !hotelCategoryOk || !profileCompletedOk) {
@@ -289,7 +322,8 @@ Deno.serve(async (req) => {
       }
 
       // 2) fallback: gross_min
-      const gross_min = num(ovr?.default_gross_min_override) ?? num(cat.default_gross_min) ?? 0;
+      const gross_min =
+        num(ovr?.default_gross_min_override) ?? num(cat.default_gross_min) ?? 0;
 
       economic_impact_gross =
         gross_items > 0
@@ -301,12 +335,17 @@ Deno.serve(async (req) => {
       if (recovered_input !== null) {
         economic_recovered = Math.round(Math.max(0, recovered_input) * 100) / 100;
       } else {
-        const pct = num(ovr?.default_recovery_pct_override) ?? num(cat.default_recovery_pct) ?? 0;
-        economic_recovered = Math.round((economic_impact_gross * pct / 100) * 100) / 100;
+        const pct =
+          num(ovr?.default_recovery_pct_override) ??
+          num(cat.default_recovery_pct) ??
+          0;
+        economic_recovered =
+          Math.round((economic_impact_gross * pct / 100) * 100) / 100;
       }
 
       // 4) net loss
-      economic_net_loss = Math.round((economic_impact_gross - (economic_recovered ?? 0)) * 100) / 100;
+      economic_net_loss =
+        Math.round((economic_impact_gross - (economic_recovered ?? 0)) * 100) / 100;
       if (economic_net_loss < 0) economic_net_loss = 0;
     }
 
@@ -352,7 +391,12 @@ Deno.serve(async (req) => {
       .single();
 
     if (error) {
-      logLine({ fn: FN, stage: "insert_err", code: (error as any)?.code ?? null, msg: error.message });
+      logLine({
+        fn: FN,
+        stage: "insert_err",
+        code: (error as any)?.code ?? null,
+        msg: error.message,
+      });
       return err(req, 500, "insert_failed");
     }
 

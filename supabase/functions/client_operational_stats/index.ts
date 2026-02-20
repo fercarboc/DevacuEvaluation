@@ -1,12 +1,10 @@
 // supabase/functions/debacu_eval_stats_operativas_get/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 import { json, preflight } from "../_shared/cors.ts";
-import { requireUser } from "../_shared/auth.ts";
-
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
 const DEFAULT_APP_ID = "DEBACU_EVAL";
 
@@ -84,80 +82,101 @@ type ReqBody = {
   app_id?: string;
 };
 
-function supabaseServiceClient() {
-  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
-
 function isUuid(v: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    v,
-  );
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
 
 /** ======================================================
  * ORG + ENTITLEMENTS (source of truth)
  * ====================================================== */
 async function resolveOrgIdOrThrow(
-  admin: ReturnType<typeof supabaseServiceClient>,
+  admin: SupabaseClient,
   userId: string,
   requestedOrgId?: string | null,
-) {
+): Promise<{ org_id: string; org_id_resolved_by: "requested" | "first_active" | "first_any" }> {
+  const uid = String(userId);
+
   if (requestedOrgId) {
     const orgId = String(requestedOrgId).trim();
     if (!isUuid(orgId)) throw new Error("invalid_org_id");
 
-    const { data, error } = await admin
-      .from("debacu_eval_org_members")
-      .select("org_id")
-      .eq("user_id", userId)
-      .eq("org_id", orgId)
-      .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
-      .maybeSingle();
+    // preferimos ACTIVE, pero toleramos membership existente
+    try {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id")
+        .eq("org_id", orgId)
+        .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+        .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
+        .maybeSingle();
 
-    if (error) throw new Error(`membership_lookup_failed:${error.message}`);
-    if (!data?.org_id) throw new Error("FORBIDDEN");
-    return orgId;
+      if (error) throw error;
+      if (!data?.org_id) throw new Error("FORBIDDEN");
+      return { org_id: String(data.org_id), org_id_resolved_by: "requested" };
+    } catch {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id")
+        .eq("org_id", orgId)
+        .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+        .maybeSingle();
+
+      if (error || !data?.org_id) throw new Error("FORBIDDEN");
+      return { org_id: String(data.org_id), org_id_resolved_by: "requested" };
+    }
   }
 
-  const { data, error } = await admin
-    .from("debacu_eval_org_members")
-    .select("org_id, created_at")
-    .eq("user_id", userId)
-    .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+  // fallback: primera ACTIVE
+  try {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, created_at")
+      .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+      .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
 
-  if (error) throw new Error(`membership_lookup_failed:${error.message}`);
-  if (!data?.org_id) throw new Error("FORBIDDEN");
-  return String(data.org_id);
+    if (error) throw error;
+    if (!data?.org_id) throw new Error("FORBIDDEN");
+    return { org_id: String(data.org_id), org_id_resolved_by: "first_active" };
+  } catch {
+    // fallback: primera membership sin status
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, created_at")
+      .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data?.org_id) throw new Error("FORBIDDEN");
+    return { org_id: String(data.org_id), org_id_resolved_by: "first_any" };
+  }
 }
 
 type EntitlementsRow = {
   org_id: string;
   customer_id: string | null;
-  subscription_status: string | null;
+  subscription_status: string | null; // ACTIVE | TRIAL_ACTIVE | ...
+  plan_code?: string | null;
 };
 
-async function loadEntitlementsOrThrow(
-  admin: ReturnType<typeof supabaseServiceClient>,
-  orgId: string,
-) {
+async function loadEntitlementsOrThrow(admin: SupabaseClient, orgId: string) {
   const { data, error } = await admin
     .from("debacu_eval_org_entitlements_v")
-    .select("org_id, customer_id, subscription_status")
+    .select("org_id, customer_id, subscription_status, plan_code")
     .eq("org_id", orgId)
     .maybeSingle();
 
-  if (error) throw new Error(`entitlements_failed:${error.message}`);
-  if (!data?.customer_id) throw new Error("FORBIDDEN");
+  if (error || !data?.org_id) throw new Error("FORBIDDEN");
   return data as EntitlementsRow;
 }
 
-function assertPlanActiveOrThrow(ent: EntitlementsRow) {
-  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+function assertPlanEnabledOrThrow(ent: EntitlementsRow) {
+  const st = String(ent.subscription_status ?? "").toUpperCase();
+  if (st !== "ACTIVE" && st !== "TRIAL_ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+  if (!ent.customer_id) throw new Error("FORBIDDEN");
 }
 
 /* ======================================================
@@ -184,20 +203,21 @@ export default Deno.serve(async (req: Request) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(periodFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(periodTo)) {
       return json(req, 400, { ok: false, error: "invalid_date_format" });
     }
+    if (periodFrom > periodTo) {
+      return json(req, 400, { ok: false, error: "invalid_period_range" });
+    }
 
     const isSingleDay = periodFrom === periodTo;
     const { startISO, endExclusiveISO } = rangeUTC(periodFrom, periodTo);
 
     // org + entitlements
-    const org_id = await resolveOrgIdOrThrow(admin, user.id, body?.org_id ?? null);
+    const { org_id, org_id_resolved_by } = await resolveOrgIdOrThrow(admin, user.id, body?.org_id ?? null);
     const ent = await loadEntitlementsOrThrow(admin, org_id);
-    assertPlanActiveOrThrow(ent);
+    assertPlanEnabledOrThrow(ent);
 
     const customer_id = String(ent.customer_id);
 
     // 1) Cargar CHECK_SIGNALS del rango
-    // ⚠️ Riesgo performance si el rango es enorme y hay muchas filas.
-    // Si quieres, puedes capar a X filas o forzar máximo 31 días desde UI.
     const { data: auditRows, error: aErr } = await admin
       .from("debacu_eval_audit_log")
       .select("created_at, meta")
@@ -206,12 +226,11 @@ export default Deno.serve(async (req: Request) => {
       .eq("event_type", "CHECK_SIGNALS")
       .gte("created_at", startISO)
       .lt("created_at", endExclusiveISO);
-      // .limit(20000); // <-- opcional soft-cap
 
     if (aErr) throw new Error(`failed_load_audit_rows:${aErr.message}`);
 
     // 2) Cargar registros creados por el hotel en el rango
-    // Mantengo TU tabla/campo tal cual (creator_customer_uuid). Si ya migraste a otro, cámbialo aquí.
+    // Mantengo creator_customer_uuid como en tu código (ajusta si cambia el source of truth)
     const { data: evalRows, error: eErr } = await admin
       .from("debacu_evaluations")
       .select("created_at")
@@ -221,7 +240,7 @@ export default Deno.serve(async (req: Request) => {
 
     if (eErr) throw new Error(`failed_load_evaluation_rows:${eErr.message}`);
 
-    // 3) Construir daily con días completos aunque no haya datos
+    // 3) Daily con días completos aunque no haya datos
     const dailyMap = new Map<string, DailyPoint>();
 
     const fromStart = new Date(dayRangeUTC(periodFrom).startISO);
@@ -229,14 +248,7 @@ export default Deno.serve(async (req: Request) => {
 
     for (let d = new Date(fromStart); d <= toStart; d = addDaysUTC(d, 1)) {
       const key = toISODateUTC(d);
-      dailyMap.set(key, {
-        date: key,
-        count: 0,
-        highRisk: 0,
-        mediumRisk: 0,
-        lowRisk: 0,
-        records: 0,
-      });
+      dailyMap.set(key, { date: key, count: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0, records: 0 });
     }
 
     // 4) Agregar consultas por día + riesgo
@@ -250,14 +262,8 @@ export default Deno.serve(async (req: Request) => {
       if (!createdAt) continue;
 
       const dayKey = createdAt.slice(0, 10);
-      const p = dailyMap.get(dayKey) ?? {
-        date: dayKey,
-        count: 0,
-        highRisk: 0,
-        mediumRisk: 0,
-        lowRisk: 0,
-        records: 0,
-      };
+      const p =
+        dailyMap.get(dayKey) ?? { date: dayKey, count: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0, records: 0 };
 
       p.count += 1;
       totalConsultas += 1;
@@ -285,17 +291,12 @@ export default Deno.serve(async (req: Request) => {
       if (!createdAt) continue;
 
       const dayKey = createdAt.slice(0, 10);
-      const p = dailyMap.get(dayKey) ?? {
-        date: dayKey,
-        count: 0,
-        highRisk: 0,
-        mediumRisk: 0,
-        lowRisk: 0,
-        records: 0,
-      };
+      const p =
+        dailyMap.get(dayKey) ?? { date: dayKey, count: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0, records: 0 };
 
       p.records += 1;
       totalRegistros += 1;
+
       dailyMap.set(dayKey, p);
     }
 
@@ -336,7 +337,10 @@ export default Deno.serve(async (req: Request) => {
       meta: {
         app_id: appId,
         org_id,
+        org_id_resolved_by,
         customer_id,
+        plan_code: (ent as any).plan_code ?? null,
+        subscription_status: ent.subscription_status ?? null,
         period_from: periodFrom,
         period_to: periodTo,
         mode: isSingleDay ? "HOURLY" : "DAILY",
@@ -365,7 +369,7 @@ export default Deno.serve(async (req: Request) => {
       return json(req, 402, { ok: false, error: "PLAN_NOT_ACTIVE" });
     }
 
-    if (msg.startsWith("missing_") || msg.startsWith("invalid_")) {
+    if (msg === "invalid_org_id" || msg.startsWith("missing_") || msg.startsWith("invalid_")) {
       return json(req, 400, { ok: false, error: msg });
     }
 

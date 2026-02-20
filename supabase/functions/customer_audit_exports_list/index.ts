@@ -1,7 +1,7 @@
 // supabase/functions/customer_audit_exports_list/index.ts
 // deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 import { json, preflight } from "../_shared/cors.ts";
 import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
@@ -19,6 +19,8 @@ type ReqBody = {
   to?: string; // yyyy-mm-dd
 };
 
+type OrgResolvedBy = "requested" | "first_active" | "first_any";
+
 function assertDateMaybe(s: unknown, name: string) {
   if (s === null || s === undefined || s === "") return;
   const v = String(s);
@@ -31,60 +33,92 @@ function clampInt(v: unknown, def: number, min: number, max: number) {
   return Math.min(Math.max(Math.trunc(n), min), max);
 }
 
-/** MULTI-ORG */
+/** MULTI-ORG (FIX STAFF: user_id OR auth_user_id) */
 async function resolveOrgIdForUserOrThrow(
-  admin: ReturnType<typeof createClient>,
+  admin: SupabaseClient,
   userId: string,
-  requestedOrgId?: string | null
-): Promise<string> {
-  if (requestedOrgId) {
-    const { data, error } = await admin
-      .from("debacu_eval_org_members")
-      .select("org_id")
-      .eq("org_id", requestedOrgId)
-      .eq("user_id", userId)
-      .eq("status", "ACTIVE")
-      .maybeSingle();
+  requestedOrgId?: string | null,
+): Promise<{ org_id: string; resolvedBy: OrgResolvedBy }> {
+  const uid = String(userId);
 
-    if (error) throw new Error("MEMBERSHIP_LOOKUP_FAILED");
-    if (!data?.org_id) throw new Error("FORBIDDEN_NOT_MEMBER");
-    return String(data.org_id);
+  if (requestedOrgId) {
+    const orgId = String(requestedOrgId).trim();
+
+    // preferimos ACTIVE, pero toleramos membership existente
+    try {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id")
+        .eq("org_id", orgId)
+        .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+        .eq("status", "ACTIVE")
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!data?.org_id) throw new Error("FORBIDDEN");
+      return { org_id: String(data.org_id), resolvedBy: "requested" };
+    } catch {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id")
+        .eq("org_id", orgId)
+        .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+        .maybeSingle();
+
+      if (error || !data?.org_id) throw new Error("FORBIDDEN");
+      return { org_id: String(data.org_id), resolvedBy: "requested" };
+    }
   }
 
-  const { data, error } = await admin
-    .from("debacu_eval_org_members")
-    .select("org_id, created_at")
-    .eq("user_id", userId)
-    .eq("status", "ACTIVE")
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+  // fallback determinista: primera ACTIVE; si no, primera por created_at
+  try {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, created_at")
+      .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+      .eq("status", "ACTIVE")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
 
-  if (error) throw new Error("MEMBERSHIP_LOOKUP_FAILED");
-  if (!data?.org_id) throw new Error("FORBIDDEN_NO_ORG");
-  return String(data.org_id);
+    if (error) throw error;
+    if (!data?.org_id) throw new Error("FORBIDDEN");
+    return { org_id: String(data.org_id), resolvedBy: "first_active" };
+  } catch {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, created_at")
+      .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data?.org_id) throw new Error("FORBIDDEN");
+    return { org_id: String(data.org_id), resolvedBy: "first_any" };
+  }
 }
 
 type EntitlementsRow = {
   org_id: string;
-  subscription_status: string | null;
+  customer_id?: string | null;
+  subscription_status: string | null; // ACTIVE | TRIAL_ACTIVE | ...
   plan_code: string | null;
 };
 
-async function loadEntitlementsOrThrow(admin: ReturnType<typeof createClient>, orgId: string) {
+async function loadEntitlementsOrThrow(admin: SupabaseClient, orgId: string) {
   const { data, error } = await admin
     .from("debacu_eval_org_entitlements_v")
-    .select("org_id, subscription_status, plan_code")
+    .select("org_id, customer_id, subscription_status, plan_code")
     .eq("org_id", orgId)
     .maybeSingle();
 
-  if (error) throw new Error("ENTITLEMENTS_FAILED");
-  if (!data?.org_id) throw new Error("FORBIDDEN_NO_ENTITLEMENTS");
+  if (error || !data?.org_id) throw new Error("FORBIDDEN");
   return data as EntitlementsRow;
 }
 
-function assertOrgActiveOrThrow(ent: EntitlementsRow) {
-  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+function assertOrgEnabledOrThrow(ent: EntitlementsRow) {
+  const st = String(ent.subscription_status ?? "").toUpperCase();
+  if (st !== "ACTIVE" && st !== "TRIAL_ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
 }
 
 /** ERROR MAP (STRICT) */
@@ -93,14 +127,11 @@ function mapError(e: unknown): { status: number; detail: string } {
 
   if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return { status: 401, detail: "UNAUTHENTICATED" };
   if (msg === "PLAN_NOT_ACTIVE") return { status: 402, detail: "PLAN_NOT_ACTIVE" };
-
-  if (msg.startsWith("FORBIDDEN") || msg === "MEMBERSHIP_LOOKUP_FAILED" || msg === "ENTITLEMENTS_FAILED") {
-    return { status: 403, detail: "FORBIDDEN" };
-  }
-
+  if (msg === "FORBIDDEN") return { status: 403, detail: "FORBIDDEN" };
   if (msg.startsWith("invalid_")) return { status: 400, detail: msg };
 
-  return { status: 500, detail: "INTERNAL" };
+  // internos genéricos (no filtramos mensajes DB)
+  return { status: 500, detail: "request_failed" };
 }
 
 export default Deno.serve(async (req: Request) => {
@@ -121,13 +152,17 @@ export default Deno.serve(async (req: Request) => {
     assertDateMaybe(body.from, "from");
     assertDateMaybe(body.to, "to");
 
-    const org_id = await resolveOrgIdForUserOrThrow(admin, user.id, body.org_id ? String(body.org_id) : null);
+    const { org_id, resolvedBy: org_id_resolved_by } = await resolveOrgIdForUserOrThrow(
+      admin,
+      user.id,
+      body.org_id ? String(body.org_id) : null,
+    );
 
-    // Bloquear si no hay plan activo (como ya estabas haciendo)
+    // plan gate (ACTIVE o TRIAL_ACTIVE)
     const ent = await loadEntitlementsOrThrow(admin, org_id);
-    assertOrgActiveOrThrow(ent);
+    assertOrgEnabledOrThrow(ent);
 
-    // ✅ Usamos la VIEW con last_download + download_count
+    // ✅ VIEW con last_download + download_count
     const VIEW = "debacu_eval_audit_exports_with_last_download";
 
     const status = body.status ?? "ALL";
@@ -161,7 +196,7 @@ export default Deno.serve(async (req: Request) => {
           "last_downloaded_by_email",
           "download_count",
         ].join(","),
-        { count: "exact" }
+        { count: "exact" },
       )
       .eq("org_id", org_id)
       .order("created_at", { ascending: false })
@@ -170,11 +205,12 @@ export default Deno.serve(async (req: Request) => {
     if (status !== "ALL") q = q.eq("status", status);
     if (export_type !== "ALL") q = q.eq("format", export_type);
 
+    // filtros por rango (ojo: dependen de cómo guardas filter_from/filter_to)
     if (body.from) q = q.gte("filter_from", String(body.from));
     if (body.to) q = q.lte("filter_to", String(body.to));
 
     const { data: rows, error, count } = await q;
-    if (error) throw new Error("LIST_FAILED");
+    if (error) throw new Error("request_failed");
 
     const exports = (rows ?? []).map((r: any) => ({
       id: r.id,
@@ -207,7 +243,12 @@ export default Deno.serve(async (req: Request) => {
 
     return json(req, 200, {
       ok: true,
-      org_id,
+      meta: {
+        org_id,
+        org_id_resolved_by,
+        plan_code: ent.plan_code ?? null,
+        subscription_status: ent.subscription_status ?? null,
+      },
       exports,
       total: count ?? 0,
       limit,

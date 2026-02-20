@@ -1,6 +1,7 @@
 // supabase/functions/customer_revenue_channels_get/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 import { json, preflight } from "../_shared/cors.ts";
 import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
@@ -45,8 +46,8 @@ type RowOut = {
 type EntitlementsRow = {
   org_id: string;
   customer_id: string | null;
-  subscription_status: string | null; // ACTIVE | null
-  plan_code: string | null;
+  subscription_status: string | null; // ACTIVE | TRIAL_ACTIVE | null
+  plan_code: string | null; // FREE | BASIC | MEDIUM | PREMIUM | ...
 };
 
 type EvalRow = {
@@ -60,6 +61,8 @@ type EvalRow = {
   customer_id: string | null;
   creator_customer_uuid: string | null;
 };
+
+type OrgResolvedBy = "requested" | "first_active" | "first_any";
 
 /* ======================================================
  * Helpers (validation + math)
@@ -167,10 +170,12 @@ function computeNetLoss(gross: number, recovered: number, netLossRaw: number): n
  * Multi-org + entitlements (service role)
  * ====================================================== */
 async function resolveOrgIdForUserOrThrow(
-  admin: ReturnType<typeof createClient>,
+  admin: SupabaseClient,
   userId: string,
-  requestedOrgId?: string | null
-): Promise<string> {
+  requestedOrgId?: string | null,
+): Promise<{ orgId: string; resolvedBy: OrgResolvedBy }> {
+  const uid = String(userId);
+
   // UI debería mandar org_id; si viene, validamos membership activa (o al menos existente).
   if (requestedOrgId) {
     try {
@@ -178,23 +183,23 @@ async function resolveOrgIdForUserOrThrow(
         .from("debacu_eval_org_members")
         .select("org_id")
         .eq("org_id", requestedOrgId)
-        .eq("user_id", userId)
+        .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
         .eq("status", "ACTIVE")
         .maybeSingle();
 
       if (error) throw error;
       if (!data?.org_id) throw new Error("FORBIDDEN");
-      return String(data.org_id);
+      return { orgId: String(data.org_id), resolvedBy: "requested" };
     } catch {
       const { data, error } = await admin
         .from("debacu_eval_org_members")
         .select("org_id")
         .eq("org_id", requestedOrgId)
-        .eq("user_id", userId)
+        .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
         .maybeSingle();
 
       if (error || !data?.org_id) throw new Error("FORBIDDEN");
-      return String(data.org_id);
+      return { orgId: String(data.org_id), resolvedBy: "requested" };
     }
   }
 
@@ -203,7 +208,7 @@ async function resolveOrgIdForUserOrThrow(
     const { data, error } = await admin
       .from("debacu_eval_org_members")
       .select("org_id, created_at")
-      .eq("user_id", userId)
+      .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
       .eq("status", "ACTIVE")
       .order("created_at", { ascending: true })
       .limit(1)
@@ -211,22 +216,22 @@ async function resolveOrgIdForUserOrThrow(
 
     if (error) throw error;
     if (!data?.org_id) throw new Error("FORBIDDEN");
-    return String(data.org_id);
+    return { orgId: String(data.org_id), resolvedBy: "first_active" };
   } catch {
     const { data, error } = await admin
       .from("debacu_eval_org_members")
       .select("org_id, created_at")
-      .eq("user_id", userId)
+      .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
       .order("created_at", { ascending: true })
       .limit(1)
       .maybeSingle();
 
     if (error || !data?.org_id) throw new Error("FORBIDDEN");
-    return String(data.org_id);
+    return { orgId: String(data.org_id), resolvedBy: "first_any" };
   }
 }
 
-async function loadEntitlementsOrThrow(admin: ReturnType<typeof createClient>, orgId: string) {
+async function loadEntitlementsOrThrow(admin: SupabaseClient, orgId: string) {
   const { data, error } = await admin
     .from("debacu_eval_org_entitlements_v")
     .select("org_id, customer_id, subscription_status, plan_code")
@@ -237,8 +242,21 @@ async function loadEntitlementsOrThrow(admin: ReturnType<typeof createClient>, o
   return data as EntitlementsRow;
 }
 
-function assertPlanActiveOrThrow(ent: EntitlementsRow) {
-  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+/**
+ * Gate del módulo Revenue:
+ * - Suscripción habilitada: ACTIVE o TRIAL_ACTIVE
+ * - Plan permitido: MEDIUM o PREMIUM (ajústalo si quieres abrirlo a BASIC)
+ */
+function assertRevenueAllowedOrThrow(ent: EntitlementsRow) {
+  const st = String(ent.subscription_status ?? "").toUpperCase();
+  if (st !== "ACTIVE" && st !== "TRIAL_ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+
+  const pc = String(ent.plan_code ?? "").toUpperCase();
+  if (!pc) throw new Error("PLAN_NOT_ACTIVE");
+
+  const ALLOWED_PLANS = new Set(["MEDIUM", "PREMIUM"]);
+  if (!ALLOWED_PLANS.has(pc)) throw new Error("FORBIDDEN");
+
   if (!ent.customer_id) throw new Error("FORBIDDEN");
 }
 
@@ -246,11 +264,11 @@ function assertPlanActiveOrThrow(ent: EntitlementsRow) {
  * Query (paginado) + agregación
  * ====================================================== */
 async function fetchAndAggregate(
-  admin: ReturnType<typeof createClient>,
+  admin: SupabaseClient,
   customerId: string,
   periodField: PeriodField,
   periodFrom: string,
-  periodTo: string
+  periodTo: string,
 ) {
   const PAGE_SIZE = 2000;
   const HARD_LIMIT = 50000; // evita reventar memoria por rangos absurdos
@@ -409,28 +427,40 @@ export default Deno.serve(async (req: Request) => {
     if (!isIsoDate(period_to)) return fail(req, 400, "invalid_period_to");
     if (period_from > period_to) return fail(req, 400, "invalid_period_range");
 
-    // 3) multi-org
-    const org_id = await resolveOrgIdForUserOrThrow(admin, user.id, body.org_id ? String(body.org_id) : null);
+    // 3) multi-org (STAFF: user_id OR auth_user_id)
+    const { orgId: org_id, resolvedBy: org_id_resolved_by } = await resolveOrgIdForUserOrThrow(
+      admin,
+      user.id,
+      body.org_id ? String(body.org_id) : null,
+    );
 
-    // 4) entitlements + plan gate
+    // 4) entitlements + plan gate (Revenue module)
     const ent = await loadEntitlementsOrThrow(admin, org_id);
-    assertPlanActiveOrThrow(ent);
+    assertRevenueAllowedOrThrow(ent);
 
     const customer_id = String(ent.customer_id);
 
     // 5) query + aggregate
-    const { rows, total_fetched } = await fetchAndAggregate(admin, customer_id, period_field, period_from, period_to);
+    const { rows, total_fetched } = await fetchAndAggregate(
+      admin,
+      customer_id,
+      period_field,
+      period_from,
+      period_to,
+    );
 
     return json(req, 200, {
       ok: true,
       meta: {
         org_id,
+        org_id_resolved_by,
         customer_id,
         period_from,
         period_to,
         period_field,
         total_fetched,
         plan_code: ent.plan_code ?? null,
+        subscription_status: ent.subscription_status ?? null,
       },
       rows,
     });

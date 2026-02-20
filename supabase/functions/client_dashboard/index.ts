@@ -1,39 +1,25 @@
 // supabase/functions/client_dashboard/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+
 import Stripe from "https://esm.sh/stripe@16.12.0?target=deno";
 
 import { json, preflight } from "../_shared/cors.ts";
-import { requireUser } from "../_shared/auth.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") || "";
-
-const stripe = STRIPE_SECRET_KEY
-  ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" })
-  : null;
+const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" }) : null;
 
 const APP_ID = "DEBACU_EVAL";
 
-// membership ACTIVE (ajusta si tu schema difiere)
-const MEMBERSHIP_STATUS_COLUMN = "status";
+// membership
 const MEMBERSHIP_ACTIVE_VALUE = "ACTIVE";
 
 type ReqBody = {
-  org_id?: string; // recomendado: UI siempre manda org_id
+  org_id?: string | null; // opcional; tu UI ahora NO lo manda
 };
 
-function supabaseServiceClient() {
-  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
-
 function isUuid(v: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    v,
-  );
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
 
 // ✅ ISO local YYYY-MM-01 (evita offset UTC)
@@ -70,38 +56,40 @@ function prettyDetail(entity?: string | null) {
  * ORG + ENTITLEMENTS (source of truth)
  * ====================================================== */
 async function resolveOrgIdOrThrow(
-  admin: ReturnType<typeof supabaseServiceClient>,
-  userId: string,
+  sb: ReturnType<typeof supabaseServiceClient>,
+  authUserId: string,
   requestedOrgId?: string | null,
 ) {
+  // si viene org_id: validar membership ACTIVE por auth_user_id
   if (requestedOrgId) {
     const orgId = String(requestedOrgId).trim();
     if (!isUuid(orgId)) throw new Error("invalid_org_id");
 
-    const { data, error } = await admin
+    const { data, error } = await sb
       .from("debacu_eval_org_members")
       .select("org_id")
-      .eq("user_id", userId)
+      .eq("auth_user_id", authUserId)
       .eq("org_id", orgId)
-      .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
+      .eq("status", MEMBERSHIP_ACTIVE_VALUE)
       .maybeSingle();
 
     if (error) throw new Error(`membership_lookup_failed:${error.message}`);
-    if (!data?.org_id) throw new Error("FORBIDDEN");
+    if (!data?.org_id) throw new Error("NO_ORG_MEMBERSHIP");
     return orgId;
   }
 
-  const { data, error } = await admin
+  // fallback determinista: primera membership ACTIVE por created_at asc
+  const { data, error } = await sb
     .from("debacu_eval_org_members")
     .select("org_id, created_at")
-    .eq("user_id", userId)
-    .eq(MEMBERSHIP_STATUS_COLUMN, MEMBERSHIP_ACTIVE_VALUE)
+    .eq("auth_user_id", authUserId)
+    .eq("status", MEMBERSHIP_ACTIVE_VALUE)
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
   if (error) throw new Error(`membership_lookup_failed:${error.message}`);
-  if (!data?.org_id) throw new Error("FORBIDDEN");
+  if (!data?.org_id) throw new Error("NO_ORG_MEMBERSHIP");
   return String(data.org_id);
 }
 
@@ -114,25 +102,23 @@ type EntitlementsRow = {
   seats_used: number | null;
 };
 
-async function loadEntitlementsOrThrow(
-  admin: ReturnType<typeof supabaseServiceClient>,
-  orgId: string,
-) {
-  const { data, error } = await admin
+async function loadEntitlementsOrThrow(sb: ReturnType<typeof supabaseServiceClient>, orgId: string) {
+  const { data, error } = await sb
     .from("debacu_eval_org_entitlements_v")
     .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used")
     .eq("org_id", orgId)
     .maybeSingle();
 
   if (error) throw new Error(`entitlements_failed:${error.message}`);
-  if (!data?.customer_id) throw new Error("FORBIDDEN");
+  if (!data?.customer_id) throw new Error("NO_ENTITLEMENTS");
 
   return data as EntitlementsRow;
 }
 
 function assertPlanActiveOrThrow(ent: EntitlementsRow) {
-  // Dashboard normalmente debe estar accesible solo con plan activo (según tu regla).
-  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
+  const st = safeUpper(ent.subscription_status);
+  const ok = st === "ACTIVE" || st === "TRIAL_ACTIVE";
+  if (!ok) throw new Error("PLAN_NOT_ACTIVE");
 }
 
 /** ======================================================
@@ -146,11 +132,8 @@ function scoreStatus(s?: string | null) {
   return idx === -1 ? 999 : idx;
 }
 
-async function getBestSubscription(
-  admin: ReturnType<typeof supabaseServiceClient>,
-  customer_id: string,
-) {
-  const { data, error } = await admin
+async function getBestSubscription(sb: ReturnType<typeof supabaseServiceClient>, customer_id: string) {
+  const { data, error } = await sb
     .from("subscriptions")
     .select(
       "id,status,billing_frequency,next_billing_date,plan_id,created_at,updated_at,start_date,stripe_subscription_id,provider_subscription_id",
@@ -187,12 +170,10 @@ async function getBestSubscription(
   return rows[0] as any;
 }
 
-async function getPlan(
-  admin: ReturnType<typeof supabaseServiceClient>,
-  plan_id?: string | null,
-) {
+async function getPlan(sb: ReturnType<typeof supabaseServiceClient>, plan_id?: string | null) {
   if (!plan_id) return null;
-  const { data, error } = await admin
+
+  const { data, error } = await sb
     .from("plans")
     .select("id,name,code,max_queries_per_month")
     .eq("id", plan_id)
@@ -220,27 +201,27 @@ async function fallbackNextBillingFromStripe(sub: any): Promise<string | null> {
 /** ======================================================
  * MAIN
  * ====================================================== */
-export default Deno.serve(async (req: Request) => {
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return preflight(req);
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "request_failed", detail: "method_not_allowed" });
 
-  const admin = supabaseServiceClient();
+  const sb = supabaseServiceClient();
 
   try {
     const user = await requireUser(req);
     const body = (await req.json().catch(() => ({}))) as ReqBody;
 
     // 1) org + entitlements
-    const orgId = await resolveOrgIdOrThrow(admin, user.id, body?.org_id ?? null);
-    const ent = await loadEntitlementsOrThrow(admin, orgId);
+    const orgId = await resolveOrgIdOrThrow(sb, user.id, body?.org_id ?? null);
+    const ent = await loadEntitlementsOrThrow(sb, orgId);
     assertPlanActiveOrThrow(ent);
 
     const customerId = String(ent.customer_id);
     const monthStart = monthStartLocalISODate();
 
     // 2) best subscription + plan (si existe)
-    const sub = await getBestSubscription(admin, customerId);
-    const plan = sub?.plan_id ? await getPlan(admin, sub.plan_id) : null;
+    const sub = await getBestSubscription(sb, customerId);
+    const plan = sub?.plan_id ? await getPlan(sb, sub.plan_id) : null;
 
     let planCard: {
       name: string;
@@ -266,14 +247,12 @@ export default Deno.serve(async (req: Request) => {
         nextBilling,
         limit: Number.isFinite(limit as any) ? (limit as number) : null,
       };
-    } else {
-      planCard = null;
     }
 
     // 3) queryCount (best-effort)
     let queryCount = 0;
     try {
-      const { count, error } = await admin
+      const { count, error } = await sb
         .from("debacu_eval_audit_log")
         .select("id", { count: "exact", head: true })
         .eq("customer_id", customerId)
@@ -287,24 +266,20 @@ export default Deno.serve(async (req: Request) => {
 
     // 4) createdThisMonth (best-effort; mantengo tus dos posibles campos)
     let createdThisMonth = 0;
-
     try {
-      const { count, error } = await admin
+      const { count, error } = await sb
         .from("debacu_evaluations")
         .select("id", { count: "exact", head: true })
         .eq("customer_id", customerId)
         .gte("created_at", monthStart);
-
       if (!error) createdThisMonth = count ?? 0;
     } catch {
-      // fallback
       try {
-        const { count, error } = await admin
+        const { count, error } = await sb
           .from("debacu_evaluations")
           .select("id", { count: "exact", head: true })
           .eq("creator_customer_id", customerId)
           .gte("created_at", monthStart);
-
         if (!error) createdThisMonth = count ?? 0;
       } catch {
         createdThisMonth = 0;
@@ -322,7 +297,7 @@ export default Deno.serve(async (req: Request) => {
     }> = [];
 
     try {
-      const { data: audits, error } = await admin
+      const { data: audits, error } = await sb
         .from("debacu_eval_audit_log")
         .select("id, created_at, action, event_type, entity, meta, search_value_masked")
         .eq("customer_id", customerId)
@@ -338,7 +313,6 @@ export default Deno.serve(async (req: Request) => {
             const n = Number(meta.avg_stars);
             avg = Number.isFinite(n) ? n : null;
           } else if (typeof meta === "string") {
-            // si algún registro antiguo serializó meta
             try {
               const m = JSON.parse(meta);
               const n = Number(m?.avg_stars);
@@ -378,19 +352,19 @@ export default Deno.serve(async (req: Request) => {
     const msg = String(e?.message ?? e);
 
     if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
-      return json(req, 401, { ok: false, error: "UNAUTHENTICATED" });
+      return json(req, 401, { ok: false, error: "request_failed", detail: "UNAUTHENTICATED" });
     }
-
     if (msg === "PLAN_NOT_ACTIVE") {
-      return json(req, 402, { ok: false, error: "PLAN_NOT_ACTIVE" });
+      return json(req, 402, { ok: false, error: "request_failed", detail: "PLAN_NOT_ACTIVE" });
     }
-
-    if (msg.startsWith("missing_") || msg.startsWith("invalid_")) {
-      return json(req, 400, { ok: false, error: msg });
+    if (msg === "NO_ORG_MEMBERSHIP") {
+      return json(req, 403, { ok: false, error: "request_failed", detail: "NO_ORG_MEMBERSHIP" });
     }
-
-    if (msg === "FORBIDDEN" || msg.startsWith("forbidden_")) {
-      return json(req, 403, { ok: false, error: "FORBIDDEN" });
+    if (msg === "NO_ENTITLEMENTS") {
+      return json(req, 403, { ok: false, error: "request_failed", detail: "NO_ENTITLEMENTS" });
+    }
+    if (msg.startsWith("invalid_")) {
+      return json(req, 400, { ok: false, error: "request_failed", detail: msg });
     }
 
     console.error("client_dashboard error:", msg);

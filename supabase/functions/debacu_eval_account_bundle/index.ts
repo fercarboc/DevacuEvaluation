@@ -1,4 +1,5 @@
 // supabase/functions/debacu_eval_account_bundle/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { json, preflight } from "../_shared/cors.ts";
@@ -27,12 +28,18 @@ function safeUpper(v?: string | null) {
   return (v ?? "").toUpperCase();
 }
 
+function isUuid(v: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+
 /* ======================================================
  * Types
  * ====================================================== */
 type Body = {
   org_id?: string; // ✅ UI debe mandar esto siempre (multi-org)
 };
+
+type OrgResolvedBy = "requested" | "first_active" | "first_any";
 
 /* ======================================================
  * Subscription helpers
@@ -96,39 +103,69 @@ async function resolveOrgForUser(params: {
   admin: ReturnType<typeof supabaseServiceClient>;
   user_id: string;
   org_id?: string | null;
-}) {
+}): Promise<{ org_id: string; role: string | null; resolvedBy: OrgResolvedBy }> {
   const { admin, user_id } = params;
   const requestedOrgId = (params.org_id ?? "").trim() || null;
+  const uid = String(user_id);
 
-  // ✅ IMPORTANTE: si tu columna de estado se llama distinto, ajusta aquí.
-  // Asumo: debacu_eval_org_members.status = 'ACTIVE'
-  let q = admin
-    .from("debacu_eval_org_members")
-    .select("org_id, role, created_at")
-    .eq("user_id", user_id)
-    .eq("status", "ACTIVE"); // <-- AJUSTA si tu schema difiere
+  if (requestedOrgId) {
+    if (!isUuid(requestedOrgId)) throw new Error("invalid_org_id");
 
-  if (requestedOrgId) q = q.eq("org_id", requestedOrgId);
+    // preferimos ACTIVE; toleramos membership existente si el status está raro
+    try {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id, role")
+        .eq("org_id", requestedOrgId)
+        .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+        .eq("status", "ACTIVE")
+        .maybeSingle();
 
-  const { data: mems, error: memErr } = await q
-    .order("created_at", { ascending: true })
-    .limit(1);
+      if (error) throw error;
+      if (!data?.org_id) throw new Error("FORBIDDEN");
+      return { org_id: String(data.org_id), role: (data.role ?? null) as string | null, resolvedBy: "requested" };
+    } catch {
+      const { data, error } = await admin
+        .from("debacu_eval_org_members")
+        .select("org_id, role")
+        .eq("org_id", requestedOrgId)
+        .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+        .maybeSingle();
 
-  if (memErr) throw new Error("DB_MEMBERSHIP_FAILED");
-  const mem = (mems ?? [])[0];
-
-  if (!mem?.org_id) {
-    // Si pidieron org_id y no está activo, o si no tiene ninguna membership activa
-    throw new Error(requestedOrgId ? "FORBIDDEN_ORG_NOT_ALLOWED" : "FORBIDDEN_NO_ACTIVE_ORG");
+      if (error || !data?.org_id) throw new Error("FORBIDDEN");
+      return { org_id: String(data.org_id), role: (data.role ?? null) as string | null, resolvedBy: "requested" };
+    }
   }
 
-  return { org_id: String(mem.org_id), role: mem.role ?? null };
+  // fallback determinista: primera ACTIVE; si no, primera por created_at
+  try {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, role, created_at")
+      .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+      .eq("status", "ACTIVE")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data?.org_id) throw new Error("FORBIDDEN");
+    return { org_id: String(data.org_id), role: (data.role ?? null) as string | null, resolvedBy: "first_active" };
+  } catch {
+    const { data, error } = await admin
+      .from("debacu_eval_org_members")
+      .select("org_id, role, created_at")
+      .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data?.org_id) throw new Error("FORBIDDEN");
+    return { org_id: String(data.org_id), role: (data.role ?? null) as string | null, resolvedBy: "first_any" };
+  }
 }
 
-async function resolveCustomerId(params: {
-  admin: ReturnType<typeof supabaseServiceClient>;
-  org_id: string;
-}) {
+async function resolveCustomerId(params: { admin: ReturnType<typeof supabaseServiceClient>; org_id: string }) {
   const { admin, org_id } = params;
 
   // 1) preferimos entitlements view si existe
@@ -152,38 +189,32 @@ async function resolveCustomerId(params: {
     .maybeSingle();
 
   if (orgErr) throw new Error("DB_ORG_LOOKUP_FAILED");
-  if (!org?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
+  if (!org?.customer_id) throw new Error("FORBIDDEN");
   return String(org.customer_id);
 }
 
 /* ======================================================
  * Handler
  * ====================================================== */
-Deno.serve(async (req) => {
+export default Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") {
     return json(req, 405, { ok: false, error: "request_failed", detail: "METHOD_NOT_ALLOWED" });
   }
 
-  // ✅ JWT-only
-  let userId = "";
-  try {
-    const user = await requireUser(req);
-    userId = user.id;
-  } catch {
-    return json(req, 401, { ok: false, error: "request_failed", detail: "UNAUTHENTICATED" });
-  }
-
-  const body = (await readJsonSafe<Body>(req)) ?? {};
-  const org_id = (body.org_id ?? "").trim() || null;
-
   const admin = supabaseServiceClient();
 
   try {
+    // ✅ JWT-only
+    const user = await requireUser(req);
+
+    const body = (await readJsonSafe<Body>(req)) ?? {};
+    const org_id = (body.org_id ?? "").trim() || null;
+
     // 1) tenant: org + role (ACTIVE membership)
-    const { org_id: resolvedOrgId, role } = await resolveOrgForUser({
+    const { org_id: resolvedOrgId, role, resolvedBy: org_id_resolved_by } = await resolveOrgForUser({
       admin,
-      user_id: userId,
+      user_id: user.id,
       org_id,
     });
 
@@ -194,7 +225,7 @@ Deno.serve(async (req) => {
       JSON.stringify({
         fn: "debacu_eval_account_bundle",
         stage: "start",
-        user_id: userId,
+        user_id: user.id,
         org_id: resolvedOrgId,
         customer_id,
         app_id: APP_ID,
@@ -210,12 +241,8 @@ Deno.serve(async (req) => {
       .eq("id", customer_id)
       .maybeSingle();
 
-    if (custErr) {
-      return json(req, 500, { ok: false, error: "request_failed", detail: "DB_CUSTOMERS_READ_FAILED" });
-    }
-    if (!customer) {
-      return json(req, 404, { ok: false, error: "request_failed", detail: "CUSTOMER_NOT_FOUND" });
-    }
+    if (custErr) return json(req, 500, { ok: false, error: "request_failed", detail: "DB_CUSTOMERS_READ_FAILED" });
+    if (!customer) return json(req, 404, { ok: false, error: "request_failed", detail: "CUSTOMER_NOT_FOUND" });
 
     // 4) hotel_profile (best-effort)
     let hotel_profile: any = null;
@@ -240,9 +267,7 @@ Deno.serve(async (req) => {
         .eq("id", subscription.plan_id)
         .maybeSingle();
 
-      if (planErr) {
-        return json(req, 500, { ok: false, error: "request_failed", detail: "DB_PLAN_READ_FAILED" });
-      }
+      if (planErr) return json(req, 500, { ok: false, error: "request_failed", detail: "DB_PLAN_READ_FAILED" });
       plan = planRow ?? null;
     }
 
@@ -253,9 +278,7 @@ Deno.serve(async (req) => {
       .eq("app_id", APP_ID)
       .order("price_monthly", { ascending: true });
 
-    if (plansErr) {
-      return json(req, 500, { ok: false, error: "request_failed", detail: "DB_PLANS_READ_FAILED" });
-    }
+    if (plansErr) return json(req, 500, { ok: false, error: "request_failed", detail: "DB_PLANS_READ_FAILED" });
 
     // 7) invoices (solo si procede)
     const billingFreq = safeUpper(subscription?.billing_frequency ?? "");
@@ -277,9 +300,7 @@ Deno.serve(async (req) => {
         .order("invoice_created_at", { ascending: false })
         .limit(50);
 
-      if (invErr) {
-        return json(req, 500, { ok: false, error: "request_failed", detail: "DB_INVOICES_READ_FAILED" });
-      }
+      if (invErr) return json(req, 500, { ok: false, error: "request_failed", detail: "DB_INVOICES_READ_FAILED" });
 
       invoices = (inv ?? []).filter((r: any) => String(r.status ?? "").toLowerCase() === "paid");
     }
@@ -288,7 +309,7 @@ Deno.serve(async (req) => {
       JSON.stringify({
         fn: "debacu_eval_account_bundle",
         stage: "ok",
-        user_id: userId,
+        user_id: user.id,
         org_id: resolvedOrgId,
         customer_id,
         status: 200,
@@ -301,6 +322,7 @@ Deno.serve(async (req) => {
         customer_id,
         app_id: APP_ID,
         org_id: resolvedOrgId,
+        org_id_resolved_by,
         member_role: role,
         server_date: toISODate(new Date()),
       },
@@ -311,16 +333,31 @@ Deno.serve(async (req) => {
       plans: plans ?? [],
       invoices,
     });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "INTERNAL_ERROR";
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
 
-    if (msg === "FORBIDDEN_ORG_NOT_ALLOWED" || msg === "FORBIDDEN_NO_ACTIVE_ORG" || msg === "FORBIDDEN_NO_CUSTOMER") {
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
+      return json(req, 401, { ok: false, error: "request_failed", detail: "UNAUTHENTICATED" });
+    }
+
+    if (msg === "invalid_org_id") {
+      return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_org_id" });
+    }
+
+    if (msg === "FORBIDDEN") {
       return json(req, 403, { ok: false, error: "request_failed", detail: "FORBIDDEN" });
     }
-    if (msg === "DB_MEMBERSHIP_FAILED" || msg === "DB_ORG_LOOKUP_FAILED" || msg === "DB_SUBSCRIPTIONS_FAILED") {
+
+    if (
+      msg === "DB_MEMBERSHIP_FAILED" ||
+      msg === "DB_ORG_LOOKUP_FAILED" ||
+      msg === "DB_SUBSCRIPTIONS_FAILED" ||
+      msg === "DB_ORG_LOOKUP_FAILED"
+    ) {
       return json(req, 500, { ok: false, error: "request_failed", detail: "DB_ERROR" });
     }
 
+    console.error("debacu_eval_account_bundle error:", msg);
     return json(req, 500, { ok: false, error: "request_failed", detail: "INTERNAL_ERROR" });
   }
 });

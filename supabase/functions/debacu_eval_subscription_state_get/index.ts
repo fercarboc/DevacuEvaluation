@@ -1,30 +1,15 @@
 // supabase/functions/debacu_eval_subscription_state_get/index.ts
 // deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Stripe from "https://esm.sh/stripe@16.12.0?target=deno";
+
 import { json, preflight } from "../_shared/cors.ts";
-import { requireUser } from "../_shared/auth.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
 const DEFAULT_APP_ID = "DEBACU_EVAL";
 
-function mustEnv(name: string) {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`MISSING_ENV:${name}`);
-  return v;
-}
-
-const SUPABASE_URL = mustEnv("SUPABASE_URL");
-const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-// Stripe es opcional aquí: si no está, no hacemos fallback
+// Stripe opcional: si no está, no hacemos fallback
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
-
-function sbService() {
-  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
 
 function safeUpper(v?: string | null) {
   return String(v ?? "").toUpperCase();
@@ -40,14 +25,13 @@ function pickString(body: any, snake: string, camel?: string): string | undefine
 function err(
   req: Request,
   status: number,
-  detail:
-    | "UNAUTHENTICATED"
-    | "FORBIDDEN"
-    | "missing_org_id"
-    | "invalid_app_id"
-    | "request_failed",
+  detail: "UNAUTHENTICATED" | "FORBIDDEN" | "missing_org_id" | "invalid_app_id" | "invalid_org_id" | "request_failed",
 ) {
   return json(req, status, { ok: false, error: "request_failed", detail });
+}
+
+function isUuid(v: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
 
 /** =========================
@@ -55,51 +39,59 @@ function err(
  * - org_id obligatorio
  * - membership ACTIVE requerida
  * - role puede ser STAFF (leer estado sí)
+ * - FIX STAFF: user_id OR auth_user_id
  * ========================= */
 async function requireOrgContext(
-  sb: ReturnType<typeof sbService>,
+  admin: ReturnType<typeof supabaseServiceClient>,
   user_id: string,
   org_id: string,
 ) {
-  const { data: mem, error: memErr } = await sb
+  const uid = String(user_id);
+  const oid = String(org_id).trim();
+
+  if (!isUuid(oid)) throw new Error("invalid_org_id");
+
+  // membership ACTIVE (tolerancia: si alguna vez auth_user_id = user.id)
+  const { data: mem, error: memErr } = await admin
     .from("debacu_eval_org_members")
     .select("org_id, role, status")
-    .eq("user_id", user_id)
-    .eq("org_id", org_id)
+    .eq("org_id", oid)
+    .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
     .eq("status", "ACTIVE")
     .maybeSingle();
 
   if (memErr || !mem?.org_id) return null;
 
-  // customer_id preferente por view
+  // customer_id preferente por view (source of truth)
   let customer_id: string | null = null;
 
-  const { data: ent, error: entErr } = await sb
+  const { data: ent, error: entErr } = await admin
     .from("debacu_eval_org_entitlements_v")
     .select("customer_id")
-    .eq("org_id", org_id)
+    .eq("org_id", oid)
     .maybeSingle();
 
   if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
 
+  // fallback organizations
   if (!customer_id) {
-    const { data: org, error: orgErr } = await sb
+    const { data: org, error: orgErr } = await admin
       .from("debacu_eval_organizations")
       .select("customer_id")
-      .eq("id", org_id)
+      .eq("id", oid)
       .maybeSingle();
 
     if (orgErr || !org?.customer_id) return null;
     customer_id = String(org.customer_id);
   }
 
-  return { org_id, role: mem.role ?? null, customer_id };
+  return { org_id: oid, role: mem.role ?? null, customer_id };
 }
 
 /** =========================
  * Best subscription selector
  * ========================= */
-const STATUS_ORDER = ["ACTIVE", "TRIAL_ACTIVE", "SUSPENDED", "PENDING_PAYMENT"] as const;
+const STATUS_ORDER = ["ACTIVE", "TRIAL_ACTIVE", "SUSPENDED", "PAST_DUE", "PENDING_PAYMENT"] as const;
 
 function scoreStatus(s?: string | null) {
   const up = safeUpper(s);
@@ -107,10 +99,30 @@ function scoreStatus(s?: string | null) {
   return idx === -1 ? 999 : idx;
 }
 
-async function getBestSubscription(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string) {
-  const { data, error } = await sb
+async function getBestSubscription(
+  admin: ReturnType<typeof supabaseServiceClient>,
+  customer_id: string,
+  app_id: string,
+) {
+  const { data, error } = await admin
     .from("subscriptions")
-    .select("id,status,billing_frequency,next_billing_date,plan_id,start_date,end_date,created_at,updated_at,replaces_subscription_id,stripe_subscription_id,provider_subscription_id,stripe_schedule_id")
+    .select(
+      [
+        "id",
+        "status",
+        "billing_frequency",
+        "next_billing_date",
+        "plan_id",
+        "start_date",
+        "end_date",
+        "created_at",
+        "updated_at",
+        "replaces_subscription_id",
+        "stripe_subscription_id",
+        "provider_subscription_id",
+        "stripe_schedule_id",
+      ].join(","),
+    )
     .eq("customer_id", customer_id)
     .eq("app_id", app_id)
     .order("start_date", { ascending: false, nullsFirst: false })
@@ -118,7 +130,7 @@ async function getBestSubscription(sb: ReturnType<typeof sbService>, customer_id
     .order("created_at", { ascending: false })
     .limit(50);
 
-  if (error) throw error;
+  if (error) throw new Error("DB_SUBSCRIPTIONS_FAILED");
 
   const rows = (data ?? []).filter((r: any) => safeUpper(r?.status) !== "REPLACED");
   if (!rows.length) return null;
@@ -134,8 +146,8 @@ async function getBestSubscription(sb: ReturnType<typeof sbService>, customer_id
 
   rows.sort((a: any, b: any) => {
     const sa = scoreStatus(a.status);
-    const sb2 = scoreStatus(b.status);
-    if (sa !== sb2) return sa - sb2;
+    const sb = scoreStatus(b.status);
+    if (sa !== sb) return sa - sb;
 
     const pa = penalty(a);
     const pb = penalty(b);
@@ -171,7 +183,7 @@ async function fallbackNextBillingFromStripe(stripe: Stripe | null, sub: any): P
   }
 }
 
-Deno.serve(async (req) => {
+export default Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST" && req.method !== "GET") {
     return json(req, 405, { ok: false, error: "request_failed", detail: "METHOD_NOT_ALLOWED" });
@@ -193,9 +205,9 @@ Deno.serve(async (req) => {
     const app_id = (pickString(body, "app_id", "appId") ?? DEFAULT_APP_ID).trim();
     if (app_id !== DEFAULT_APP_ID) return err(req, 400, "invalid_app_id");
 
-    const sb = sbService();
+    const admin = supabaseServiceClient();
 
-    const ctx = await requireOrgContext(sb, user.id, org_id);
+    const ctx = await requireOrgContext(admin, user.id, org_id);
     if (!ctx) return err(req, 403, "FORBIDDEN");
 
     // Anti-tampering: si mandan customer_id debe coincidir
@@ -204,13 +216,13 @@ Deno.serve(async (req) => {
 
     const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" }) : null;
 
-    const sub = await getBestSubscription(sb, ctx.customer_id, app_id);
+    const sub = await getBestSubscription(admin, ctx.customer_id, app_id).catch(() => null);
 
     // plan asociado
     let planRow: any = null;
     if (sub?.plan_id) {
-      const { data: plan, error: planErr } = await sb.from("plans").select("*").eq("id", sub.plan_id).maybeSingle();
-      if (planErr) throw planErr;
+      const { data: plan, error: planErr } = await admin.from("plans").select("*").eq("id", sub.plan_id).maybeSingle();
+      if (planErr) throw new Error("DB_PLAN_READ_FAILED");
       planRow = plan;
     }
 
@@ -238,13 +250,18 @@ Deno.serve(async (req) => {
 
       subscription: sub ?? null,
       plan: planRow ?? null,
+
       member_role: safeUpper(ctx.role ?? "") || null,
       org_id: ctx.org_id,
       customer_id: ctx.customer_id,
       app_id,
     });
-  } catch (e) {
-    console.error("debacu_eval_subscription_state_get error:", e);
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+
+    if (msg === "invalid_org_id") return err(req, 400, "invalid_org_id");
+
+    console.error("debacu_eval_subscription_state_get error:", msg);
     // No leaks
     return err(req, 500, "request_failed");
   }
