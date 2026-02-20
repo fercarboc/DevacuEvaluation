@@ -1,6 +1,6 @@
 // supabase/functions/debacu_eval_weekly_series_get/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 import { json, preflight } from "../_shared/cors.ts";
 import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
@@ -63,6 +63,10 @@ type EntitlementsRow = {
 /* ======================================================
  * HELPERS
  * ====================================================== */
+function isUuid(v: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+
 function assertDate(s: string, name: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error(`invalid_${name}`);
 }
@@ -115,86 +119,63 @@ function fillMissingDays(rows: WeeklySeriesRow[], from: string, to: string): Wee
         gross: 0,
         recovered: 0,
         net: 0,
-      }
+      },
     );
   }
   return out;
 }
 
 /* ======================================================
- * MULTI-ORG + ENTITLEMENTS
+ * MULTI-ORG + ENTITLEMENTS (FIX user_id/auth_user_id)
  * ====================================================== */
 async function resolveOrgIdForUserOrThrow(
-  admin: ReturnType<typeof createClient>,
+  admin: ReturnType<typeof supabaseServiceClient>,
   userId: string,
-  requestedOrgId?: string | null
+  requestedOrgId?: string | null,
 ): Promise<string> {
-  if (requestedOrgId) {
-    // prefer ACTIVE si existe status
-    try {
-      const { data, error } = await admin
-        .from("debacu_eval_org_members")
-        .select("org_id")
-        .eq("org_id", requestedOrgId)
-        .eq("user_id", userId)
-        .eq("status", "ACTIVE")
-        .maybeSingle();
+  const uid = String(userId);
+  const requested = (requestedOrgId ?? "").trim() || null;
 
-      if (error) throw error;
-      if (!data?.org_id) throw new Error("FORBIDDEN");
-      return String(data.org_id);
-    } catch {
-      const { data, error } = await admin
-        .from("debacu_eval_org_members")
-        .select("org_id")
-        .eq("org_id", requestedOrgId)
-        .eq("user_id", userId)
-        .maybeSingle();
+  if (requested && !isUuid(requested)) throw new Error("invalid_org_id");
 
-      if (error) throw new Error("FORBIDDEN");
-      if (!data?.org_id) throw new Error("FORBIDDEN");
-      return String(data.org_id);
-    }
-  }
-
-  // fallback determinista: primera ACTIVE si existe, si no primera
-  try {
+  if (requested) {
+    // membership ACTIVE, tolerante a user_id o auth_user_id
     const { data, error } = await admin
       .from("debacu_eval_org_members")
-      .select("org_id, created_at")
-      .eq("user_id", userId)
+      .select("org_id")
+      .eq("org_id", requested)
+      .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
       .eq("status", "ACTIVE")
-      .order("created_at", { ascending: true })
-      .limit(1)
       .maybeSingle();
 
-    if (error) throw error;
-    if (!data?.org_id) throw new Error("FORBIDDEN");
-    return String(data.org_id);
-  } catch {
-    const { data, error } = await admin
-      .from("debacu_eval_org_members")
-      .select("org_id, created_at")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) throw new Error("FORBIDDEN");
+    if (error) throw new Error("request_failed");
     if (!data?.org_id) throw new Error("FORBIDDEN");
     return String(data.org_id);
   }
+
+  // fallback determinista: primera ACTIVE por created_at
+  const { data, error } = await admin
+    .from("debacu_eval_org_members")
+    .select("org_id, created_at")
+    .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+    .eq("status", "ACTIVE")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error("request_failed");
+  if (!data?.org_id) throw new Error("FORBIDDEN");
+  return String(data.org_id);
 }
 
-async function loadEntitlementsOrThrow(admin: ReturnType<typeof createClient>, orgId: string) {
+async function loadEntitlementsOrThrow(admin: ReturnType<typeof supabaseServiceClient>, orgId: string) {
   const { data, error } = await admin
     .from("debacu_eval_org_entitlements_v")
     .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used, app_code")
     .eq("org_id", orgId)
     .maybeSingle();
 
-  if (error) throw new Error("FORBIDDEN");
-  if (!data?.org_id) throw new Error("FORBIDDEN");
+  if (error || !data?.org_id) throw new Error("FORBIDDEN");
   return data as EntitlementsRow;
 }
 
@@ -207,11 +188,11 @@ function assertPlanActiveOrThrow(ent: EntitlementsRow) {
  * FETCH
  * ====================================================== */
 async function fetchEvaluationsForRange(
-  admin: ReturnType<typeof createClient>,
+  admin: ReturnType<typeof supabaseServiceClient>,
   customerId: string,
   periodField: PeriodField,
   from: string,
-  to: string
+  to: string,
 ): Promise<EvalRow[]> {
   const selectCols = [
     "rating",
@@ -224,7 +205,7 @@ async function fetchEvaluationsForRange(
     "customer_id",
   ].join(",");
 
-  // filtro robusto (compat): algunos registros usan customer_id, otros creator_customer_uuid
+  // compat datos sucios: customer_id o creator_customer_uuid
   let q = admin
     .from("debacu_evaluations")
     .select(selectCols)
@@ -240,13 +221,11 @@ async function fetchEvaluationsForRange(
     return (data ?? []) as any;
   }
 
+  // created_at: rango inclusivo por día (mejor hacerlo [from, to+1) pero mantengo tu lógica)
   const fromTs = `${from}T00:00:00.000Z`;
   const toTs = `${to}T23:59:59.999Z`;
 
-  const { data, error } = await q
-    .gte("created_at", fromTs)
-    .lte("created_at", toTs)
-    .order("created_at", { ascending: true });
+  const { data, error } = await q.gte("created_at", fromTs).lte("created_at", toTs).order("created_at", { ascending: true });
 
   if (error) throw new Error("request_failed");
   return (data ?? []) as any;
@@ -305,8 +284,10 @@ function mapErrorToHttp(e: unknown): { status: number; detail: string } {
   if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return { status: 401, detail: "UNAUTHENTICATED" };
   if (msg === "PLAN_NOT_ACTIVE") return { status: 402, detail: "PLAN_NOT_ACTIVE" };
   if (msg === "FORBIDDEN") return { status: 403, detail: "FORBIDDEN" };
+
   if (msg.startsWith("invalid_")) return { status: 400, detail: msg };
   if (msg === "unsupported_period_field") return { status: 400, detail: "invalid_period_field" };
+  if (msg === "request_failed") return { status: 500, detail: "request_failed" };
 
   return { status: 500, detail: "request_failed" };
 }
@@ -325,12 +306,8 @@ export default Deno.serve(async (req: Request) => {
   try {
     const user = await requireUser(req);
 
-    let body: BuildReq;
-    try {
-      body = (await req.json()) as BuildReq;
-    } catch {
-      return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_json" });
-    }
+    const body = (await req.json().catch(() => null)) as BuildReq | null;
+    if (!body) return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_json" });
 
     const periodFrom = String(body.period_from ?? "").trim();
     const periodTo = String(body.period_to ?? "").trim();
@@ -349,7 +326,7 @@ export default Deno.serve(async (req: Request) => {
       return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_period_range" });
     }
 
-    // multi-org
+    // multi-org (FIX user_id/auth_user_id)
     const orgId = await resolveOrgIdForUserOrThrow(admin, user.id, body.org_id ? String(body.org_id) : null);
 
     // entitlements + plan gate
