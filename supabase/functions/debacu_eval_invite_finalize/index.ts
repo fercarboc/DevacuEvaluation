@@ -110,7 +110,7 @@ Deno.serve(async (req) => {
     //    - Seguridad invite (STAFF/ADMIN con invited_email)
     //    Si falta, es inconsistencia y se devuelve error.
     const { data: ar, error: arErr } = await supabase
-      .from("debacu_eval_access_request")
+      .from("debacu_eval_access_requests")
       .select("id, status, email, org_id, customer_id")
       .eq("org_id", orgId)
       .eq("email", email)
