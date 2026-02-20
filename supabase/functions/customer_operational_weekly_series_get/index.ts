@@ -24,7 +24,6 @@ type EntitlementsRow = {
   plan_code: string | null;
   max_users: number | null;
   seats_used: number | null;
-  app_code?: string | null;
 };
 
 type EvalRow = {
@@ -206,7 +205,7 @@ async function resolveOrgIdForUserOrThrow(
 async function loadEntitlementsOrThrow(admin: ReturnType<typeof supabaseServiceClient>, orgId: string) {
   const { data, error } = await admin
     .from("debacu_eval_org_entitlements_v")
-    .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used, app_code")
+    .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used")
     .eq("org_id", orgId)
     .maybeSingle();
 
@@ -366,7 +365,7 @@ export default Deno.serve(async (req: Request) => {
     assertPlanActiveOrThrow(ent);
 
     const customerId = String(ent.customer_id);
-    const app_code = String(ent.app_code ?? DEFAULT_APP_CODE);
+   const app_code = DEFAULT_APP_CODE;
 
     const evalRows = await fetchEvaluationsForRange(admin, customerId, periodFieldRaw, periodFrom, periodTo);
 
