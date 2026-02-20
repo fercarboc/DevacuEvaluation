@@ -4,7 +4,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { PDFDocument, StandardFonts, rgb } from "https://esm.sh/pdf-lib@1.17.1";
 
 import { json, preflight } from "../_shared/cors.ts";
-import { supabaseServiceClient } from "../_shared/auth.ts";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
 /**
  * ✅ Server-side versioning (NO confiar en frontend)
@@ -501,6 +501,9 @@ Deno.serve(async (req) => {
   const started = Date.now();
 
   try {
+    // ✅ JWT-only (y nos da el email para autorizar)
+    const user = await requireUser(req);
+
     const body = (await req.json().catch(() => null)) as Body | null;
     const requestId = (body?.request_id ?? "").trim();
     const requestToken = (body?.request_token ?? "").trim();
@@ -510,6 +513,8 @@ Deno.serve(async (req) => {
     const supabase = supabaseServiceClient();
 
     // 1) Leer la solicitud (service role)
+    // ✅ FIX: quitado auth_user_id porque tu tabla NO tiene esa columna (te daba 500)
+    // 🧯 OJO: request_token solo si existe en BD; si no existe, quita también del select y del bloque de validación.
     const { data: row, error: readErr } = await supabase
       .from("debacu_eval_access_requests")
       .select(`
@@ -529,7 +534,6 @@ Deno.serve(async (req) => {
         email,
         phone,
         notes,
-        auth_user_id,
         accepted_terms,
         accepted_terms_pdf_path,
         accepted_terms_pdf_sha256,
@@ -553,8 +557,15 @@ Deno.serve(async (req) => {
 
     if (!row) return notFound(req);
 
+    // 1.1) ✅ Autorización mínima segura: email del row debe coincidir con email del JWT
+    const rowEmail = normalizeEmail((row as any).email);
+    const userEmail = normalizeEmail(user.email);
+    if (!rowEmail || !userEmail || rowEmail !== userEmail) {
+      return forbidden(req, "forbidden");
+    }
+
     // 2) (Opcional) validación de token si existe en BD o si viene en body
-    // - Si tu tabla NO tiene request_token, quita este bloque o el campo del select.
+    // - Si tu tabla NO tiene request_token, quita este bloque y el campo del select.
     const rowToken = ((row as any).request_token as string | null) ?? null;
     if (rowToken) {
       if (!requestToken || requestToken !== rowToken) {
@@ -643,6 +654,7 @@ Deno.serve(async (req) => {
       .update({
         accepted_terms: true,
         accepted_terms_pdf_path: path,
+        accepted_terms_pdf_bucket: LEGAL_BUCKET, // ✅ tu tabla tiene este campo
         accepted_terms_pdf_sha256: sha256,
         accepted_terms_accepted_at: acceptedAt,
         accepted_terms_ip: ip,
@@ -684,11 +696,17 @@ Deno.serve(async (req) => {
       },
     });
   } catch (e: any) {
+    const msg = e?.message ?? String(e);
+    // requireUser suele lanzar UNAUTHENTICATED/UNAUTHORIZED
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
+      return json(req, 401, errPayload("UNAUTHENTICATED"));
+    }
+
     console.error("internal_error", {
-      message: e?.message ?? String(e),
+      message: msg,
       stack: e?.stack,
       ms: Date.now() - started,
     });
-    return serverError(req, "internal_error", e?.message ?? String(e));
+    return serverError(req, "internal_error", msg);
   }
 });
