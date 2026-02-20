@@ -33,18 +33,13 @@ import {
 import { callEvalFn } from "@/services/callEvalFn";
 
 const CHART_COLORS = {
-  // Riesgo
-  riskHigh: "#ef4444", // rojo
-  riskMedium: "#f59e0b", // ámbar
-  riskLow: "#22c55e", // verde
-
-  // Incidencias
-  incidents: "#2563eb", // azul
-
-  // Económico (SaaS)
-  gross: "#2563eb", // azul
-  recovered: "#16a34a", // verde
-  net: "#ef4444", // rojo
+  riskHigh: "#ef4444",
+  riskMedium: "#f59e0b",
+  riskLow: "#22c55e",
+  incidents: "#2563eb",
+  gross: "#2563eb",
+  recovered: "#16a34a",
+  net: "#ef4444",
 };
 
 type PeriodField = "evaluation_date" | "created_at";
@@ -112,12 +107,18 @@ function clampDateRange(from: string, to: string) {
   return { from, to };
 }
 
+function isForbiddenResp(resp: any) {
+  const d = String(resp?.detail ?? resp?.error ?? "");
+  return d === "FORBIDDEN";
+}
+
 export interface WeeklyReportDialogProps {
   open: boolean;
   onClose: () => void;
   defaultFrom: string;
   defaultTo: string;
   periodField: PeriodField;
+  orgId?: string | null; // ✅ opcional
 }
 
 export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
@@ -126,6 +127,7 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
   defaultFrom,
   defaultTo,
   periodField: periodFieldProp,
+  orgId,
 }) => {
   const [periodField, setPeriodField] = useState<PeriodField>(periodFieldProp);
   const [from, setFrom] = useState<string>(defaultFrom);
@@ -143,7 +145,6 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
     total_rows?: number;
   } | null>(null);
 
-  // (ya no capturamos nada, pero dejo ref por si lo usas luego)
   const captureRef = useRef<HTMLDivElement | null>(null);
 
   const compactInputSx = useMemo(
@@ -156,7 +157,6 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
     []
   );
 
-  // reset al abrir
   useEffect(() => {
     if (!open) return;
     setPeriodField(periodFieldProp);
@@ -165,7 +165,6 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
     setErr(null);
     setPoints([]);
     setMeta(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, defaultFrom, defaultTo, periodFieldProp]);
 
   async function load() {
@@ -175,15 +174,35 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
     try {
       const fixed = clampDateRange(from, to);
 
-      const resp: any = await callEvalFn("customer_operational_weekly_series_get", {
+      // 1) intento normal (con orgId si viene)
+      const payload1: any = {
         period_from: fixed.from,
         period_to: fixed.to,
         period_field: periodField,
         filters: { period_field: periodField }, // compat
-      });
+        ...(orgId ? { org_id: orgId } : {}),
+      };
+
+      let resp: any = await callEvalFn("customer_operational_weekly_series_get", payload1);
+
+      // 2) si FORBIDDEN y estabas enviando org_id, reintenta sin org_id
+      if (orgId && isForbiddenResp(resp)) {
+        const payload2: any = {
+          period_from: fixed.from,
+          period_to: fixed.to,
+          period_field: periodField,
+          filters: { period_field: periodField },
+        };
+        resp = await callEvalFn("customer_operational_weekly_series_get", payload2);
+      }
 
       if (!resp || typeof resp !== "object") throw new Error("Respuesta inválida del servidor.");
-      if (!resp.ok) throw new Error(resp.error || resp.detail || "No se pudo cargar la serie semanal.");
+      if (!resp.ok) {
+        const d = String(resp.detail ?? resp.error ?? "request_failed");
+        if (d === "PLAN_NOT_ACTIVE") throw new Error("Tu organización no tiene un plan activo para este módulo.");
+        if (d === "FORBIDDEN") throw new Error("FORBIDDEN: no tienes permisos para esta organización (org_id incorrecto o sesión cruzada).");
+        throw new Error(d || "No se pudo cargar la serie semanal.");
+      }
 
       const data = resp as WeeklySeriesResp;
       const safeSeries = Array.isArray(data.series) ? data.series : [];
@@ -220,24 +239,30 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
     if (!open) return;
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, from, to, periodField]);
+  }, [open, from, to, periodField, orgId]);
 
-  // ✅ CSV sigue con customer_audit_export_build
   async function doExportCsv() {
     setErr(null);
     try {
       const fixed = clampDateRange(from, to);
 
-      const resp: any = await callEvalFn("customer_audit_export_build", {
+      const payload: any = {
         export_type: "CSV",
         export_scope: "WEEKLY_7D_DAILY_SERIES" as ExportScope,
         period_from: fixed.from,
         period_to: fixed.to,
         period_field: periodField,
         filters: { period_field: periodField },
-      });
+        ...(orgId ? { org_id: orgId } : {}),
+      };
 
-      if (!resp?.ok) throw new Error(resp?.error || resp?.detail || "export_failed");
+      const resp: any = await callEvalFn("customer_audit_export_build", payload);
+
+      if (!resp?.ok) {
+        const d = String(resp?.detail ?? resp?.error ?? "export_failed");
+        if (d === "FORBIDDEN") throw new Error("FORBIDDEN: no tienes permisos (org_id incorrecto o sesión cruzada).");
+        throw new Error(d);
+      }
 
       const r = resp as BuildExportResponse;
       const url = r.download_url;
@@ -249,7 +274,6 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
     }
   }
 
-  // ✅ PDF nuevo: Edge genera PDF "basic" (sin snapshot)
   async function doExportPdfBasic() {
     setErr(null);
     setExportingPdf(true);
@@ -257,14 +281,21 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
     try {
       const fixed = clampDateRange(from, to);
 
-      const resp: any = await callEvalFn("customer_weekly_report_pdf_basic", {
+      const payload: any = {
         title: "Informe semanal (7 días)",
         period_from: fixed.from,
         period_to: fixed.to,
         period_field: periodField,
-      });
+        ...(orgId ? { org_id: orgId } : {}),
+      };
 
-      if (!resp?.ok) throw new Error(resp?.error || resp?.detail || "pdf_basic_failed");
+      const resp: any = await callEvalFn("customer_weekly_report_pdf_basic", payload);
+
+      if (!resp?.ok) {
+        const d = String(resp?.detail ?? resp?.error ?? "pdf_basic_failed");
+        if (d === "FORBIDDEN") throw new Error("FORBIDDEN: no tienes permisos (org_id incorrecto o sesión cruzada).");
+        throw new Error(d);
+      }
 
       const r = resp as BasicPdfResp;
       const url = r.download_url;
@@ -419,6 +450,7 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
             <Chip size="small" label={`Campo: ${periodField}`} />
             {meta.customer_name ? <Chip size="small" label={`Hotel: ${meta.customer_name}`} /> : null}
             {typeof meta.total_rows === "number" ? <Chip size="small" label={`Registros: ${meta.total_rows}`} /> : null}
+            {orgId ? <Chip size="small" label={`org_id: ${orgId}`} /> : <Chip size="small" label="org_id: auto" />}
           </Stack>
         ) : null}
 
@@ -428,7 +460,7 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
           </Alert>
         ) : null}
 
-        {/* CONTENIDO UI (ya no se captura, pero lo dejamos igual) */}
+        {/* CONTENIDO */}
         <Box ref={captureRef} sx={{ bgcolor: "#fff", minWidth: 0 }}>
           {/* KPIs */}
           <Stack direction={{ xs: "column", md: "row" }} spacing={1.25} sx={{ mb: 1.75, minWidth: 0 }}>
@@ -442,11 +474,7 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
               value={`${money(kpis.gross)} EUR`}
               subtitle={`Recuperado: ${money(kpis.recovered)} EUR (${kpis.pctRecovered}%)`}
             />
-            <KpiBox
-              title="Pérdida neta"
-              value={`${money(kpis.net)} EUR`}
-              subtitle="Neto = gross - recuperado (o neto almacenado)"
-            />
+            <KpiBox title="Pérdida neta" value={`${money(kpis.net)} EUR`} subtitle="Neto = gross - recuperado (o neto almacenado)" />
           </Stack>
 
           <Divider sx={{ my: 1.75 }} />
@@ -517,7 +545,14 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
                     />
                     <Legend />
                     <Line type="monotone" dataKey="Gross" stroke={CHART_COLORS.gross} strokeWidth={2.5} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-                    <Line type="monotone" dataKey="Recuperado" stroke={CHART_COLORS.recovered} strokeWidth={2.5} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+                    <Line
+                      type="monotone"
+                      dataKey="Recuperado"
+                      stroke={CHART_COLORS.recovered}
+                      strokeWidth={2.5}
+                      dot={{ r: 4 }}
+                      activeDot={{ r: 6 }}
+                    />
                     <Line type="monotone" dataKey="Neto" stroke={CHART_COLORS.net} strokeWidth={2.5} dot={{ r: 4 }} activeDot={{ r: 6 }} />
                   </LineChart>
                 </ResponsiveContainer>

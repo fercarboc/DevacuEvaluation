@@ -327,6 +327,23 @@ type Preset = "LAST_7" | "LAST_30" | "YEAR";
 
 const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
   /** ---------------------------
+   * orgId (desde localStorage)
+   * --------------------------- */
+  const [orgId, setOrgId] = useState<string | null>(() => localStorage.getItem("debacu_eval_org_id"));
+
+  useEffect(() => {
+    // inicial (por si cambió antes de montar)
+    setOrgId(localStorage.getItem("debacu_eval_org_id"));
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "debacu_eval_org_id") setOrgId(e.newValue);
+    };
+
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  /** ---------------------------
    * Filtros
    * --------------------------- */
   const [preset, setPreset] = useState<Preset>("LAST_7");
@@ -465,11 +482,9 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
   const [openAbuseReport, setOpenAbuseReport] = useState(false);
   const [openEconomicReport, setOpenEconomicReport] = useState(false);
 
-  // Rangos por defecto para dialogs diarios/semanales
   const todayIso = toISODate(startOfToday());
   const yesterdayIso = toISODate(addDays(startOfToday(), -1));
   const last7FromIso = toISODate(addDays(startOfToday(), -6));
-
   const weeklyDialogRange = { from: last7FromIso, to: todayIso };
 
   return (
@@ -655,9 +670,6 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
                 <span className="text-xs text-slate-500">Modal</span>
               </button>
 
-              
-              
-
               <button
                 type="button"
                 onClick={() => setOpenEconomicReport(true)}
@@ -724,11 +736,9 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
         defaultFrom={weeklyDialogRange.from}
         defaultTo={weeklyDialogRange.to}
         periodField={periodField}
+        orgId={orgId} // 👈 CLAVE
       />
 
-      
-
-       
       {/* ✅ EconomicImpactDialog (MUI) */}
       <EconomicImpactDialog open={openEconomicReport} onClose={() => setOpenEconomicReport(false)} />
     </div>

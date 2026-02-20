@@ -5,90 +5,64 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { json, preflight } from "../_shared/cors.ts";
 import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
-/* ======================================================
- * CONST
- * ====================================================== */
 const DEFAULT_APP_CODE = "DEBACU_EVAL";
 
-/* ======================================================
- * TYPES
- * ====================================================== */
 type PeriodField = "evaluation_date" | "created_at";
 
 type BuildReq = {
   org_id?: string | null;
-
-  period_from: string; // YYYY-MM-DD
-  period_to: string; // YYYY-MM-DD
-
-  period_field?: PeriodField; // preferred
-  filters?: { period_field?: PeriodField }; // compat front legacy
-};
-
-type EvalRow = {
-  rating: number | null;
-  evaluation_date: string | null; // date
-  created_at: string; // timestamptz
-  economic_impact_gross: string | number | null;
-  economic_recovered: string | number | null;
-  economic_net_loss: string | number | null;
-
-  creator_customer_uuid: string | null;
-  customer_id: string | null;
-};
-
-export type WeeklySeriesRow = {
-  day: string; // YYYY-MM-DD
-  incidents: number;
-
-  risk_high: number;
-  risk_medium: number;
-  risk_low: number;
-
-  gross: number;
-  recovered: number;
-  net: number;
+  period_from: string;
+  period_to: string;
+  period_field?: PeriodField;
+  filters?: { period_field?: PeriodField };
 };
 
 type EntitlementsRow = {
   org_id: string;
   customer_id: string | null;
-  subscription_status: string | null; // ACTIVE | null
+  subscription_status: string | null;
   plan_code: string | null;
   max_users: number | null;
   seats_used: number | null;
   app_code?: string | null;
 };
 
-/* ======================================================
- * HELPERS
- * ====================================================== */
+type EvalRow = {
+  rating: number | null;
+  evaluation_date: string | null;
+  created_at: string;
+  economic_impact_gross: string | number | null;
+  economic_recovered: string | number | null;
+  economic_net_loss: string | number | null;
+  creator_customer_uuid: string | null;
+  customer_id: string | null;
+};
+
+type WeeklySeriesRow = {
+  day: string;
+  incidents: number;
+  risk_high: number;
+  risk_medium: number;
+  risk_low: number;
+  gross: number;
+  recovered: number;
+  net: number;
+};
+
 function isUuid(v: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
-
 function assertDate(s: string, name: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error(`invalid_${name}`);
 }
-
 function toNumber(v: unknown) {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : 0;
 }
-
 function computeNet(gross: number, recovered: number, netStored: number | null) {
   if (netStored != null && Number.isFinite(netStored)) return Math.max(0, netStored);
   return Math.max(0, gross - recovered);
 }
-
-function getRowDateKey(r: EvalRow, periodField: PeriodField): string {
-  if (periodField === "evaluation_date") {
-    const d = (r.evaluation_date ?? "").slice(0, 10);
-    if (d) return d;
-  }
-  return String(r.created_at).slice(0, 10);
-}
-
 function riskBucketFromRating(rating: number | null) {
   const v = Number(rating);
   if (!Number.isFinite(v)) return "UNKNOWN";
@@ -96,13 +70,18 @@ function riskBucketFromRating(rating: number | null) {
   if (v === 3) return "MEDIUM";
   return "LOW";
 }
-
+function getRowDateKey(r: EvalRow, periodField: PeriodField): string {
+  if (periodField === "evaluation_date") {
+    const d = (r.evaluation_date ?? "").slice(0, 10);
+    if (d) return d;
+  }
+  return String(r.created_at).slice(0, 10);
+}
 function addDaysUtc(isoDay: string, delta: number) {
   const d = new Date(`${isoDay}T00:00:00.000Z`);
   d.setUTCDate(d.getUTCDate() + delta);
   return d.toISOString().slice(0, 10);
 }
-
 function fillMissingDays(rows: WeeklySeriesRow[], from: string, to: string): WeeklySeriesRow[] {
   const map = new Map<string, WeeklySeriesRow>();
   for (const r of rows) map.set(r.day, r);
@@ -125,47 +104,103 @@ function fillMissingDays(rows: WeeklySeriesRow[], from: string, to: string): Wee
   return out;
 }
 
-/* ======================================================
- * MULTI-ORG + ENTITLEMENTS (JWT-only, tolerant user_id/auth_user_id)
- * ====================================================== */
+/**
+ * ✅ Resuelve el org_id validando membership ACTIVE.
+ * Robusto:
+ * - match por user_id OR auth_user_id OR invited_email (email del JWT)
+ * - si entra por invited_email y auth_user_id está null => autopatch auth_user_id=user.id
+ */
 async function resolveOrgIdForUserOrThrow(
   admin: ReturnType<typeof supabaseServiceClient>,
   userId: string,
+  userEmail: string | null,
   requestedOrgId?: string | null,
 ): Promise<string> {
   const uid = String(userId);
+  const email = (userEmail ?? "").trim().toLowerCase();
   const requested = (requestedOrgId ?? "").trim() || null;
+
+  console.log("[weekly_series] resolveOrg", { uid, email: email || null, requested });
 
   if (requested && !isUuid(requested)) throw new Error("invalid_org_id");
 
-  if (requested) {
-    // membership ACTIVE, tolerante a user_id o auth_user_id
+  // helper: busca membership en un org concreto
+  async function findInOrg(orgId: string) {
+    const orParts = [`user_id.eq.${uid}`, `auth_user_id.eq.${uid}`];
+    if (email) orParts.push(`invited_email.eq.${email}`);
+
     const { data, error } = await admin
       .from("debacu_eval_org_members")
-      .select("org_id")
-      .eq("org_id", requested)
-      .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+      .select("id, org_id, role, status, user_id, auth_user_id, invited_email")
+      .eq("org_id", orgId)
       .eq("status", "ACTIVE")
-      .maybeSingle();
+      .or(orParts.join(","))
+      .order("created_at", { ascending: true })
+      .limit(1);
+
+    console.log("[weekly_series] member_lookup_requested", {
+      orgId,
+      ok: !error,
+      error: error?.message ?? null,
+      rows: (data ?? []).length,
+      first: (data ?? [])[0] ?? null,
+    });
 
     if (error) throw new Error("request_failed");
-    if (!data?.org_id) throw new Error("FORBIDDEN");
-    return String(data.org_id);
+    if (!data || data.length === 0) return null;
+    return data[0] as any;
   }
 
-  // fallback determinista: primera ACTIVE por created_at
+  // 1) Si viene org_id, validar contra membership
+  if (requested) {
+    const m = await findInOrg(requested);
+    if (!m) throw new Error("FORBIDDEN");
+
+    // autopatch si entró por email y falta auth_user_id
+    if (!m.auth_user_id && email && String(m.invited_email ?? "").toLowerCase() === email) {
+      console.log("[weekly_series] autopatch_auth_user_id", { member_id: m.id, org_id: m.org_id, uid });
+      const { error: upErr } = await admin
+        .from("debacu_eval_org_members")
+        .update({ auth_user_id: uid })
+        .eq("id", m.id);
+      if (upErr) console.log("[weekly_series] autopatch_auth_user_id_error", upErr.message);
+    }
+
+    return String(m.org_id);
+  }
+
+  // 2) fallback: primera ACTIVE del usuario por uid/email
+  const orParts = [`user_id.eq.${uid}`, `auth_user_id.eq.${uid}`];
+  if (email) orParts.push(`invited_email.eq.${email}`);
+
   const { data, error } = await admin
     .from("debacu_eval_org_members")
-    .select("org_id, created_at")
-    .or(`user_id.eq.${uid},auth_user_id.eq.${uid}`)
+    .select("id, org_id, created_at, auth_user_id, invited_email")
     .eq("status", "ACTIVE")
+    .or(orParts.join(","))
     .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+
+  console.log("[weekly_series] member_lookup_fallback", {
+    ok: !error,
+    error: error?.message ?? null,
+    rows: (data ?? []).length,
+    first: (data ?? [])[0] ?? null,
+  });
 
   if (error) throw new Error("request_failed");
-  if (!data?.org_id) throw new Error("FORBIDDEN");
-  return String(data.org_id);
+  if (!data || data.length === 0) throw new Error("FORBIDDEN");
+
+  const m = data[0] as any;
+
+  // autopatch si entró por email y falta auth_user_id
+  if (!m.auth_user_id && email && String(m.invited_email ?? "").toLowerCase() === email) {
+    console.log("[weekly_series] autopatch_auth_user_id_fallback", { member_id: m.id, org_id: m.org_id, uid });
+    const { error: upErr } = await admin.from("debacu_eval_org_members").update({ auth_user_id: uid }).eq("id", m.id);
+    if (upErr) console.log("[weekly_series] autopatch_auth_user_id_error", upErr.message);
+  }
+
+  return String(m.org_id);
 }
 
 async function loadEntitlementsOrThrow(admin: ReturnType<typeof supabaseServiceClient>, orgId: string) {
@@ -175,7 +210,20 @@ async function loadEntitlementsOrThrow(admin: ReturnType<typeof supabaseServiceC
     .eq("org_id", orgId)
     .maybeSingle();
 
-  if (error || !data?.org_id) throw new Error("FORBIDDEN");
+  console.log("[weekly_series] entitlements", {
+    orgId,
+    ok: !error,
+    error: error?.message ?? null,
+    has: !!data?.org_id,
+    subscription_status: data?.subscription_status ?? null,
+    plan_code: data?.plan_code ?? null,
+    customer_id: data?.customer_id ?? null,
+  });
+
+  // IMPORTANT: si no hay fila, es un "no hay entitlements" (normalmente error de vista/join)
+  if (error) throw new Error("request_failed");
+  if (!data?.org_id) throw new Error("FORBIDDEN");
+
   return data as EntitlementsRow;
 }
 
@@ -184,9 +232,6 @@ function assertPlanActiveOrThrow(ent: EntitlementsRow) {
   if (!ent.customer_id) throw new Error("FORBIDDEN");
 }
 
-/* ======================================================
- * FETCH
- * ====================================================== */
 async function fetchEvaluationsForRange(
   admin: ReturnType<typeof supabaseServiceClient>,
   customerId: string,
@@ -205,37 +250,25 @@ async function fetchEvaluationsForRange(
     "customer_id",
   ].join(",");
 
-  // compat datos sucios: customer_id o creator_customer_uuid
   const q = admin
     .from("debacu_evaluations")
     .select(selectCols)
     .or(`customer_id.eq.${customerId},creator_customer_uuid.eq.${customerId}`);
 
   if (periodField === "evaluation_date") {
-    const { data, error } = await q
-      .gte("evaluation_date", from)
-      .lte("evaluation_date", to)
-      .order("evaluation_date", { ascending: true });
-
+    const { data, error } = await q.gte("evaluation_date", from).lte("evaluation_date", to);
     if (error) throw new Error("request_failed");
     return (data ?? []) as any;
   }
 
   const fromTs = `${from}T00:00:00.000Z`;
   const toTs = `${to}T23:59:59.999Z`;
-
-  const { data, error } = await q
-    .gte("created_at", fromTs)
-    .lte("created_at", toTs)
-    .order("created_at", { ascending: true });
+  const { data, error } = await q.gte("created_at", fromTs).lte("created_at", toTs);
 
   if (error) throw new Error("request_failed");
   return (data ?? []) as any;
 }
 
-/* ======================================================
- * AGG (Daily series)
- * ====================================================== */
 function buildDailySeries(rows: EvalRow[], periodField: PeriodField): WeeklySeriesRow[] {
   const map = new Map<string, WeeklySeriesRow>();
 
@@ -277,39 +310,27 @@ function buildDailySeries(rows: EvalRow[], periodField: PeriodField): WeeklySeri
   return Array.from(map.values()).sort((a, b) => a.day.localeCompare(b.day));
 }
 
-/* ======================================================
- * ERRORS
- * ====================================================== */
 function mapErrorToHttp(e: unknown): { status: number; detail: string } {
   const msg = String((e as any)?.message ?? e ?? "request_failed");
-
   if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return { status: 401, detail: "UNAUTHENTICATED" };
   if (msg === "PLAN_NOT_ACTIVE") return { status: 402, detail: "PLAN_NOT_ACTIVE" };
   if (msg === "FORBIDDEN") return { status: 403, detail: "FORBIDDEN" };
-
   if (msg.startsWith("invalid_")) return { status: 400, detail: msg };
   if (msg === "unsupported_period_field") return { status: 400, detail: "invalid_period_field" };
-  if (msg === "request_failed") return { status: 500, detail: "request_failed" };
-
   return { status: 500, detail: "request_failed" };
 }
 
-/* ======================================================
- * MAIN
- * ====================================================== */
 export default Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return preflight(req);
-  if (req.method !== "POST") {
-    return json(req, 405, { ok: false, error: "request_failed", detail: "method_not_allowed" });
-  }
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "request_failed", detail: "method_not_allowed" });
 
   const admin = supabaseServiceClient();
 
   try {
-    // Log mínimo útil (puedes quitarlo luego)
-    console.log("customer_operational_weekly_series_get hit");
+    console.log("[weekly_series] v2026-02-20-email-membership-autopatch");
 
     const user = await requireUser(req);
+    const userEmail = String((user as any)?.email ?? "").trim() || null;
 
     const body = (await req.json().catch(() => null)) as BuildReq | null;
     if (!body) return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_json" });
@@ -331,7 +352,15 @@ export default Deno.serve(async (req: Request) => {
       return json(req, 400, { ok: false, error: "request_failed", detail: "invalid_period_range" });
     }
 
-    const orgId = await resolveOrgIdForUserOrThrow(admin, user.id, body.org_id ? String(body.org_id) : null);
+    console.log("[weekly_series] user", { user_id: user.id, email: userEmail });
+    console.log("[weekly_series] body", { org_id: body.org_id ?? null, periodFrom, periodTo, periodFieldRaw });
+
+    const orgId = await resolveOrgIdForUserOrThrow(
+      admin,
+      user.id,
+      userEmail,
+      body.org_id ? String(body.org_id) : null,
+    );
 
     const ent = await loadEntitlementsOrThrow(admin, orgId);
     assertPlanActiveOrThrow(ent);
@@ -352,7 +381,6 @@ export default Deno.serve(async (req: Request) => {
       plan_code: ent.plan_code ?? null,
       max_users: ent.max_users ?? null,
       seats_used: ent.seats_used ?? null,
-
       period_from: periodFrom,
       period_to: periodTo,
       period_field: periodFieldRaw,
@@ -361,6 +389,7 @@ export default Deno.serve(async (req: Request) => {
     });
   } catch (e) {
     const mapped = mapErrorToHttp(e);
+    console.log("[weekly_series] ERROR", { msg: String((e as any)?.message ?? e) });
     return json(req, mapped.status, { ok: false, error: "request_failed", detail: mapped.detail });
   }
 });
