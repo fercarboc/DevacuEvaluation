@@ -92,7 +92,7 @@ export default function ActivateAccountPage() {
             <div className="relative z-10 flex flex-col justify-between w-full">
               <div className="flex items-center gap-3">
                 <img
-                  src="/img/debacu-logo-white.svg"
+                  src="public/img/debacu-logo-white.png"
                   alt="Debacu"
                   className="h-10 w-auto"
                   onError={(e) => {

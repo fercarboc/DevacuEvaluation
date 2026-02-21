@@ -686,13 +686,13 @@ const modalContent: Record<
 
           <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <TargetCard
-              imageSrc="/src/public/img/cards/hotel.png"
+              imageSrc="/public/img/cards/hotel.png"
               icon={<Hotel className="h-5 w-5" />}
               title="Hoteles"
               description="Recepción, pisos, incidencias y trazabilidad operativa."
             />
             <TargetCard
-              imageSrc="/src/public/img/cards/rural.png"
+              imageSrc="/public/img/cards/rural.png"
               icon={<Home className="h-5 w-5" />}
               title="Turismo rural"
               description="Gestión de estancias e incidencias sin ruido."
