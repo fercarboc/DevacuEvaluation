@@ -600,7 +600,7 @@ const modalContent: Record<
               <div className="absolute -inset-6 rounded-[32px] bg-gradient-to-tr from-sky-500/30 via-indigo-500/20 to-transparent blur-2xl" />
               <div className="relative rounded-3xl border border-white/10 bg-white/10 p-3 shadow-sm backdrop-blur">
                 <img
-                  src="img/debacuevaluation.png"
+                  src="/img/debacuevaluation.png"
                   alt="Debacu Evaluation360"
                   className="w-full rounded-2xl object-cover"
                 />
@@ -686,25 +686,25 @@ const modalContent: Record<
 
           <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <TargetCard
-              imageSrc="/public/img/cards/hotel.png"
+              imageSrc="/img/cards/hotel.png"
               icon={<Hotel className="h-5 w-5" />}
               title="Hoteles"
               description="Recepción, pisos, incidencias y trazabilidad operativa."
             />
             <TargetCard
-              imageSrc="/public/img/cards/rural.png"
+              imageSrc="/img/cards/rural.png"
               icon={<Home className="h-5 w-5" />}
               title="Turismo rural"
               description="Gestión de estancias e incidencias sin ruido."
             />
             <TargetCard
-              imageSrc="/src/public/img/cards/apartments.png"
+              imageSrc="/img/cards/apartments.png"
               icon={<Building2 className="h-5 w-5" />}
               title="Pisos turísticos"
               description="Procesos claros, registros estructurados y auditoría."
             />
             <TargetCard
-              imageSrc="/src/public/img/cards/hostel.png"
+              imageSrc="/img/cards/hostel.png"
               icon={<Users className="h-5 w-5" />}
               title="Hospederías"
               description="Equipos pequeños con necesidad de orden y trazabilidad."
@@ -729,21 +729,21 @@ const modalContent: Record<
           <div className="mt-8 grid gap-4 sm:grid-cols-3">
             <InfoCard
               tone="blue"
-              imageSrc="/src/public/img/cards/reception.png"
+              imageSrc="/img/cards/reception.png"
               icon={<Search className="h-5 w-5" />}
               title="1) Consulta rápida"
               description="Documento, email, teléfono o nombre. Resultados en segundos."
             />
             <InfoCard
               tone="indigo"
-              imageSrc="/src/public/img/cards/director.png"
+              imageSrc="/img/cards/director.png"
               icon={<ShieldCheck className="h-5 w-5" />}
               title="2) Evalúa con contexto"
               description="Histórico interno privado, orientado a decisiones operativas."
             />
             <InfoCard
               tone="emerald"
-              imageSrc="/src/public/img/cards/operations.png"
+              imageSrc="/img/cards/operations.png"
               icon={<ClipboardList className="h-5 w-5" />}
               title="3) Registra"
               description="Incidencias estructuradas, auditables y trazables."
@@ -763,21 +763,21 @@ const modalContent: Record<
           <div className="mt-8 grid gap-4 lg:grid-cols-3">
             <InfoCard
               tone="blue"
-              imageSrc="/src/public/img/cards/frontdesk.png"
+              imageSrc="/img/cards/frontdesk.png"
               icon={<TrendingUp className="h-5 w-5" />}
               title="Menos incidencias repetidas"
               description="Estandariza motivos y severidad para que el equipo actúe con un criterio único."
             />
             <InfoCard
               tone="indigo"
-              imageSrc="/src/public/img/cards/audit.png"
+              imageSrc="/img/cards/audit.png"
               icon={<ShieldCheck className="h-5 w-5" />}
               title="Más trazabilidad"
               description="Auditoría de acciones: quién consultó, cuándo y por qué (sin PII por defecto)."
             />
             <InfoCard
               tone="emerald"
-              imageSrc="/src/public/img/cards/sales.png"
+              imageSrc="/img/cards/sales.png"
               icon={<ClipboardList className="h-5 w-5" />}
               title="Decisiones con contexto"
               description="Histórico interno para apoyar protocolos operativos y prevención de incidencias."
