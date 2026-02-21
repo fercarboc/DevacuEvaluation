@@ -1,44 +1,87 @@
+// src/services/debacu_eval_adminAccess.service.ts
 import { supabase } from "@/services/supabaseClient";
 
-type Action = "LIST" | "APPROVE" | "REJECT" | "RESEND";
+export type Action = "LIST" | "APPROVE" | "REJECT" | "RESEND";
 
-// ✅ Pon aquí el nombre EXACTO de tu Edge Function desplegada.
-// Si has desplegado la nueva: "debacu-eval-admin-access-requests"
-const FN_NAME = "debacu-eval-admin-access-requests"; 
-// Si quieres mantener tu naming anterior, cámbialo a "debacu_eval_admin_access" 
-// pero entonces también renombra/duplica la Edge.
+/**
+ * Nombre EXACTO de la Edge Function desplegada en Supabase.
+ * Debe coincidir 1:1 con el nombre en Dashboard > Edge Functions.
+ */
+const FN_NAME = "debacu-eval-admin-access-requests";
 
-function pickErrorMessage(err: any) {
+type InvokeResult<T = any> = {
+  data: T | null;
+  error: any | null;
+};
+
+/** Intenta extraer un mensaje humano de distintos formatos de error */
+function pickErrorMessage(err: any, fallback = "Error invocando Edge Function") {
   return (
     err?.context?.error_description ||
     err?.context?.message ||
     err?.message ||
-    "Error invocando Edge Function"
+    err?.details ||
+    fallback
   );
 }
 
-export async function adminAccessRequests(action: Action, body: Record<string, any> = {}) {
+/**
+ * Admin Access Requests (JWT-only)
+ *
+ * body recomendado:
+ * - LIST:    { status?: "PENDING"|"APPROVED"|"REJECTED", limit?: number, offset?: number }
+ * - APPROVE: { requestId, reviewedBy?, decisionNotes?, siteUrl, activateUrl?, sendEmail?: boolean }
+ * - RESEND:  { requestId, reviewedBy?, siteUrl, activateUrl?, sendEmail?: boolean }
+ * - REJECT:  { requestId, reviewedBy?, decisionNotes? }
+ *
+ * NOTA: activateUrl debería ser algo como:
+ *   `${siteUrl}/auth/activate?org_id=${orgId}`
+ * para evitar el problema de org_id residual en localStorage.
+ */
+export async function adminAccessRequests<T = any>(action: Action, body: Record<string, any> = {}): Promise<T> {
   // ✅ JWT-only explícito
-  const { data: sess } = await supabase.auth.getSession();
+  const { data: sess, error: sessErr } = await supabase.auth.getSession();
+  if (sessErr) throw new Error(`No se pudo obtener sesión: ${sessErr.message}`);
+
   const jwt = sess?.session?.access_token;
   if (!jwt) throw new Error("No hay sesión Supabase. Login requerido.");
 
-  const { data, error } = await supabase.functions.invoke(FN_NAME, {
-    body: { action, ...body },
-    headers: {
-      Authorization: `Bearer ${jwt}`,
-    },
-  });
+  const payload = { action, ...body };
 
+  let result: InvokeResult<T>;
+  try {
+    result = (await supabase.functions.invoke(FN_NAME, {
+      body: payload,
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+      },
+    })) as InvokeResult<T>;
+  } catch (e: any) {
+    // Errores de red / CORS / etc.
+    throw new Error(pickErrorMessage(e, "Error de red invocando la Edge Function"));
+  }
+
+  const { data, error } = result;
+
+  // Error “nativo” de invoke
   if (error) {
-    // Edge errors a veces vienen “envueltos”
-    throw new Error(pickErrorMessage(error));
+    // A veces viene con info adicional
+    const msg = pickErrorMessage(error);
+    throw new Error(msg);
   }
 
-  // si tu Edge devuelve {error, detail} en JSON con 200/400, lo detectas aquí:
-  if ((data as any)?.error) {
-    throw new Error((data as any)?.detail || (data as any)?.error);
+  // Si tu Edge responde JSON estilo { ok:false, error, detail, ... } con status 4xx,
+  // supabase.functions.invoke suele ponerlo en data igualmente. Lo detectamos:
+  const anyData = data as any;
+
+  if (anyData?.ok === false) {
+    throw new Error(anyData?.detail || anyData?.error || "Request failed");
   }
 
-  return data;
+  // Si tu Edge usa {error, detail} sin ok:
+  if (anyData?.error && typeof anyData?.error === "string") {
+    throw new Error(anyData?.detail || anyData?.error);
+  }
+
+  return data as T;
 }

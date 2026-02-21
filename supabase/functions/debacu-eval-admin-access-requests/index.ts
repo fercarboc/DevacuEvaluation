@@ -15,10 +15,8 @@ const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
 const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
 
-// Base URL pública de tu frontend (prod)
-const SITE_URL = Deno.env.get("SITE_URL") ?? "https://debacu.com";
-const INVITE_REDIRECT_TO = `${SITE_URL}/auth/activate`;
-const RECOVERY_REDIRECT_TO = `${SITE_URL}/auth/reset`;
+// Base URL pública de tu frontend (fallback)
+const SITE_URL_FALLBACK = Deno.env.get("SITE_URL") ?? "https://debacu.com";
 
 function safeLowerEmail(v: any) {
   return typeof v === "string" ? v.trim().toLowerCase() : "";
@@ -54,6 +52,34 @@ function supabaseAnonClientNoAuth() {
 }
 
 /** ======================================================
+ *  Redirect helpers (dinámicos: local/prod/vercel)
+ *  ====================================================== */
+function normalizeBaseUrl(u: string) {
+  return u.replace(/\/+$/, "");
+}
+
+function resolveSiteUrl(body: any) {
+  const siteUrl = safeStr(body?.siteUrl || body?.site_url || "");
+  if (siteUrl.startsWith("http://") || siteUrl.startsWith("https://")) return normalizeBaseUrl(siteUrl);
+  return normalizeBaseUrl(SITE_URL_FALLBACK);
+}
+
+function resolveActivateRedirect(body: any, org_id: string) {
+  // prioridad: activateUrl explícita
+  const activateUrl = safeStr(body?.activateUrl || body?.activate_url || "");
+  if (activateUrl.startsWith("http://") || activateUrl.startsWith("https://")) return activateUrl;
+
+  // si no, construir con siteUrl dinámico + org_id
+  const base = resolveSiteUrl(body);
+  return `${base}/auth/activate?org_id=${encodeURIComponent(org_id)}`;
+}
+
+function resolveRecoveryRedirect(body: any) {
+  const base = resolveSiteUrl(body);
+  return `${base}/auth/reset`;
+}
+
+/** ======================================================
  *  Auth: find user by email (admin list users)
  *  ====================================================== */
 async function getAuthUserIdByEmail(sbAdmin: ReturnType<typeof supabaseServiceClient>, email: string) {
@@ -81,14 +107,16 @@ async function sendInviteOrRecovery(params: {
   email: string;
   customer_id: string;
   org_id: string;
+  inviteRedirectTo: string;
+  recoveryRedirectTo: string;
 }) {
-  const { sbAdmin, email, customer_id, org_id } = params;
+  const { sbAdmin, email, customer_id, org_id, inviteRedirectTo, recoveryRedirectTo } = params;
 
   const existingUserId = await getAuthUserIdByEmail(sbAdmin, email);
 
   if (!existingUserId) {
     const { data, error } = await sbAdmin.auth.admin.inviteUserByEmail(email, {
-      redirectTo: INVITE_REDIRECT_TO,
+      redirectTo: inviteRedirectTo, // ✅ aquí va ?org_id=...
       data: { customer_id, org_id, app: "DEBACU_EVAL" },
     });
     if (error) throw new Error("invite_failed");
@@ -98,7 +126,7 @@ async function sendInviteOrRecovery(params: {
 
   const sbAnon = supabaseAnonClientNoAuth();
   const { error } = await sbAnon.auth.resetPasswordForEmail(email, {
-    redirectTo: RECOVERY_REDIRECT_TO,
+    redirectTo: recoveryRedirectTo, // ✅ también dinámico
   });
   if (error) throw new Error("recovery_failed");
 
@@ -254,8 +282,6 @@ async function ensureOrganization(
 
 /** ======================================================
  *  Membership: asegura OWNER ACTIVE CANÓNICO
- *  - auth_user_id es canónico
- *  - user_id se mantiene == auth_user_id para no romper legacy
  *  ====================================================== */
 async function ensureOwnerActiveMembership(
   sbAdmin: ReturnType<typeof supabaseServiceClient>,
@@ -272,7 +298,6 @@ async function ensureOwnerActiveMembership(
 
   if (!org_id || !auth_user_id) throw new Error("missing_member_inputs");
 
-  // 1) ya existe por (org_id, auth_user_id) -> canónico
   const { data: byAuth, error: byAuthErr } = await sbAdmin
     .from("debacu_eval_org_members")
     .select("id, role, status, invited_email, auth_user_id, user_id")
@@ -287,7 +312,6 @@ async function ensureOwnerActiveMembership(
       String(byAuth.role || "").toUpperCase() !== "OWNER" ||
       String(byAuth.status || "").toUpperCase() !== "ACTIVE" ||
       (invited_email && safeLowerEmail(byAuth.invited_email) !== invited_email) ||
-      // keep legacy mirror
       safeStr(byAuth.user_id) !== auth_user_id;
 
     if (needsUpdate) {
@@ -297,7 +321,7 @@ async function ensureOwnerActiveMembership(
           role: "OWNER",
           status: "ACTIVE",
           invited_email: invited_email || null,
-          user_id: auth_user_id, // legacy mirror
+          user_id: auth_user_id,
           updated_at: new Date().toISOString(),
         })
         .eq("id", byAuth.id);
@@ -308,7 +332,6 @@ async function ensureOwnerActiveMembership(
     return { member_id: byAuth.id as string, mode: "UPDATED_BY_AUTH" as const };
   }
 
-  // 2) existe legacy por (org_id, user_id==auth_user_id, auth_user_id null) -> canonizar
   const { data: legacy, error: legacyErr } = await sbAdmin
     .from("debacu_eval_org_members")
     .select("id, role, status, invited_email, auth_user_id, user_id")
@@ -324,7 +347,7 @@ async function ensureOwnerActiveMembership(
       .from("debacu_eval_org_members")
       .update({
         auth_user_id,
-        user_id: auth_user_id, // keep mirror
+        user_id: auth_user_id,
         role: "OWNER",
         status: "ACTIVE",
         invited_email: invited_email || legacy.invited_email || null,
@@ -336,7 +359,6 @@ async function ensureOwnerActiveMembership(
     return { member_id: legacy.id as string, mode: "CANONIZED_LEGACY" as const };
   }
 
-  // 3) existe INVITED por email -> reclamar y activar (canónico)
   if (invited_email) {
     const { data: byEmail, error: byEmailErr } = await sbAdmin
       .from("debacu_eval_org_members")
@@ -355,7 +377,7 @@ async function ensureOwnerActiveMembership(
         .from("debacu_eval_org_members")
         .update({
           auth_user_id,
-          user_id: auth_user_id, // legacy mirror
+          user_id: auth_user_id,
           role: "OWNER",
           status: "ACTIVE",
           updated_at: new Date().toISOString(),
@@ -368,7 +390,6 @@ async function ensureOwnerActiveMembership(
     }
   }
 
-  // 4) crear nueva (canónica)
   const { data: inserted, error: insErr } = await sbAdmin
     .from("debacu_eval_org_members")
     .insert({
@@ -377,7 +398,7 @@ async function ensureOwnerActiveMembership(
       status: "ACTIVE",
       invited_email: invited_email || null,
       auth_user_id,
-      user_id: auth_user_id, // legacy mirror
+      user_id: auth_user_id,
       created_by_user_id: params.created_by_user_id,
       updated_at: new Date().toISOString(),
     })
@@ -553,7 +574,10 @@ Deno.serve(async (req) => {
 
       const subRes = await ensureFreeTrialSubscription(sbAdmin, customer_id);
 
-      // Email: invite o recovery
+      // redirect dinámico con org_id
+      const inviteRedirectTo = resolveActivateRedirect(body, orgRes.org_id);
+      const recoveryRedirectTo = resolveRecoveryRedirect(body);
+
       let email_sent = false;
       let email_detail: string | null = null;
       let last_email_status: string | null = null;
@@ -562,7 +586,14 @@ Deno.serve(async (req) => {
       let resolved_auth_user_id: string | null = null;
 
       try {
-        const r = await sendInviteOrRecovery({ sbAdmin, email, customer_id, org_id: orgRes.org_id });
+        const r = await sendInviteOrRecovery({
+          sbAdmin,
+          email,
+          customer_id,
+          org_id: orgRes.org_id,
+          inviteRedirectTo,
+          recoveryRedirectTo,
+        });
         email_sent = true;
         email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
         last_email_status = "SENT";
@@ -591,6 +622,7 @@ Deno.serve(async (req) => {
           reviewed_by,
           reviewed_at: new Date().toISOString(),
           customer_id,
+          org_id: orgRes.org_id,
           last_email_status,
           last_email_at,
           last_email_detail: email_detail,
@@ -610,6 +642,7 @@ Deno.serve(async (req) => {
         },
         email_sent,
         email_detail,
+        invite_redirect_to: inviteRedirectTo,
       });
     }
 
@@ -621,7 +654,7 @@ Deno.serve(async (req) => {
 
       if (!request_id) return errResp(req, 400, "missing_requestId");
 
-      const { error } = await supabaseServiceClient()
+      const { error } = await sbAdmin
         .from("debacu_eval_access_requests")
         .update({
           status: "REJECTED",
@@ -666,13 +699,24 @@ Deno.serve(async (req) => {
 
       if (orgErr || !org?.id) return errResp(req, 500, "org_not_found_for_customer");
 
+      // redirect dinámico con org_id
+      const inviteRedirectTo = resolveActivateRedirect(body, org.id);
+      const recoveryRedirectTo = resolveRecoveryRedirect(body);
+
       let email_sent = false;
       let email_detail: string | null = null;
       let last_email_status: string | null = null;
       let resolved_auth_user_id: string | null = null;
 
       try {
-        const r = await sendInviteOrRecovery({ sbAdmin, email, customer_id, org_id: org.id });
+        const r = await sendInviteOrRecovery({
+          sbAdmin,
+          email,
+          customer_id,
+          org_id: org.id,
+          inviteRedirectTo,
+          recoveryRedirectTo,
+        });
         email_sent = true;
         email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
         last_email_status = "SENT";
@@ -696,6 +740,7 @@ Deno.serve(async (req) => {
       await sbAdmin
         .from("debacu_eval_access_requests")
         .update({
+          org_id: org.id,
           last_email_status,
           last_email_at: new Date().toISOString(),
           last_email_detail: email_detail,
@@ -704,7 +749,14 @@ Deno.serve(async (req) => {
         })
         .eq("id", request_id);
 
-      return json(req, 200, { ok: true, customer_id, org_id: org.id, email_sent, email_detail });
+      return json(req, 200, {
+        ok: true,
+        customer_id,
+        org_id: org.id,
+        email_sent,
+        email_detail,
+        invite_redirect_to: inviteRedirectTo,
+      });
     }
 
     return errResp(req, 400, "invalid_action");
