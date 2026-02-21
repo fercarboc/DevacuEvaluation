@@ -30,9 +30,20 @@ type ApproveResult = {
   ok?: boolean;
   customer_id?: string;
   org_id?: string;
+  send_email?: boolean;
   email_sent?: boolean;
   email_detail?: string | null;
+  invite_redirect_to?: string | null;
 };
+
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
+}
+
+function buildActivateUrl(siteUrl: string, orgId: string) {
+  const base = siteUrl.replace(/\/+$/, "");
+  return `${base}/auth/activate?org_id=${encodeURIComponent(orgId)}`;
+}
 
 export function AdminSolicitudesAccesoPage() {
   const [status, setStatus] = useState<"PENDING" | "APPROVED" | "REJECTED" | "ALL">("PENDING");
@@ -71,7 +82,7 @@ export function AdminSolicitudesAccesoPage() {
 
   const approve = async (id: string) => {
     const notes = window.prompt("Notas (opcional):") ?? "";
-    const siteUrl = window.location.origin; // ✅ clave: local/prod dinámico
+    const siteUrl = window.location.origin;
 
     setBusyId(id);
     try {
@@ -80,13 +91,32 @@ export function AdminSolicitudesAccesoPage() {
         decisionNotes: notes,
         reviewedBy: adminUserId,
         siteUrl,
-        sendEmail: true, // ✅ dispara inviteUserByEmail
+        // opcional pero recomendable: forzar el redirect exacto
+        // (el backend si no lo pasas lo construye igual con siteUrl + org_id)
+        // activateUrl se resuelve con org_id, así que lo construimos tras respuesta:
+        sendEmail: true,
       })) as ApproveResult;
 
+      const orgId = safeStr(res?.org_id);
+
+      // Si quieres verificar qué redirect ha usado el backend:
+      // console.log("invite_redirect_to:", res?.invite_redirect_to);
+
+      if (!orgId) {
+        alert("Aprobado, pero la respuesta no devolvió org_id (revisa Edge).");
+        await load();
+        return;
+      }
+
+      // Reenviar NO es necesario, pero si quieres asegurar el enlace al 100%
+      // (y sólo si detectas que invite_redirect_to no trae org_id), entonces:
+      // const redirect = safeStr(res?.invite_redirect_to);
+      // if (!redirect.includes("org_id=")) { ... hacer RESEND ... }
+
       if (res?.email_sent === false) {
-        alert(res?.email_detail ?? "No se pudo enviar el email de invitación (Supabase).");
+        alert(res?.email_detail ?? "Aprobado, pero no se pudo enviar el email de activación.");
       } else {
-        alert("Aprobado. Email de activación enviado por Supabase.");
+        alert("Aprobado. Email de activación enviado.");
       }
 
       await load();
@@ -102,17 +132,30 @@ export function AdminSolicitudesAccesoPage() {
 
     setBusyId(id);
     try {
+      // Necesitamos org_id para construir activateUrl.
+      // Lo tenemos en rows (porque lo guarda la Edge en access_requests).
+      const row = rows.find((x) => x.id === id);
+      const orgId = safeStr(row?.org_id);
+      if (!orgId) {
+        alert("No se puede reenviar: la solicitud no tiene org_id. (Revisa que APPROVE lo guarde).");
+        await load();
+        return;
+      }
+
+      const activateUrl = buildActivateUrl(siteUrl, orgId);
+
       const res = (await adminAccessRequests("RESEND", {
         requestId: id,
         reviewedBy: adminUserId,
         siteUrl,
+        activateUrl,
         sendEmail: true,
       })) as ApproveResult;
 
       if (res?.email_sent === false) {
         alert(res?.email_detail ?? "No se pudo reenviar el email de invitación.");
       } else {
-        alert("Reenvío lanzado. Email de activación enviado por Supabase.");
+        alert("Reenvío lanzado. Email de activación enviado.");
       }
 
       await load();
@@ -162,6 +205,9 @@ export function AdminSolicitudesAccesoPage() {
           <h1 className="text-2xl font-bold text-slate-900">Solicitudes de acceso</h1>
           <p className="text-slate-600">
             Aprobar crea el hotel (org) y envía un email automático de Supabase para activar la cuenta.
+          </p>
+          <p className="text-xs text-slate-500 mt-1">
+            El enlace de activación se envía con <span className="font-mono">/auth/activate?org_id=...</span>
           </p>
         </div>
 

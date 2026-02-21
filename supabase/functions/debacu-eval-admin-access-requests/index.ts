@@ -500,6 +500,9 @@ Deno.serve(async (req) => {
       const decision_notes = safeStr(body?.decisionNotes ?? "");
       const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user.id ?? null;
 
+      // ✅ respeta sendEmail (por defecto true)
+      const sendEmail = body?.sendEmail !== false;
+
       if (!request_id) return errResp(req, 400, "missing_requestId");
 
       const { data: request, error: requestError } = await sbAdmin
@@ -581,27 +584,32 @@ Deno.serve(async (req) => {
       let email_sent = false;
       let email_detail: string | null = null;
       let last_email_status: string | null = null;
-      const last_email_at: string | null = new Date().toISOString();
+      const last_email_at: string | null = sendEmail ? new Date().toISOString() : null;
 
       let resolved_auth_user_id: string | null = null;
 
-      try {
-        const r = await sendInviteOrRecovery({
-          sbAdmin,
-          email,
-          customer_id,
-          org_id: orgRes.org_id,
-          inviteRedirectTo,
-          recoveryRedirectTo,
-        });
-        email_sent = true;
-        email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
-        last_email_status = "SENT";
-        resolved_auth_user_id = r.user_id;
-      } catch {
-        email_sent = false;
-        email_detail = "email_send_failed";
-        last_email_status = "FAILED";
+      if (sendEmail) {
+        try {
+          const r = await sendInviteOrRecovery({
+            sbAdmin,
+            email,
+            customer_id,
+            org_id: orgRes.org_id,
+            inviteRedirectTo,
+            recoveryRedirectTo,
+          });
+          email_sent = true;
+          email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
+          last_email_status = "SENT";
+          resolved_auth_user_id = r.user_id;
+        } catch {
+          email_sent = false;
+          email_detail = "email_send_failed";
+          last_email_status = "FAILED";
+          resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
+        }
+      } else {
+        // sin email: igualmente intenta resolver user
         resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
       }
 
@@ -614,19 +622,25 @@ Deno.serve(async (req) => {
         });
       }
 
+      // ✅ update request (no pisa last_email_* si sendEmail=false)
+      const updatePayload: any = {
+        status: "APPROVED",
+        decision_notes: decision_notes || null,
+        reviewed_by,
+        reviewed_at: new Date().toISOString(),
+        customer_id,
+        org_id: orgRes.org_id,
+      };
+
+      if (sendEmail) {
+        updatePayload.last_email_status = last_email_status;
+        updatePayload.last_email_at = last_email_at;
+        updatePayload.last_email_detail = email_detail;
+      }
+
       const { error: updateError } = await sbAdmin
         .from("debacu_eval_access_requests")
-        .update({
-          status: "APPROVED",
-          decision_notes: decision_notes || null,
-          reviewed_by,
-          reviewed_at: new Date().toISOString(),
-          customer_id,
-          org_id: orgRes.org_id,
-          last_email_status,
-          last_email_at,
-          last_email_detail: email_detail,
-        })
+        .update(updatePayload)
         .eq("id", request_id);
 
       if (updateError) return errResp(req, 500, "db_request_update_failed");
@@ -640,6 +654,7 @@ Deno.serve(async (req) => {
           id: subRes.subscription?.id ?? null,
           status: subRes.subscription?.status ?? null,
         },
+        send_email: sendEmail,
         email_sent,
         email_detail,
         invite_redirect_to: inviteRedirectTo,
@@ -673,6 +688,9 @@ Deno.serve(async (req) => {
       const request_id = body?.requestId as string;
       const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user.id ?? null;
 
+      // ✅ respeta sendEmail (por defecto true)
+      const sendEmail = body?.sendEmail !== false;
+
       if (!request_id) return errResp(req, 400, "missing_requestId");
 
       const { data: request, error: requestError } = await sbAdmin
@@ -689,18 +707,27 @@ Deno.serve(async (req) => {
       const customer_id = request.customer_id ?? null;
       if (!customer_id) return errResp(req, 400, "missing_customer_id");
 
-      const { data: org, error: orgErr } = await sbAdmin
-        .from("debacu_eval_organizations")
-        .select("id")
-        .eq("customer_id", customer_id)
-        .order("created_at", { ascending: true })
-        .limit(1)
-        .maybeSingle();
+      const org_id = request.org_id ?? null;
+      if (!org_id) {
+        // fallback: buscar por customer
+        const { data: org, error: orgErr } = await sbAdmin
+          .from("debacu_eval_organizations")
+          .select("id")
+          .eq("customer_id", customer_id)
+          .order("created_at", { ascending: true })
+          .limit(1)
+          .maybeSingle();
 
-      if (orgErr || !org?.id) return errResp(req, 500, "org_not_found_for_customer");
+        if (orgErr || !org?.id) return errResp(req, 500, "org_not_found_for_customer");
+
+        // persist org_id en request
+        await sbAdmin.from("debacu_eval_access_requests").update({ org_id: org.id }).eq("id", request_id);
+
+        request.org_id = org.id;
+      }
 
       // redirect dinámico con org_id
-      const inviteRedirectTo = resolveActivateRedirect(body, org.id);
+      const inviteRedirectTo = resolveActivateRedirect(body, request.org_id);
       const recoveryRedirectTo = resolveRecoveryRedirect(body);
 
       let email_sent = false;
@@ -708,51 +735,57 @@ Deno.serve(async (req) => {
       let last_email_status: string | null = null;
       let resolved_auth_user_id: string | null = null;
 
-      try {
-        const r = await sendInviteOrRecovery({
-          sbAdmin,
-          email,
-          customer_id,
-          org_id: org.id,
-          inviteRedirectTo,
-          recoveryRedirectTo,
-        });
-        email_sent = true;
-        email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
-        last_email_status = "SENT";
-        resolved_auth_user_id = r.user_id;
-      } catch {
-        email_sent = false;
-        email_detail = "email_send_failed";
-        last_email_status = "FAILED";
+      if (sendEmail) {
+        try {
+          const r = await sendInviteOrRecovery({
+            sbAdmin,
+            email,
+            customer_id,
+            org_id: request.org_id,
+            inviteRedirectTo,
+            recoveryRedirectTo,
+          });
+          email_sent = true;
+          email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
+          last_email_status = "SENT";
+          resolved_auth_user_id = r.user_id;
+        } catch {
+          email_sent = false;
+          email_detail = "email_send_failed";
+          last_email_status = "FAILED";
+          resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
+        }
+      } else {
         resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
       }
 
       if (resolved_auth_user_id) {
         await ensureOwnerActiveMembership(sbAdmin, {
-          org_id: org.id,
+          org_id: request.org_id,
           auth_user_id: resolved_auth_user_id,
           invited_email: email,
           created_by_user_id: reviewed_by,
         });
       }
 
-      await sbAdmin
-        .from("debacu_eval_access_requests")
-        .update({
-          org_id: org.id,
-          last_email_status,
-          last_email_at: new Date().toISOString(),
-          last_email_detail: email_detail,
-          reviewed_by,
-          reviewed_at: new Date().toISOString(),
-        })
-        .eq("id", request_id);
+      const upd: any = {
+        reviewed_by,
+        reviewed_at: new Date().toISOString(),
+      };
+
+      if (sendEmail) {
+        upd.last_email_status = last_email_status;
+        upd.last_email_at = new Date().toISOString();
+        upd.last_email_detail = email_detail;
+      }
+
+      await sbAdmin.from("debacu_eval_access_requests").update(upd).eq("id", request_id);
 
       return json(req, 200, {
         ok: true,
         customer_id,
-        org_id: org.id,
+        org_id: request.org_id,
+        send_email: sendEmail,
         email_sent,
         email_detail,
         invite_redirect_to: inviteRedirectTo,
