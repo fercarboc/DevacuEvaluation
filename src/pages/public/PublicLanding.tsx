@@ -600,7 +600,7 @@ const modalContent: Record<
               <div className="absolute -inset-6 rounded-[32px] bg-gradient-to-tr from-sky-500/30 via-indigo-500/20 to-transparent blur-2xl" />
               <div className="relative rounded-3xl border border-white/10 bg-white/10 p-3 shadow-sm backdrop-blur">
                 <img
-                  src="/img/debacuevaluation.png"
+                  src="img/debacuevaluation.png"
                   alt="Debacu Evaluation360"
                   className="w-full rounded-2xl object-cover"
                 />
