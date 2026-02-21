@@ -16,7 +16,20 @@ import {
   Users,
   Sparkles,
 } from "lucide-react";
- 
+ import heroImg from "@/assets/hero/debacuevaluation.png";
+
+import cardHotel from "@/assets/cards/hotel.png";
+import cardRural from "@/assets/cards/rural.png";
+import cardApartments from "@/assets/cards/apartments.png";
+import cardHostel from "@/assets/cards/hostel.png";
+
+import cardReception from "@/assets/cards/reception.png";
+import cardDirector from "@/assets/cards/director.png";
+import cardOperations from "@/assets/cards/operations.png";
+
+import cardFrontdesk from "@/assets/cards/frontdesk.png";
+import cardAudit from "@/assets/cards/audit.png";
+import cardSales from "@/assets/cards/sales.png";
  
 import LegalFooter from "../legal/LegalFooter";
  
@@ -600,7 +613,7 @@ const modalContent: Record<
               <div className="absolute -inset-6 rounded-[32px] bg-gradient-to-tr from-sky-500/30 via-indigo-500/20 to-transparent blur-2xl" />
               <div className="relative rounded-3xl border border-white/10 bg-white/10 p-3 shadow-sm backdrop-blur">
                 <img
-                  src="img/debacuevaluation.png"
+                 src={heroImg}
                   alt="Debacu Evaluation360"
                   className="w-full rounded-2xl object-cover"
                 />
@@ -685,26 +698,29 @@ const modalContent: Record<
           />
 
           <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <TargetCard
-              imageSrc="img/cards/hotel.png"
+           <TargetCard
+              imageSrc={cardHotel}
               icon={<Hotel className="h-5 w-5" />}
               title="Hoteles"
               description="Recepción, pisos, incidencias y trazabilidad operativa."
             />
+
             <TargetCard
-              imageSrc="img/cards/rural.png"
+              imageSrc={cardRural}
               icon={<Home className="h-5 w-5" />}
               title="Turismo rural"
               description="Gestión de estancias e incidencias sin ruido."
             />
+
             <TargetCard
-              imageSrc="/img/cards/apartments.png"
+              imageSrc={cardApartments}
               icon={<Building2 className="h-5 w-5" />}
               title="Pisos turísticos"
               description="Procesos claros, registros estructurados y auditoría."
             />
+
             <TargetCard
-              imageSrc="/img/cards/hostel.png"
+              imageSrc={cardHostel}
               icon={<Users className="h-5 w-5" />}
               title="Hospederías"
               description="Equipos pequeños con necesidad de orden y trazabilidad."
@@ -729,21 +745,23 @@ const modalContent: Record<
           <div className="mt-8 grid gap-4 sm:grid-cols-3">
             <InfoCard
               tone="blue"
-              imageSrc="/img/cards/reception.png"
+              imageSrc={cardReception}
               icon={<Search className="h-5 w-5" />}
               title="1) Consulta rápida"
               description="Documento, email, teléfono o nombre. Resultados en segundos."
             />
+
             <InfoCard
               tone="indigo"
-              imageSrc="/img/cards/director.png"
+              imageSrc={cardDirector}
               icon={<ShieldCheck className="h-5 w-5" />}
               title="2) Evalúa con contexto"
               description="Histórico interno privado, orientado a decisiones operativas."
             />
+
             <InfoCard
               tone="emerald"
-              imageSrc="/img/cards/operations.png"
+              imageSrc={cardOperations}
               icon={<ClipboardList className="h-5 w-5" />}
               title="3) Registra"
               description="Incidencias estructuradas, auditables y trazables."
@@ -761,23 +779,25 @@ const modalContent: Record<
           />
 
           <div className="mt-8 grid gap-4 lg:grid-cols-3">
-            <InfoCard
+                      <InfoCard
               tone="blue"
-              imageSrc="/img/cards/frontdesk.png"
+              imageSrc={cardFrontdesk}
               icon={<TrendingUp className="h-5 w-5" />}
               title="Menos incidencias repetidas"
               description="Estandariza motivos y severidad para que el equipo actúe con un criterio único."
             />
+
             <InfoCard
               tone="indigo"
-              imageSrc="/img/cards/audit.png"
+              imageSrc={cardAudit}
               icon={<ShieldCheck className="h-5 w-5" />}
               title="Más trazabilidad"
               description="Auditoría de acciones: quién consultó, cuándo y por qué (sin PII por defecto)."
             />
+
             <InfoCard
               tone="emerald"
-              imageSrc="/img/cards/sales.png"
+              imageSrc={cardSales}
               icon={<ClipboardList className="h-5 w-5" />}
               title="Decisiones con contexto"
               description="Histórico interno para apoyar protocolos operativos y prevención de incidencias."
