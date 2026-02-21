@@ -18,18 +18,18 @@ import {
 } from "lucide-react";
  import heroImg from "@/img/debacuevaluation.png";
 
-import cardHotel from "@/img/cards/hotel.png";
-import cardRural from "@/img/cards/rural.png";
-import cardApartments from "@/img/cards/apartments.png";
-import cardHostel from "@/img/cards/hostel.png";
+import cardHotel from "@/img/hotel.png";
+import cardRural from "@/img/rural.png";
+import cardApartments from "@/img/apartments.png";
+import cardHostel from "@/img/hostel.png";
 
-import cardReception from "@/img/cards/reception.png";
-import cardDirector from "@/img/cards/director.png";
-import cardOperations from "@/img/cards/operations.png";
+import cardReception from "@/img/reception.png";
+import cardDirector from "@/img/director.png";
+import cardOperations from "@/img/operations.png";
 
-import cardFrontdesk from "@/img/cards/frontdesk.png";
-import cardAudit from "@/img/cards/audit.png";
-import cardSales from "@/img/cards/sales.png";
+import cardFrontdesk from "@/img/frontdesk.png";
+import cardAudit from "@/img/audit.png";
+import cardSales from "@/img/sales.png";
  
 import LegalFooter from "../legal/LegalFooter";
  
