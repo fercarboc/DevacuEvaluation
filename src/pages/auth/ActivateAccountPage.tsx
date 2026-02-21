@@ -61,55 +61,146 @@ export default function ActivateAccountPage() {
   };
 
   return (
-    <div className="min-h-[70vh] flex items-center justify-center px-4">
-      <div className="w-full max-w-md bg-white border rounded-2xl p-6">
-        <h1 className="text-xl font-bold text-slate-900">Activar cuenta</h1>
-        <p className="text-sm text-slate-600 mt-1">Define tu contraseña para acceder a Debacu Evaluation360.</p>
+    <div className="min-h-screen bg-slate-50">
+      {/* Topbar (mobile + desktop) */}
+      <div className="w-full px-4 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <img
+            src="/img/debacu-logo.png"
+            alt="Debacu"
+            className="h-8 w-auto"
+            onError={(e) => {
+              // si no existe el logo, no rompas la UI
+              (e.currentTarget as HTMLImageElement).style.display = "none";
+            }}
+          />
+          <span className="text-sm font-semibold text-slate-900">Debacu Evaluation360</span>
+        </div>
+        <button
+          onClick={() => nav("/login")}
+          className="text-sm text-slate-600 hover:text-slate-900"
+        >
+          Ir al login
+        </button>
+      </div>
 
-        {loading ? (
-          <div className="mt-6 text-sm text-slate-500">Cargando...</div>
-        ) : (
-          <>
-            <div className="mt-4 text-xs text-slate-500">
-              Org: <span className="font-mono">{orgId || "—"}</span>
-            </div>
+      {/* Body */}
+      <div className="mx-auto max-w-6xl px-4 pb-10">
+        <div className="grid grid-cols-1 md:grid-cols-2 overflow-hidden rounded-3xl border bg-white shadow-sm">
+          {/* LEFT BRANDING */}
+          <div className="hidden md:flex relative p-10 text-white bg-gradient-to-br from-[#0B1F3A] to-[#163E73]">
+            <div className="relative z-10 flex flex-col justify-between w-full">
+              <div className="flex items-center gap-3">
+                <img
+                  src="/img/debacu-logo-white.svg"
+                  alt="Debacu"
+                  className="h-10 w-auto"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = "none";
+                  }}
+                />
+                <div>
+                  <div className="text-lg font-semibold leading-tight">Debacu Evaluation</div>
+                  <div className="text-xs text-blue-200">Herramienta profesional para hoteles</div>
+                </div>
+              </div>
 
-            <div className="mt-6 space-y-3">
-              <div>
-                <label className="text-sm text-slate-700">Nueva contraseña</label>
-                <input
-                  type="password"
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={pw1}
-                  onChange={(e) => setPw1(e.target.value)}
+              <div className="mt-10">
+                <h2 className="text-3xl font-semibold leading-tight">
+                  Más control operativo.
+                  <br />
+                  Menos incidencias repetidas.
+                </h2>
+                <p className="mt-3 text-sm text-blue-100 max-w-md">
+                  Activa tu acceso en menos de un minuto y empieza a trabajar con tu equipo.
+                </p>
+
+                <img
+                  src="/img/activate-hero.png"
+                  alt="Debacu"
+                  className="mt-10 w-full max-w-lg rounded-2xl shadow-lg border border-white/10"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = "none";
+                  }}
                 />
               </div>
-              <div>
-                <label className="text-sm text-slate-700">Repetir contraseña</label>
-                <input
-                  type="password"
-                  className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
-                  value={pw2}
-                  onChange={(e) => setPw2(e.target.value)}
-                />
+
+              <div className="text-xs text-blue-200">
+                Uso profesional · Gestión interna · Apoyo operativo
               </div>
             </div>
 
-            {msg ? <div className="mt-4 text-sm text-slate-700">{msg}</div> : null}
+            {/* overlay */}
+            <div className="absolute inset-0 opacity-25 bg-[radial-gradient(circle_at_top,white,transparent_55%)]" />
+          </div>
 
-            <button
-              onClick={submit}
-              disabled={saving || !orgId}
-              className="mt-6 w-full px-4 py-2 rounded-lg bg-slate-900 text-white text-sm disabled:opacity-50"
-            >
-              {saving ? "Guardando..." : "Guardar contraseña"}
-            </button>
+          {/* RIGHT FORM */}
+          <div className="p-6 sm:p-10">
+            <h1 className="text-2xl font-semibold text-slate-900">Activa tu cuenta</h1>
+            <p className="text-sm text-slate-600 mt-2">
+              Inserta tu contraseña para activar el servicio y acceder a Debacu Evaluation360.
+            </p>
 
-            <button onClick={() => nav("/login")} className="mt-3 w-full px-4 py-2 rounded-lg border text-sm">
-              Ir al login
-            </button>
-          </>
-        )}
+            {loading ? (
+              <div className="mt-8 text-sm text-slate-500">Cargando...</div>
+            ) : (
+              <>
+                {/* Si quieres mostrar orgId, mejor discreto y solo en dev */}
+                {/* <div className="mt-4 text-xs text-slate-500">
+                  Org: <span className="font-mono">{orgId || "—"}</span>
+                </div> */}
+
+                {msg ? (
+                  <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">
+                    {msg}
+                  </div>
+                ) : null}
+
+                <div className="mt-6 space-y-4">
+                  <div>
+                    <label className="text-sm font-medium text-slate-700">Nueva contraseña</label>
+                    <input
+                      type="password"
+                      className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-slate-900/20"
+                      placeholder="Mínimo 8 caracteres"
+                      value={pw1}
+                      onChange={(e) => setPw1(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-medium text-slate-700">Repetir contraseña</label>
+                    <input
+                      type="password"
+                      className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-slate-900/20"
+                      value={pw2}
+                      onChange={(e) => setPw2(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={submit}
+                  disabled={saving || !orgId}
+                  className="mt-7 w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
+                >
+                  {saving ? "Guardando..." : "Guardar contraseña"}
+                </button>
+
+                <button
+                  onClick={() => nav("/login")}
+                  className="mt-3 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-800 hover:bg-slate-50"
+                >
+                  Ir al login
+                </button>
+
+                <div className="mt-6 text-xs text-slate-500">
+                  Si este enlace te devuelve error, abre de nuevo el email de invitación y pulsa el botón de activación.
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
