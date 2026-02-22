@@ -1,36 +1,33 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { supabase } from "@/services/supabase";
-import { orgInviteFinalize } from "@/services/orgInviteFinalize.service";
 import { useNavigate } from "react-router-dom";
 
+import { supabase } from "@/services/supabase";
+import { orgInviteFinalize } from "@/services/orgInviteFinalize.service";
+
+/**
+ * ActivateAccountPage
+ * - Soporta enlaces Supabase invite/verify que llegan:
+ *   A) con ?code=... (PKCE)  -> exchangeCodeForSession
+ *   B) con #access_token=...&refresh_token=... (implicit) -> setSession
+ * - Luego permite setPassword + orgInviteFinalize(orgId)
+ */
 export default function ActivateAccountPage() {
   const nav = useNavigate();
+
   const [loading, setLoading] = useState(true);
   const [pw1, setPw1] = useState("");
   const [pw2, setPw2] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const orgId = useMemo(() => {
+  const orgIdFromUrl = useMemo(() => {
     return new URLSearchParams(window.location.search).get("org_id") || "";
   }, []);
 
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.auth.getUser();
-      if (!data?.user) {
-        setMsg("No hay sesión activa. Abre este enlace desde el email de invitación.");
-      } else if (!orgId) {
-        setMsg("Falta org_id en el enlace. Reenvía la invitación desde Admin.");
-      }
-      setLoading(false);
-    })();
-  }, [orgId]);
-
-  const submit = async () => {
+  const submit = async (resolvedOrgId: string) => {
     setMsg(null);
 
-    if (!orgId) {
+    if (!resolvedOrgId) {
       setMsg("Falta org_id. Reenvía la invitación desde Admin.");
       return;
     }
@@ -45,24 +42,134 @@ export default function ActivateAccountPage() {
 
     setSaving(true);
     try {
+      // 1) Set password
       const { error: updErr } = await supabase.auth.updateUser({ password: pw1 });
       if (updErr) throw updErr;
 
-      // Activa la membresía (INVITED -> ACTIVE, link user_id)
-      await orgInviteFinalize(orgId);
+      // 2) Finalize membership/org link (INVITED -> ACTIVE, claim by email/auth_user_id, etc.)
+      await orgInviteFinalize(resolvedOrgId);
 
       setMsg("Cuenta activada. Ya puedes entrar.");
       setTimeout(() => nav("/login"), 800);
     } catch (e: any) {
-      setMsg(e?.message ?? "Error activando cuenta.");
+      const detail =
+        e?.message ||
+        e?.detail ||
+        e?.error ||
+        "Error activando cuenta.";
+      setMsg(detail);
     } finally {
       setSaving(false);
     }
   };
 
+  useEffect(() => {
+    (async () => {
+      try {
+        setMsg(null);
+
+        // -----------------------------------------
+        // 1) Try to establish session from URL
+        // -----------------------------------------
+
+        const url = new URL(window.location.href);
+        const code = url.searchParams.get("code") || "";
+
+        // Case A: PKCE code in query
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) {
+            setMsg("El enlace de activación no es válido o ha caducado. Reenvía la invitación desde Admin.");
+          }
+
+          // clean ?code=... from URL (keep org_id)
+          url.searchParams.delete("code");
+          window.history.replaceState({}, "", url.toString());
+        }
+
+        // Case B: access_token in hash
+        if (!code && window.location.hash) {
+          const hash = window.location.hash.replace(/^#/, "");
+          const hp = new URLSearchParams(hash);
+
+          const access_token = hp.get("access_token") || "";
+          const refresh_token = hp.get("refresh_token") || "";
+          const error_description = hp.get("error_description") || hp.get("error") || "";
+
+          if (error_description) {
+            setMsg(decodeURIComponent(error_description));
+          }
+
+          if (access_token && refresh_token) {
+            const { error } = await supabase.auth.setSession({ access_token, refresh_token });
+            if (error) {
+              setMsg("No se pudo establecer sesión con el enlace. Reenvía la invitación desde Admin.");
+            }
+
+            // clean hash from URL (important, si no, se queda “sucio”)
+            window.history.replaceState({}, "", window.location.pathname + window.location.search);
+          }
+        }
+
+        // -----------------------------------------
+        // 2) Validate user session
+        // -----------------------------------------
+        const { data: userData, error: userErr } = await supabase.auth.getUser();
+        if (userErr) {
+          // No rompas, pero informa
+          setMsg(userErr.message);
+        }
+
+        const user = userData?.user ?? null;
+        if (!user) {
+          setMsg("No hay sesión activa. Abre este enlace desde el email de invitación (no desde un marcador).");
+          setLoading(false);
+          return;
+        }
+
+        // -----------------------------------------
+        // 3) Resolve org_id
+        // -----------------------------------------
+        // Prioridad:
+        //  - org_id en query (?org_id=...)
+        //  - org_id en user_metadata (si lo guardas en el invite)
+        const orgIdFromMeta = (user.user_metadata as any)?.org_id || (user.user_metadata as any)?.orgId || "";
+        const resolvedOrgId = String(orgIdFromUrl || orgIdFromMeta || "").trim();
+
+        if (!resolvedOrgId) {
+          setMsg("Falta org_id en el enlace. Reenvía la invitación desde Admin.");
+          setLoading(false);
+          return;
+        }
+
+        // -----------------------------------------
+        // 4) Everything OK -> enable form
+        // -----------------------------------------
+        setMsg(null);
+        setLoading(false);
+
+        // (Opcional) puedes auto-finalizar aquí si quieres, pero yo NO lo haría:
+        // - mejor finalizar después de guardar contraseña para no dejar cuentas “activas” sin password
+        // await orgInviteFinalize(resolvedOrgId);
+      } catch (e: any) {
+        setMsg(e?.message ?? "Error preparando la activación.");
+        setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgIdFromUrl]);
+
+  const resolvedOrgIdForSubmit = useMemo(() => {
+    // para submit, resolvemos igual que arriba, pero sin depender de async
+    // (en submit ya deberíamos tener sesión, así que también podría venir de meta)
+    // si no hay sesión, no importa.
+    const urlOrg = orgIdFromUrl || "";
+    return urlOrg.trim();
+  }, [orgIdFromUrl]);
+
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Topbar (mobile + desktop) */}
+      {/* Topbar */}
       <div className="w-full px-4 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <img
@@ -70,7 +177,6 @@ export default function ActivateAccountPage() {
             alt="Debacu"
             className="h-8 w-auto"
             onError={(e) => {
-              // si no existe el logo, no rompas la UI
               (e.currentTarget as HTMLImageElement).style.display = "none";
             }}
           />
@@ -92,7 +198,7 @@ export default function ActivateAccountPage() {
             <div className="relative z-10 flex flex-col justify-between w-full">
               <div className="flex items-center gap-3">
                 <img
-                  src="public/img/debacu-logo-white.png"
+                  src="/img/debacu-logo-white.png"
                   alt="Debacu"
                   className="h-10 w-auto"
                   onError={(e) => {
@@ -130,7 +236,6 @@ export default function ActivateAccountPage() {
               </div>
             </div>
 
-            {/* overlay */}
             <div className="absolute inset-0 opacity-25 bg-[radial-gradient(circle_at_top,white,transparent_55%)]" />
           </div>
 
@@ -145,11 +250,6 @@ export default function ActivateAccountPage() {
               <div className="mt-8 text-sm text-slate-500">Cargando...</div>
             ) : (
               <>
-                {/* Si quieres mostrar orgId, mejor discreto y solo en dev */}
-                {/* <div className="mt-4 text-xs text-slate-500">
-                  Org: <span className="font-mono">{orgId || "—"}</span>
-                </div> */}
-
                 {msg ? (
                   <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">
                     {msg}
@@ -180,8 +280,8 @@ export default function ActivateAccountPage() {
                 </div>
 
                 <button
-                  onClick={submit}
-                  disabled={saving || !orgId}
+                  onClick={() => submit(resolvedOrgIdForSubmit)}
+                  disabled={saving || !resolvedOrgIdForSubmit}
                   className="mt-7 w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
                 >
                   {saving ? "Guardando..." : "Guardar contraseña"}
@@ -195,7 +295,7 @@ export default function ActivateAccountPage() {
                 </button>
 
                 <div className="mt-6 text-xs text-slate-500">
-                  Si este enlace te devuelve error, abre de nuevo el email de invitación y pulsa el botón de activación.
+                  Si este enlace te devuelve error, reenvía la invitación desde Admin (no uses enlaces antiguos).
                 </div>
               </>
             )}

@@ -2,9 +2,13 @@
 // deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+
 import { json, preflight } from "../_shared/cors.ts";
 import { requireAdmin } from "../_shared/auth.ts";
 
+/** ======================================================
+ *  Env
+ * ====================================================== */
 function mustEnv(name: string) {
   const v = Deno.env.get(name);
   if (!v) throw new Error(`missing_env:${name}`);
@@ -18,6 +22,11 @@ const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
 // Base URL pública de tu frontend (fallback)
 const SITE_URL_FALLBACK = Deno.env.get("SITE_URL") ?? "https://debacu.com";
 
+const APP_ID = "DEBACU_EVAL";
+
+/** ======================================================
+ *  Small utils
+ * ====================================================== */
 function safeLowerEmail(v: any) {
   return typeof v === "string" ? v.trim().toLowerCase() : "";
 }
@@ -53,7 +62,7 @@ function supabaseAnonClientNoAuth() {
 
 /** ======================================================
  *  Redirect helpers (dinámicos: local/prod/vercel)
- *  ====================================================== */
+ * ====================================================== */
 function normalizeBaseUrl(u: string) {
   return u.replace(/\/+$/, "");
 }
@@ -65,12 +74,11 @@ function resolveSiteUrl(body: any) {
 }
 
 function resolveActivateRedirect(body: any, org_id: string) {
-  // prioridad: activateUrl explícita
   const activateUrl = safeStr(body?.activateUrl || body?.activate_url || "");
   if (activateUrl.startsWith("http://") || activateUrl.startsWith("https://")) return activateUrl;
 
-  // si no, construir con siteUrl dinámico + org_id
   const base = resolveSiteUrl(body);
+  // IMPORTANTE: en invite queremos llevar siempre a /auth/activate (tu pantalla)
   return `${base}/auth/activate?org_id=${encodeURIComponent(org_id)}`;
 }
 
@@ -81,7 +89,7 @@ function resolveRecoveryRedirect(body: any) {
 
 /** ======================================================
  *  Auth: find user by email (admin list users)
- *  ====================================================== */
+ * ====================================================== */
 async function getAuthUserIdByEmail(sbAdmin: ReturnType<typeof supabaseServiceClient>, email: string) {
   const e = safeLowerEmail(email);
   if (!e) return null;
@@ -98,44 +106,31 @@ async function getAuthUserIdByEmail(sbAdmin: ReturnType<typeof supabaseServiceCl
 }
 
 /**
- * Envía email automático:
- * - si user NO existe: INVITE
- * - si user existe: RECOVERY
+ * ✅ ONBOARDING: SIEMPRE INVITE (NO recovery).
+ * - Si el user ya existe, Supabase suele reenviar invitación igualmente.
+ * - Si no lo hace en tu proyecto, esto al menos mantiene el "type=invite" estable.
  */
-async function sendInviteOrRecovery(params: {
+async function sendInviteOnly(params: {
   sbAdmin: ReturnType<typeof supabaseServiceClient>;
   email: string;
   customer_id: string;
   org_id: string;
   inviteRedirectTo: string;
-  recoveryRedirectTo: string;
 }) {
-  const { sbAdmin, email, customer_id, org_id, inviteRedirectTo, recoveryRedirectTo } = params;
+  const { sbAdmin, email, customer_id, org_id, inviteRedirectTo } = params;
 
-  const existingUserId = await getAuthUserIdByEmail(sbAdmin, email);
-
-  if (!existingUserId) {
-    const { data, error } = await sbAdmin.auth.admin.inviteUserByEmail(email, {
-      redirectTo: inviteRedirectTo, // ✅ aquí va ?org_id=...
-      data: { customer_id, org_id, app: "DEBACU_EVAL" },
-    });
-    if (error) throw new Error("invite_failed");
-    const newId = data?.user?.id ?? null;
-    return { mode: "INVITED" as const, user_id: newId };
-  }
-
-  const sbAnon = supabaseAnonClientNoAuth();
-  const { error } = await sbAnon.auth.resetPasswordForEmail(email, {
-    redirectTo: recoveryRedirectTo, // ✅ también dinámico
+  const { data, error } = await sbAdmin.auth.admin.inviteUserByEmail(email, {
+    redirectTo: inviteRedirectTo,
+    data: { customer_id, org_id, app: APP_ID },
   });
-  if (error) throw new Error("recovery_failed");
 
-  return { mode: "RECOVERY_SENT" as const, user_id: existingUserId };
+  if (error) throw new Error(`invite_failed:${error.message}`);
+  return { mode: "INVITED" as const, user_id: data?.user?.id ?? null };
 }
 
 /** ======================================================
  *  Customers + Profile
- *  ====================================================== */
+ * ====================================================== */
 async function getOrCreateCustomerByEmail(
   sbAdmin: ReturnType<typeof supabaseServiceClient>,
   email: string,
@@ -157,7 +152,7 @@ async function getOrCreateCustomerByEmail(
     name: company_name,
     email,
     is_active: true,
-    app_id: "DEBACU_EVAL",
+    app_id: APP_ID,
   });
 
   if (insErr) throw new Error("db_customers_insert_failed");
@@ -188,16 +183,16 @@ async function upsertDebacuEvalCustomerProfile(
     notes: input.notes ?? null,
   };
 
-  const { error } = await sbAdmin
-    .from("debacu_eval_customer_profile")
-    .upsert(payload, { onConflict: "customer_id" });
+  const { error } = await sbAdmin.from("debacu_eval_customer_profile").upsert(payload, {
+    onConflict: "customer_id",
+  });
 
   if (error) throw new Error("db_profile_upsert_failed");
 }
 
 /** ======================================================
  *  Organization
- *  ====================================================== */
+ * ====================================================== */
 async function ensureOrganization(
   sbAdmin: ReturnType<typeof supabaseServiceClient>,
   params: {
@@ -213,18 +208,8 @@ async function ensureOrganization(
     website?: string | null;
   },
 ) {
-  const {
-    customer_id,
-    org_name,
-    legal_name,
-    cif,
-    address,
-    city,
-    country,
-    property_type,
-    rooms_count,
-    website,
-  } = params;
+  const { customer_id, org_name, legal_name, cif, address, city, country, property_type, rooms_count, website } =
+    params;
 
   const { data: orgExisting, error: orgFindErr } = await sbAdmin
     .from("debacu_eval_organizations")
@@ -281,145 +266,85 @@ async function ensureOrganization(
 }
 
 /** ======================================================
- *  Membership: asegura OWNER ACTIVE CANÓNICO
- *  ====================================================== */
-async function ensureOwnerActiveMembership(
+ *  Membership: asegura OWNER INVITED (NO ACTIVE aquí)
+ *  - ACTIVE debe ponerse en orgInviteFinalize (cuando el usuario ya tiene sesión)
+ * ====================================================== */
+async function ensureOwnerInvitedMembership(
   sbAdmin: ReturnType<typeof supabaseServiceClient>,
   params: {
     org_id: string;
-    auth_user_id: string;
     invited_email: string;
+    auth_user_id: string | null;
     created_by_user_id: string | null;
   },
 ) {
-  const org_id = params.org_id;
-  const auth_user_id = safeStr(params.auth_user_id);
+  const org_id = safeStr(params.org_id);
   const invited_email = safeLowerEmail(params.invited_email);
+  const auth_user_id = safeStr(params.auth_user_id ?? "");
+  if (!org_id || !invited_email) throw new Error("missing_member_inputs");
 
-  if (!org_id || !auth_user_id) throw new Error("missing_member_inputs");
-
-  const { data: byAuth, error: byAuthErr } = await sbAdmin
+  // Intento 1: si ya hay por email en org, lo normalizo a OWNER+INVITED
+  const { data: byEmail, error: byEmailErr } = await sbAdmin
     .from("debacu_eval_org_members")
     .select("id, role, status, invited_email, auth_user_id, user_id")
     .eq("org_id", org_id)
-    .eq("auth_user_id", auth_user_id)
+    .ilike("invited_email", invited_email)
+    .order("created_at", { ascending: true })
+    .limit(1)
     .maybeSingle();
 
-  if (byAuthErr) throw new Error("db_member_find_by_auth_failed");
+  if (byEmailErr) throw new Error("db_member_find_by_email_failed");
 
-  if (byAuth?.id) {
-    const needsUpdate =
-      String(byAuth.role || "").toUpperCase() !== "OWNER" ||
-      String(byAuth.status || "").toUpperCase() !== "ACTIVE" ||
-      (invited_email && safeLowerEmail(byAuth.invited_email) !== invited_email) ||
-      safeStr(byAuth.user_id) !== auth_user_id;
-
-    if (needsUpdate) {
-      const { error: updErr } = await sbAdmin
-        .from("debacu_eval_org_members")
-        .update({
-          role: "OWNER",
-          status: "ACTIVE",
-          invited_email: invited_email || null,
-          user_id: auth_user_id,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", byAuth.id);
-
-      if (updErr) throw new Error("db_member_update_failed");
-    }
-
-    return { member_id: byAuth.id as string, mode: "UPDATED_BY_AUTH" as const };
-  }
-
-  const { data: legacy, error: legacyErr } = await sbAdmin
-    .from("debacu_eval_org_members")
-    .select("id, role, status, invited_email, auth_user_id, user_id")
-    .eq("org_id", org_id)
-    .eq("user_id", auth_user_id)
-    .is("auth_user_id", null)
-    .maybeSingle();
-
-  if (legacyErr) throw new Error("db_member_find_legacy_failed");
-
-  if (legacy?.id) {
+  if (byEmail?.id) {
     const { error: updErr } = await sbAdmin
       .from("debacu_eval_org_members")
       .update({
-        auth_user_id,
-        user_id: auth_user_id,
         role: "OWNER",
-        status: "ACTIVE",
-        invited_email: invited_email || legacy.invited_email || null,
+        status: "INVITED",
+        invited_email,
+        // si sabemos el auth_user_id, lo guardamos; si no, no pisamos a null
+        ...(auth_user_id ? { auth_user_id, user_id: auth_user_id } : {}),
         updated_at: new Date().toISOString(),
       })
-      .eq("id", legacy.id);
+      .eq("id", byEmail.id);
 
-    if (updErr) throw new Error("db_member_legacy_canonize_failed");
-    return { member_id: legacy.id as string, mode: "CANONIZED_LEGACY" as const };
+    if (updErr) throw new Error("db_member_update_failed");
+    return { member_id: byEmail.id as string, mode: "UPDATED_BY_EMAIL" as const };
   }
 
-  if (invited_email) {
-    const { data: byEmail, error: byEmailErr } = await sbAdmin
-      .from("debacu_eval_org_members")
-      .select("id, status, role, auth_user_id, user_id, invited_email")
-      .eq("org_id", org_id)
-      .ilike("invited_email", invited_email)
-      .in("status", ["INVITED", "PENDING", "ACTIVE"])
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (byEmailErr) throw new Error("db_member_find_by_email_failed");
-
-    if (byEmail?.id) {
-      const { error: updErr } = await sbAdmin
-        .from("debacu_eval_org_members")
-        .update({
-          auth_user_id,
-          user_id: auth_user_id,
-          role: "OWNER",
-          status: "ACTIVE",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", byEmail.id);
-
-      if (updErr) throw new Error("db_member_claim_failed");
-
-      return { member_id: byEmail.id as string, mode: "CLAIMED_BY_EMAIL" as const };
-    }
+  // Insert canonical INVITED
+  const insPayload: any = {
+    org_id,
+    role: "OWNER",
+    status: "INVITED",
+    invited_email,
+    created_by_user_id: params.created_by_user_id,
+    updated_at: new Date().toISOString(),
+  };
+  if (auth_user_id) {
+    insPayload.auth_user_id = auth_user_id;
+    insPayload.user_id = auth_user_id;
   }
 
   const { data: inserted, error: insErr } = await sbAdmin
     .from("debacu_eval_org_members")
-    .insert({
-      org_id,
-      role: "OWNER",
-      status: "ACTIVE",
-      invited_email: invited_email || null,
-      auth_user_id,
-      user_id: auth_user_id,
-      created_by_user_id: params.created_by_user_id,
-      updated_at: new Date().toISOString(),
-    })
+    .insert(insPayload)
     .select("id")
     .single();
 
   if (insErr) throw new Error("db_member_insert_failed");
-  return { member_id: inserted.id as string, mode: "CREATED_CANONICAL" as const };
+  return { member_id: inserted.id as string, mode: "CREATED_INVITED" as const };
 }
 
 /** ======================================================
  *  Subscriptions FREE_TRIAL helper (30 días)
- *  ====================================================== */
+ * ====================================================== */
 async function ensureFreeTrialSubscription(sbAdmin: ReturnType<typeof supabaseServiceClient>, customer_id: string) {
-  const app_id = "DEBACU_EVAL";
-
   const { data: existing, error: existErr } = await sbAdmin
     .from("subscriptions")
     .select("id, status")
     .eq("customer_id", customer_id)
-    .eq("app_id", app_id)
+    .eq("app_id", APP_ID)
     .in("status", ["ACTIVE", "TRIAL_ACTIVE"])
     .order("created_at", { ascending: false })
     .limit(1);
@@ -430,7 +355,7 @@ async function ensureFreeTrialSubscription(sbAdmin: ReturnType<typeof supabaseSe
   const { data: plan, error: planErr } = await sbAdmin
     .from("plans")
     .select("id, code")
-    .eq("app_id", app_id)
+    .eq("app_id", APP_ID)
     .eq("code", "FREE")
     .single();
 
@@ -444,7 +369,7 @@ async function ensureFreeTrialSubscription(sbAdmin: ReturnType<typeof supabaseSe
     .from("subscriptions")
     .insert({
       customer_id,
-      app_id,
+      app_id: APP_ID,
       plan_id: plan.id as string,
       billing_frequency: "FREE_TRIAL",
       start_date: toDate(today),
@@ -460,16 +385,21 @@ async function ensureFreeTrialSubscription(sbAdmin: ReturnType<typeof supabaseSe
   return { created: true, subscription: inserted };
 }
 
+/** ======================================================
+ *  Errors
+ * ====================================================== */
 function errResp(req: Request, status: number, detail: string) {
   return json(req, status, { ok: false, error: "request_failed", detail });
 }
 
+/** ======================================================
+ *  Handler
+ * ====================================================== */
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return preflight(req);
 
   try {
     const adminUser = await requireAdmin(req);
-
     const sbAdmin = supabaseServiceClient();
     const body = await readJson(req);
 
@@ -544,7 +474,7 @@ Deno.serve(async (req) => {
           phone,
           email,
           is_active: true,
-          app_id: "DEBACU_EVAL",
+          app_id: APP_ID,
           service_username: email,
         })
         .eq("id", customer_id);
@@ -579,7 +509,7 @@ Deno.serve(async (req) => {
 
       // redirect dinámico con org_id
       const inviteRedirectTo = resolveActivateRedirect(body, orgRes.org_id);
-      const recoveryRedirectTo = resolveRecoveryRedirect(body);
+      const recoveryRedirectTo = resolveRecoveryRedirect(body); // (no usado en onboarding, lo dejamos por compat)
 
       let email_sent = false;
       let email_detail: string | null = null;
@@ -590,37 +520,34 @@ Deno.serve(async (req) => {
 
       if (sendEmail) {
         try {
-          const r = await sendInviteOrRecovery({
+          const r = await sendInviteOnly({
             sbAdmin,
             email,
             customer_id,
             org_id: orgRes.org_id,
             inviteRedirectTo,
-            recoveryRedirectTo,
           });
           email_sent = true;
           email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
           last_email_status = "SENT";
-          resolved_auth_user_id = r.user_id;
-        } catch {
+          resolved_auth_user_id = r.user_id ?? (await getAuthUserIdByEmail(sbAdmin, email));
+        } catch (e: any) {
           email_sent = false;
-          email_detail = "email_send_failed";
+          email_detail = e?.message ? String(e.message) : "email_send_failed";
           last_email_status = "FAILED";
           resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
         }
       } else {
-        // sin email: igualmente intenta resolver user
         resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
       }
 
-      if (resolved_auth_user_id) {
-        await ensureOwnerActiveMembership(sbAdmin, {
-          org_id: orgRes.org_id,
-          auth_user_id: resolved_auth_user_id,
-          invited_email: email,
-          created_by_user_id: reviewed_by,
-        });
-      }
+      // ✅ membership debe quedar INVITED, no ACTIVE
+      await ensureOwnerInvitedMembership(sbAdmin, {
+        org_id: orgRes.org_id,
+        invited_email: email,
+        auth_user_id: resolved_auth_user_id,
+        created_by_user_id: reviewed_by,
+      });
 
       // ✅ update request (no pisa last_email_* si sendEmail=false)
       const updatePayload: any = {
@@ -658,6 +585,7 @@ Deno.serve(async (req) => {
         email_sent,
         email_detail,
         invite_redirect_to: inviteRedirectTo,
+        recovery_redirect_to: recoveryRedirectTo,
       });
     }
 
@@ -707,9 +635,9 @@ Deno.serve(async (req) => {
       const customer_id = request.customer_id ?? null;
       if (!customer_id) return errResp(req, 400, "missing_customer_id");
 
-      const org_id = request.org_id ?? null;
+      // asegurar org_id en request
+      let org_id = request.org_id ?? null;
       if (!org_id) {
-        // fallback: buscar por customer
         const { data: org, error: orgErr } = await sbAdmin
           .from("debacu_eval_organizations")
           .select("id")
@@ -720,15 +648,12 @@ Deno.serve(async (req) => {
 
         if (orgErr || !org?.id) return errResp(req, 500, "org_not_found_for_customer");
 
-        // persist org_id en request
-        await sbAdmin.from("debacu_eval_access_requests").update({ org_id: org.id }).eq("id", request_id);
-
-        request.org_id = org.id;
+        org_id = org.id;
+        await sbAdmin.from("debacu_eval_access_requests").update({ org_id }).eq("id", request_id);
       }
 
-      // redirect dinámico con org_id
-      const inviteRedirectTo = resolveActivateRedirect(body, request.org_id);
-      const recoveryRedirectTo = resolveRecoveryRedirect(body);
+      const inviteRedirectTo = resolveActivateRedirect(body, org_id);
+      const recoveryRedirectTo = resolveRecoveryRedirect(body); // (no usado en onboarding, lo dejamos por compat)
 
       let email_sent = false;
       let email_detail: string | null = null;
@@ -737,21 +662,20 @@ Deno.serve(async (req) => {
 
       if (sendEmail) {
         try {
-          const r = await sendInviteOrRecovery({
+          const r = await sendInviteOnly({
             sbAdmin,
             email,
             customer_id,
-            org_id: request.org_id,
+            org_id,
             inviteRedirectTo,
-            recoveryRedirectTo,
           });
           email_sent = true;
           email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
           last_email_status = "SENT";
-          resolved_auth_user_id = r.user_id;
-        } catch {
+          resolved_auth_user_id = r.user_id ?? (await getAuthUserIdByEmail(sbAdmin, email));
+        } catch (e: any) {
           email_sent = false;
-          email_detail = "email_send_failed";
+          email_detail = e?.message ? String(e.message) : "email_send_failed";
           last_email_status = "FAILED";
           resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
         }
@@ -759,14 +683,13 @@ Deno.serve(async (req) => {
         resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
       }
 
-      if (resolved_auth_user_id) {
-        await ensureOwnerActiveMembership(sbAdmin, {
-          org_id: request.org_id,
-          auth_user_id: resolved_auth_user_id,
-          invited_email: email,
-          created_by_user_id: reviewed_by,
-        });
-      }
+      // ✅ membership INVITED (no ACTIVE)
+      await ensureOwnerInvitedMembership(sbAdmin, {
+        org_id,
+        invited_email: email,
+        auth_user_id: resolved_auth_user_id,
+        created_by_user_id: reviewed_by,
+      });
 
       const upd: any = {
         reviewed_by,
@@ -784,11 +707,12 @@ Deno.serve(async (req) => {
       return json(req, 200, {
         ok: true,
         customer_id,
-        org_id: request.org_id,
+        org_id,
         send_email: sendEmail,
         email_sent,
         email_detail,
         invite_redirect_to: inviteRedirectTo,
+        recovery_redirect_to: recoveryRedirectTo,
       });
     }
 
