@@ -39,10 +39,14 @@ function pickErrorMessage(json: any, fallbackText: string, status: number) {
   );
 }
 
+/**
+ * Inyecta org_id SOLO si:
+ * - body es objeto plano
+ * - y NO trae ya org_id/orgId
+ * - y NO es un webhook/callback donde no quieras tocar nada
+ */
 function injectOrgId(body: unknown): unknown {
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    return body ?? {};
-  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body ?? {};
 
   const b = body as Record<string, any>;
 
@@ -55,9 +59,7 @@ function injectOrgId(body: unknown): unknown {
   }
 
   const orgId = getEvalOrgId();
-  if (!orgId) {
-    return b; // dejar que la Edge falle con missing_org_id
-  }
+  if (!orgId) return b; // dejar que la Edge falle con missing_org_id si lo requiere
 
   return { ...b, org_id: orgId };
 }
@@ -66,18 +68,18 @@ function injectOrgId(body: unknown): unknown {
  * callEvalFn — JWT-only
  * ====================================================== */
 
-export async function callEvalFn<T = any>(
-  fnName: string,
-  body: unknown = {},
-): Promise<T> {
+export async function callEvalFn<T = any>(fnName: string, body: unknown = {}): Promise<T> {
+  // 1) sesión/JWT
   const { data, error } = await supabase.auth.getSession();
   if (error) throw new Error(`Supabase getSession error: ${error.message}`);
 
   const jwt = data?.session?.access_token || "";
   if (!jwt) throw new Error("No hay sesión de Supabase (haz login).");
 
+  // 2) body final
   const finalBody = injectOrgId(body);
 
+  // 3) llamada
   const res = await fetch(fnUrl(fnName), {
     method: "POST",
     headers: {
@@ -88,16 +90,16 @@ export async function callEvalFn<T = any>(
     body: JSON.stringify(finalBody ?? {}),
   });
 
+  // 4) parse robusto
   const text = await res.text();
   let json: any = null;
-
   try {
     json = text ? JSON.parse(text) : null;
   } catch {
     json = null;
   }
 
-  // HTTP error
+  // 5) HTTP error => throw con mensaje útil
   if (!res.ok) {
     console.error("[callEvalFn] HTTP ERROR", {
       fnName,
@@ -111,7 +113,53 @@ export async function callEvalFn<T = any>(
     throw new Error(msg);
   }
 
-  // logical error
+  // 6) logical error { ok:false }
+  if (json && typeof json === "object" && "ok" in json && json.ok === false) {
+    const msg = pickErrorMessage(json, text, res.status);
+    throw new Error(msg);
+  }
+
+  return (json ?? ({} as any)) as T;
+}
+
+/* ======================================================
+ * callEvalFnPublic — SIN JWT (para webhooks/callbacks si lo necesitas)
+ * Úsalo SOLO si una Edge Function tiene Verify JWT = OFF y quieres llamarla desde el front sin sesión.
+ * ====================================================== */
+
+export async function callEvalFnPublic<T = any>(fnName: string, body: unknown = {}): Promise<T> {
+  const finalBody = body ?? {};
+
+  const res = await fetch(fnUrl(fnName), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      apikey: ANON_KEY,
+    },
+    body: JSON.stringify(finalBody),
+  });
+
+  const text = await res.text();
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!res.ok) {
+    console.error("[callEvalFnPublic] HTTP ERROR", {
+      fnName,
+      status: res.status,
+      bodySent: finalBody ?? {},
+      responseText: text,
+      responseJson: json,
+    });
+
+    const msg = pickErrorMessage(json, text, res.status);
+    throw new Error(msg);
+  }
+
   if (json && typeof json === "object" && "ok" in json && json.ok === false) {
     const msg = pickErrorMessage(json, text, res.status);
     throw new Error(msg);

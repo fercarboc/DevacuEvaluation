@@ -35,11 +35,7 @@ function isoTsFromUnix(sec?: number | null) {
 }
 
 /** snake_case preferida + compat camelCase */
-function mdGet(
-  md: Record<string, string> | null | undefined,
-  snake: string,
-  camel?: string,
-) {
+function mdGet(md: Record<string, string> | null | undefined, snake: string, camel?: string) {
   const v = md?.[snake] ?? (camel ? md?.[camel] : undefined);
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
@@ -49,11 +45,9 @@ function mdGet(
  * - intentamos insertar stripe_event_id en subscription_events
  * - si existe (unique violation), devolvemos 200 y NO hacemos side-effects
  */
-async function acquireEventLock(event: Stripe.Event): Promise<
-  | { ok: true; duplicate: false }
-  | { ok: true; duplicate: true }
-  | { ok: false; detail: string }
-> {
+async function acquireEventLock(
+  event: Stripe.Event,
+): Promise<{ ok: true; duplicate: false } | { ok: true; duplicate: true } | { ok: false; detail: string }> {
   const baseRow = {
     stripe_event_id: event.id,
     type: event.type,
@@ -165,7 +159,7 @@ async function getSubscriptionPeriod(stripeSubId: string | null) {
 async function findInternalSubscriptionByStripeSub(stripeSubId: string) {
   const { data, error } = await supabase
     .from("subscriptions")
-    .select("id, customer_id, app_id, status, plan_id, replaces_subscription_id")
+    .select("id, customer_id, app_id, status, plan_id, replaces_subscription_id, required_plan_code, stripe_schedule_id")
     .or(`stripe_subscription_id.eq.${stripeSubId},provider_subscription_id.eq.${stripeSubId}`)
     .maybeSingle();
 
@@ -177,10 +171,7 @@ async function findInternalSubscriptionByStripeSub(stripeSubId: string) {
  * Para eventos que vienen sin metadata, intentamos “poner contexto”
  * (customer_id/app_id) antes del logEvent.
  */
-async function resolveEventContext(params: {
-  stripe_subscription_id?: string | null;
-  stripe_customer_id?: string | null;
-}) {
+async function resolveEventContext(params: { stripe_subscription_id?: string | null; stripe_customer_id?: string | null }) {
   const stripe_subscription_id = params.stripe_subscription_id ?? null;
   const stripe_customer_id = params.stripe_customer_id ?? null;
 
@@ -297,20 +288,16 @@ async function activatePendingSubscription(opts: {
     updated_at: new Date().toISOString(),
 
     provider_checkout_id: opts.stripe_checkout_session_id ?? (sub as any).provider_checkout_id ?? null,
-    stripe_checkout_session_id:
-      opts.stripe_checkout_session_id ?? (sub as any).stripe_checkout_session_id ?? null,
+    stripe_checkout_session_id: opts.stripe_checkout_session_id ?? (sub as any).stripe_checkout_session_id ?? null,
 
-    provider_subscription_id:
-      opts.stripe_subscription_id ?? (sub as any).provider_subscription_id ?? null,
-    stripe_subscription_id:
-      opts.stripe_subscription_id ?? (sub as any).stripe_subscription_id ?? null,
+    provider_subscription_id: opts.stripe_subscription_id ?? (sub as any).provider_subscription_id ?? null,
+    stripe_subscription_id: opts.stripe_subscription_id ?? (sub as any).stripe_subscription_id ?? null,
 
     stripe_price_id: opts.stripe_price_id ?? (sub as any).stripe_price_id ?? null,
 
     start_date: (sub as any).start_date ?? isoDateFromUnix(opts.period_start_unix ?? null) ?? today,
 
-    next_billing_date:
-      isoDateFromUnix(opts.period_end_unix ?? null) ?? ((sub as any).next_billing_date ?? null),
+    next_billing_date: isoDateFromUnix(opts.period_end_unix ?? null) ?? ((sub as any).next_billing_date ?? null),
   };
 
   const { error: upErr } = await supabase.from("subscriptions").update(patch).eq("id", sub.id);
@@ -326,11 +313,9 @@ async function activatePendingSubscription(opts: {
 async function upsertDebacuEvalInvoice(inv: Stripe.Invoice) {
   const stripe_invoice_id = inv.id;
 
-  const stripe_subscription_id =
-    typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id ?? null;
+  const stripe_subscription_id = typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id ?? null;
 
-  const stripe_customer_id =
-    typeof inv.customer === "string" ? inv.customer : inv.customer?.id ?? null;
+  const stripe_customer_id = typeof inv.customer === "string" ? inv.customer : inv.customer?.id ?? null;
 
   let customer_id: string | null = null;
   let app_id: string | null = null;
@@ -429,10 +414,7 @@ async function upsertDebacuEvalInvoice(inv: Stripe.Invoice) {
     stripe_invoice_id,
     stripe_customer_id,
     stripe_subscription_id,
-    stripe_payment_intent_id:
-      typeof inv.payment_intent === "string"
-        ? inv.payment_intent
-        : inv.payment_intent?.id ?? null,
+    stripe_payment_intent_id: typeof inv.payment_intent === "string" ? inv.payment_intent : inv.payment_intent?.id ?? null,
 
     status: inv.status ?? "unknown",
     currency: inv.currency ?? "eur",
@@ -461,9 +443,7 @@ async function upsertDebacuEvalInvoice(inv: Stripe.Invoice) {
     updated_at: new Date().toISOString(),
   };
 
-  const { error } = await supabase
-    .from("debacu_eval_invoices")
-    .upsert(payload, { onConflict: "stripe_invoice_id" });
+  const { error } = await supabase.from("debacu_eval_invoices").upsert(payload, { onConflict: "stripe_invoice_id" });
 
   if (error) console.error("debacu_eval_invoices upsert error:", error);
 
@@ -475,9 +455,7 @@ async function upsertDebacuEvalInvoice(inv: Stripe.Invoice) {
         stripe_price_id: subPriceId ?? (inv.lines?.data?.[0] as any)?.price?.id ?? null,
         updated_at: new Date().toISOString(),
       })
-      .or(
-        `stripe_subscription_id.eq.${stripe_subscription_id},provider_subscription_id.eq.${stripe_subscription_id}`,
-      );
+      .or(`stripe_subscription_id.eq.${stripe_subscription_id},provider_subscription_id.eq.${stripe_subscription_id}`);
 
     if (eUp) console.error("subscriptions update next_billing_date (invoice.paid) error:", eUp);
   }
@@ -528,21 +506,11 @@ Deno.serve(async (req) => {
           return json(req, 200, { ok: true, received: true });
         }
 
-        const stripe_subscription_id =
-          typeof session.subscription === "string"
-            ? session.subscription
-            : session.subscription?.id ?? null;
+        const stripe_subscription_id = typeof session.subscription === "string" ? session.subscription : session.subscription?.id ?? null;
 
-        const stripe_customer_id =
-          typeof session.customer === "string"
-            ? session.customer
-            : session.customer?.id ?? null;
+        const stripe_customer_id = typeof session.customer === "string" ? session.customer : session.customer?.id ?? null;
 
-        const pending_subscription_id = mdGet(
-          session.metadata,
-          "pending_subscription_id",
-          "pendingSubscriptionId",
-        );
+        const pending_subscription_id = mdGet(session.metadata, "pending_subscription_id", "pendingSubscriptionId");
         const app_id = mdGet(session.metadata, "app_id", "appId");
         const customer_id = mdGet(session.metadata, "customer_id", "customerId");
 
@@ -577,9 +545,7 @@ Deno.serve(async (req) => {
               stripe_price_id: stripe_price_id ?? null,
               updated_at: new Date().toISOString(),
             })
-            .or(
-              `stripe_subscription_id.eq.${stripe_subscription_id},provider_subscription_id.eq.${stripe_subscription_id}`,
-            );
+            .or(`stripe_subscription_id.eq.${stripe_subscription_id},provider_subscription_id.eq.${stripe_subscription_id}`);
           if (eUp) console.error("subscriptions update (checkout.session.completed) error:", eUp);
         }
 
@@ -624,21 +590,12 @@ Deno.serve(async (req) => {
           console.error("stripe.invoices.retrieve failed (invoice.paid):", e);
         }
 
-        const stripe_subscription_id =
-          typeof inv.subscription === "string"
-            ? inv.subscription
-            : inv.subscription?.id ?? null;
+        const stripe_subscription_id = typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id ?? null;
 
-        const stripe_customer_id =
-          typeof inv.customer === "string"
-            ? inv.customer
-            : inv.customer?.id ?? null;
+        const stripe_customer_id = typeof inv.customer === "string" ? inv.customer : inv.customer?.id ?? null;
 
         const ctx = await upsertDebacuEvalInvoice(inv);
-        const ctx2 =
-          ctx.customer_id && ctx.app_id
-            ? ctx
-            : await resolveEventContext({ stripe_subscription_id, stripe_customer_id });
+        const ctx2 = ctx.customer_id && ctx.app_id ? ctx : await resolveEventContext({ stripe_subscription_id, stripe_customer_id });
 
         await logEvent({
           stripe_event_id: event.id,
@@ -664,29 +621,18 @@ Deno.serve(async (req) => {
           console.error("stripe.invoices.retrieve failed (invoice.payment_failed):", e);
         }
 
-        const stripe_subscription_id =
-          typeof inv.subscription === "string"
-            ? inv.subscription
-            : inv.subscription?.id ?? null;
+        const stripe_subscription_id = typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id ?? null;
 
-        const stripe_customer_id =
-          typeof inv.customer === "string"
-            ? inv.customer
-            : inv.customer?.id ?? null;
+        const stripe_customer_id = typeof inv.customer === "string" ? inv.customer : inv.customer?.id ?? null;
 
         const ctx = await upsertDebacuEvalInvoice(inv);
-        const ctx2 =
-          ctx.customer_id && ctx.app_id
-            ? ctx
-            : await resolveEventContext({ stripe_subscription_id, stripe_customer_id });
+        const ctx2 = ctx.customer_id && ctx.app_id ? ctx : await resolveEventContext({ stripe_subscription_id, stripe_customer_id });
 
         if (stripe_subscription_id) {
           await supabase
             .from("subscriptions")
             .update({ status: "PAST_DUE", updated_at: new Date().toISOString() })
-            .or(
-              `stripe_subscription_id.eq.${stripe_subscription_id},provider_subscription_id.eq.${stripe_subscription_id}`,
-            );
+            .or(`stripe_subscription_id.eq.${stripe_subscription_id},provider_subscription_id.eq.${stripe_subscription_id}`);
         }
 
         await logEvent({
@@ -706,29 +652,81 @@ Deno.serve(async (req) => {
         const sub = event.data.object as Stripe.Subscription;
         const stripe_subscription_id = sub.id;
 
-        const stripe_customer_id =
-          typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
+        const stripe_customer_id = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
 
         const internal = await findInternalSubscriptionByStripeSub(stripe_subscription_id);
 
         const next_billing_date = isoDateFromUnix(sub.current_period_end ?? null);
         const stripe_price_id = sub.items.data?.[0]?.price?.id ?? null;
 
-        const mapped_status =
-          sub.status === "active" ? "ACTIVE" : String(sub.status ?? "UNKNOWN").toUpperCase();
+        const mapped_status = sub.status === "active" ? "ACTIVE" : String(sub.status ?? "UNKNOWN").toUpperCase();
 
         if (internal) {
-          const { error } = await supabase
-            .from("subscriptions")
-            .update({
-              status: mapped_status,
-              next_billing_date,
-              stripe_price_id: stripe_price_id ?? null,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", (internal as any).id);
+          const internalId = String((internal as any).id ?? "");
+          const customer_id = String((internal as any).customer_id ?? "");
+          const app_id = String((internal as any).app_id ?? "");
+          const required_plan_code = ((internal as any).required_plan_code ?? null) as string | null;
 
-          if (error) console.error("customer.subscription.updated update error:", error);
+          // 🔥 Si existe required_plan_code, interpretamos que había downgrade programado y Stripe ya lo ha aplicado
+          if (required_plan_code) {
+            // 1) resolve plan_id por app_id + code
+            const { data: newPlan, error: planErr } = await supabase
+              .from("plans")
+              .select("id")
+              .eq("app_id", app_id)
+              .eq("code", required_plan_code)
+              .maybeSingle();
+
+            if (planErr) console.error("plans lookup (required_plan_code) error:", planErr);
+
+            if (newPlan?.id) {
+              const { error } = await supabase
+                .from("subscriptions")
+                .update({
+                  plan_id: newPlan.id,
+                  status: mapped_status,
+                  next_billing_date,
+                  stripe_price_id: stripe_price_id ?? null,
+                  required_plan_code: null,
+                  stripe_schedule_id: null,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("id", internalId);
+
+              if (error) console.error("customer.subscription.updated (apply scheduled downgrade) update error:", error);
+            } else {
+              // si no resolvemos el plan_id, al menos no dejamos el schedule colgado
+              const { error } = await supabase
+                .from("subscriptions")
+                .update({
+                  status: mapped_status,
+                  next_billing_date,
+                  stripe_price_id: stripe_price_id ?? null,
+                  required_plan_code: null,
+                  stripe_schedule_id: null,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("id", internalId);
+
+              if (error) console.error("customer.subscription.updated (cleanup schedule) update error:", error);
+            }
+          } else {
+            // update normal
+            const { error } = await supabase
+              .from("subscriptions")
+              .update({
+                status: mapped_status,
+                next_billing_date,
+                stripe_price_id: stripe_price_id ?? null,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", internalId);
+
+            if (error) console.error("customer.subscription.updated update error:", error);
+          }
+
+          // (solo para debug interno)
+          void customer_id;
         } else {
           const { error: eUp } = await supabase
             .from("subscriptions")
@@ -738,9 +736,7 @@ Deno.serve(async (req) => {
               stripe_price_id: stripe_price_id ?? null,
               updated_at: new Date().toISOString(),
             })
-            .or(
-              `stripe_subscription_id.eq.${stripe_subscription_id},provider_subscription_id.eq.${stripe_subscription_id}`,
-            );
+            .or(`stripe_subscription_id.eq.${stripe_subscription_id},provider_subscription_id.eq.${stripe_subscription_id}`);
 
           if (eUp) console.error("customer.subscription.updated fallback update error:", eUp);
         }
@@ -760,6 +756,7 @@ Deno.serve(async (req) => {
             status: sub.status,
             cancel_at_period_end: sub.cancel_at_period_end,
             current_period_end: sub.current_period_end,
+            price_id: stripe_price_id,
           },
         });
 
@@ -770,8 +767,7 @@ Deno.serve(async (req) => {
         const sub = event.data.object as Stripe.Subscription;
         const stripe_subscription_id = sub.id;
 
-        const stripe_customer_id =
-          typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
+        const stripe_customer_id = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
 
         const internal = await findInternalSubscriptionByStripeSub(stripe_subscription_id);
 
@@ -794,9 +790,7 @@ Deno.serve(async (req) => {
               end_date: new Date().toISOString().slice(0, 10),
               updated_at: new Date().toISOString(),
             })
-            .or(
-              `stripe_subscription_id.eq.${stripe_subscription_id},provider_subscription_id.eq.${stripe_subscription_id}`,
-            );
+            .or(`stripe_subscription_id.eq.${stripe_subscription_id},provider_subscription_id.eq.${stripe_subscription_id}`);
 
           if (eUp) console.error("customer.subscription.deleted fallback update error:", eUp);
         }
