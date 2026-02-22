@@ -87,31 +87,20 @@ function forceCanonicalBase(base: string) {
   }
 }
 
+const CANONICAL_SITE = "https://www.debacu.com";
+
 function resolveActivateRedirect(body: any, org_id: string) {
-  const activateUrlRaw = safeStr(body?.activateUrl || body?.activate_url || "");
   const baseRaw = resolveSiteUrl(body);
   const base = forceCanonicalBase(baseRaw);
 
-  const fallback = `${base}/auth/activate`;
-
-  let u: URL;
-  try {
-    const target =
-      activateUrlRaw.startsWith("http://") || activateUrlRaw.startsWith("https://")
-        ? activateUrlRaw
-        : fallback;
-
-    u = new URL(target);
-  } catch {
-    u = new URL(fallback);
-  }
-
-  u.pathname = "/auth/activate";
+  // Siempre construimos un URL limpio (ignoramos activateUrlRaw)
+  const u = new URL(`${base}/auth/activate`);
   u.searchParams.set("org_id", org_id);
   u.hash = "";
-
   return u.toString();
 }
+
+
 
 function resolveRecoveryRedirect(body: any) {
   const base = resolveSiteUrl(body);
@@ -540,6 +529,12 @@ Deno.serve(async (req) => {
 
       // redirect dinámico con org_id
       const inviteRedirectTo = resolveActivateRedirect(body, orgRes.org_id);
+
+console.log("ACTIVATE_REDIRECT_DEBUG", {
+  org_id: orgRes.org_id,
+  inviteRedirectTo,
+});
+
       const recoveryRedirectTo = resolveRecoveryRedirect(body); // (no usado en onboarding, lo dejamos por compat)
 
       let email_sent = false;
@@ -684,6 +679,11 @@ Deno.serve(async (req) => {
       }
 
       const inviteRedirectTo = resolveActivateRedirect(body, org_id);
+
+      console.log("ACTIVATE_REDIRECT_DEBUG", {
+  org_id,
+  inviteRedirectTo,
+});
       const recoveryRedirectTo = resolveRecoveryRedirect(body); // (no usado en onboarding, lo dejamos por compat)
 
       let email_sent = false;

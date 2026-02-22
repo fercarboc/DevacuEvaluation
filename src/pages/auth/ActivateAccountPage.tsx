@@ -6,10 +6,12 @@ import { orgInviteFinalize } from "@/services/orgInviteFinalize.service";
 
 /**
  * ActivateAccountPage
- * - Soporta enlaces Supabase invite/verify que llegan:
- *   A) con ?code=... (PKCE)  -> exchangeCodeForSession
- *   B) con #access_token=...&refresh_token=... (implicit) -> setSession
- * - Luego permite setPassword + orgInviteFinalize(orgId)
+ * ✅ Soporta 3 tipos de enlaces:
+ *   A) ?code=... (PKCE)                      -> exchangeCodeForSession
+ *   B) #access_token=...&refresh_token=...   -> setSession
+ *   C) ?type=invite&token_hash=...           -> verifyOtp  (RECOMENDADO para tu caso)
+ *
+ * Luego permite: updateUser(password) + orgInviteFinalize(orgId)
  */
 export default function ActivateAccountPage() {
   const nav = useNavigate();
@@ -42,7 +44,7 @@ export default function ActivateAccountPage() {
 
     setSaving(true);
     try {
-      // 1) Set password
+      // 1) Set password (requiere sesión válida)
       const { error: updErr } = await supabase.auth.updateUser({ password: pw1 });
       if (updErr) throw updErr;
 
@@ -52,11 +54,7 @@ export default function ActivateAccountPage() {
       setMsg("Cuenta activada. Ya puedes entrar.");
       setTimeout(() => nav("/login"), 800);
     } catch (e: any) {
-      const detail =
-        e?.message ||
-        e?.detail ||
-        e?.error ||
-        "Error activando cuenta.";
+      const detail = e?.message || e?.detail || e?.error || "Error activando cuenta.";
       setMsg(detail);
     } finally {
       setSaving(false);
@@ -71,15 +69,39 @@ export default function ActivateAccountPage() {
         // -----------------------------------------
         // 1) Try to establish session from URL
         // -----------------------------------------
-
         const url = new URL(window.location.href);
-        const code = url.searchParams.get("code") || "";
 
-        // Case A: PKCE code in query
+        // ✅ Caso C (RECOMENDADO): token_hash + type=invite (desde template email)
+        const token_hash = url.searchParams.get("token_hash") || "";
+        const type = (url.searchParams.get("type") || "").trim();
+
+        if (token_hash && type) {
+          const { error: verr } = await supabase.auth.verifyOtp({
+            // type válido: "invite" (y otros)
+            type: type as any,
+            token_hash,
+          });
+
+          if (verr) {
+            setMsg("El enlace de activación no es válido o ha caducado. Reenvía la invitación desde Admin.");
+            setLoading(false);
+            return;
+          }
+
+          // limpia token_hash/type de la URL (mantén org_id)
+          url.searchParams.delete("token_hash");
+          url.searchParams.delete("type");
+          window.history.replaceState({}, "", url.toString());
+        }
+
+        // Caso A: PKCE code en query
+        const code = url.searchParams.get("code") || "";
         if (code) {
           const { error } = await supabase.auth.exchangeCodeForSession(code);
           if (error) {
             setMsg("El enlace de activación no es válido o ha caducado. Reenvía la invitación desde Admin.");
+            setLoading(false);
+            return;
           }
 
           // clean ?code=... from URL (keep org_id)
@@ -87,7 +109,7 @@ export default function ActivateAccountPage() {
           window.history.replaceState({}, "", url.toString());
         }
 
-        // Case B: access_token in hash
+        // Caso B: access_token en hash
         if (!code && window.location.hash) {
           const hash = window.location.hash.replace(/^#/, "");
           const hp = new URLSearchParams(hash);
@@ -104,9 +126,11 @@ export default function ActivateAccountPage() {
             const { error } = await supabase.auth.setSession({ access_token, refresh_token });
             if (error) {
               setMsg("No se pudo establecer sesión con el enlace. Reenvía la invitación desde Admin.");
+              setLoading(false);
+              return;
             }
 
-            // clean hash from URL (important, si no, se queda “sucio”)
+            // clean hash from URL
             window.history.replaceState({}, "", window.location.pathname + window.location.search);
           }
         }
@@ -116,13 +140,15 @@ export default function ActivateAccountPage() {
         // -----------------------------------------
         const { data: userData, error: userErr } = await supabase.auth.getUser();
         if (userErr) {
-          // No rompas, pero informa
           setMsg(userErr.message);
         }
 
         const user = userData?.user ?? null;
         if (!user) {
-          setMsg("No hay sesión activa. Abre este enlace desde el email de invitación (no desde un marcador).");
+          setMsg(
+            "No hay sesión activa. Abre este enlace desde el email de invitación (no desde un marcador). " +
+              "Si sigue ocurriendo, actualiza el template para enviar token_hash."
+          );
           setLoading(false);
           return;
         }
@@ -130,10 +156,11 @@ export default function ActivateAccountPage() {
         // -----------------------------------------
         // 3) Resolve org_id
         // -----------------------------------------
-        // Prioridad:
-        //  - org_id en query (?org_id=...)
-        //  - org_id en user_metadata (si lo guardas en el invite)
-        const orgIdFromMeta = (user.user_metadata as any)?.org_id || (user.user_metadata as any)?.orgId || "";
+        const orgIdFromMeta =
+          (user.user_metadata as any)?.org_id ||
+          (user.user_metadata as any)?.orgId ||
+          "";
+
         const resolvedOrgId = String(orgIdFromUrl || orgIdFromMeta || "").trim();
 
         if (!resolvedOrgId) {
@@ -147,10 +174,6 @@ export default function ActivateAccountPage() {
         // -----------------------------------------
         setMsg(null);
         setLoading(false);
-
-        // (Opcional) puedes auto-finalizar aquí si quieres, pero yo NO lo haría:
-        // - mejor finalizar después de guardar contraseña para no dejar cuentas “activas” sin password
-        // await orgInviteFinalize(resolvedOrgId);
       } catch (e: any) {
         setMsg(e?.message ?? "Error preparando la activación.");
         setLoading(false);
@@ -160,9 +183,6 @@ export default function ActivateAccountPage() {
   }, [orgIdFromUrl]);
 
   const resolvedOrgIdForSubmit = useMemo(() => {
-    // para submit, resolvemos igual que arriba, pero sin depender de async
-    // (en submit ya deberíamos tener sesión, así que también podría venir de meta)
-    // si no hay sesión, no importa.
     const urlOrg = orgIdFromUrl || "";
     return urlOrg.trim();
   }, [orgIdFromUrl]);
@@ -182,10 +202,7 @@ export default function ActivateAccountPage() {
           />
           <span className="text-sm font-semibold text-slate-900">Debacu Evaluation360</span>
         </div>
-        <button
-          onClick={() => nav("/login")}
-          className="text-sm text-slate-600 hover:text-slate-900"
-        >
+        <button onClick={() => nav("/login")} className="text-sm text-slate-600 hover:text-slate-900">
           Ir al login
         </button>
       </div>
@@ -231,9 +248,7 @@ export default function ActivateAccountPage() {
                 />
               </div>
 
-              <div className="text-xs text-blue-200">
-                Uso profesional · Gestión interna · Apoyo operativo
-              </div>
+              <div className="text-xs text-blue-200">Uso profesional · Gestión interna · Apoyo operativo</div>
             </div>
 
             <div className="absolute inset-0 opacity-25 bg-[radial-gradient(circle_at_top,white,transparent_55%)]" />
