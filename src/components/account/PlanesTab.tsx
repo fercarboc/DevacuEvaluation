@@ -41,6 +41,18 @@ const PLAN_METADATA: Record<PlanCode, { name: string; description: string; maxQu
 
 const PLAN_RANK: Record<PlanCode, number> = { FREE: 0, BASIC: 1, MEDIUM: 2, PREMIUM: 3 };
 
+/** ======================================================
+ *  ✅ Contexto de hotel (org) + retorno post-Stripe
+ *  ====================================================== */
+const LS_ORG_ID = "debacu_eval_org_id";
+function getOrgIdFromLs() {
+  return localStorage.getItem(LS_ORG_ID) || "";
+}
+function buildReturnTo() {
+  // vuelve EXACTO al tab/página donde estabas (incluye querystring)
+  return window.location.pathname + window.location.search;
+}
+
 export const PlanesTab: React.FC<TabProps> = ({ user }) => {
   const initialCustomerId = (user as any)?.customerId ?? null;
   const [resolvedCustomerId, setResolvedCustomerId] = useState<string | null>(initialCustomerId);
@@ -168,7 +180,7 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
 
         setAvailablePlans(constructedPlans);
 
-        // return de Stripe
+        // ✅ Return de Stripe: limpia session_id y refresca estado
         const url = new URL(window.location.href);
         const hasSessionId = url.searchParams.has("session_id");
         if (hasSessionId) {
@@ -214,11 +226,23 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         return;
       }
 
+      // ✅ Contexto de hotel + retorno post-Stripe (para NO volver a /admin)
+      const orgId = getOrgIdFromLs();
+      const returnTo = buildReturnTo();
+
+      if (!orgId) {
+        setPlanError("No se pudo resolver el org_id actual (contexto de hotel).");
+        return;
+      }
+
       if (isUpgrade) {
+        // ✅ IMPORTANTE: tu Edge Function exige org_id, y usamos return_to para volver al perfil/hotel
         const { checkout_url } = await changePlan({
           target_plan_code: target,
           billing_frequency: "MONTHLY",
           customer_id: cid,
+          org_id: orgId,
+          return_to: returnTo,
         });
 
         window.location.href = checkout_url;
@@ -229,6 +253,8 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         target_plan_code: target,
         billing_frequency: "MONTHLY",
         customer_id: cid,
+        org_id: orgId,
+        return_to: returnTo,
       });
 
       await refreshSubscription();
@@ -253,7 +279,14 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         return;
       }
 
-      await cancelDowngrade({ customer_id: cid, app_id: "DEBACU_EVAL" });
+      const orgId = getOrgIdFromLs();
+      const returnTo = buildReturnTo();
+      if (!orgId) {
+        setPlanError("No se pudo resolver el org_id actual (contexto de hotel).");
+        return;
+      }
+
+      await cancelDowngrade({ customer_id: cid, app_id: "DEBACU_EVAL", org_id: orgId, return_to: returnTo });
       await refreshSubscription();
     } catch (error: any) {
       console.error(error);

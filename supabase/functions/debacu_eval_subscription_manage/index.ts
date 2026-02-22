@@ -12,6 +12,9 @@ type ManageAction = "GET" | "CHANGE" | "SCHEDULE_DOWNGRADE" | "CANCEL_DOWNGRADE"
 
 const DEFAULT_APP_ID = "DEBACU_EVAL";
 
+// ✅ Ajusta esto a TU ruta real del perfil del hotel
+const DEFAULT_RETURN_TO = "/app/perfil"; // ej: "/app/hotel/perfil" o "/app/dashboard"
+
 function mustEnv(name: string) {
   const v = Deno.env.get(name);
   if (!v) throw new Error(`MISSING_ENV:${name}`);
@@ -284,13 +287,33 @@ async function handleGet(sb: ReturnType<typeof sbService>, customer_id: string, 
   return { latest: best, active, pending, plan };
 }
 
-async function handleChange(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string, body: any) {
+// ✅ helper: construye URL bien (sin liarte con ? y &)
+function buildReturnUrl(base: string, params: Record<string, string>) {
+  const u = new URL(base);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && String(v).length) u.searchParams.set(k, String(v));
+  }
+  return u.toString();
+}
+
+async function handleChange(
+  sb: ReturnType<typeof sbService>,
+  customer_id: string,
+  app_id: string,
+  org_id: string,
+  body: any,
+) {
   const target_plan_code = pickPlanCode(body);
   if (!target_plan_code) return { status: 400, detail: "missing_target_plan_code" as const };
 
   const billing_frequency = pickBillingFrequency(body);
   const price_id = PRICE_MAP[target_plan_code][billing_frequency];
   if (!price_id) return { status: 400, detail: "request_failed" as const };
+
+  // ✅ retorno destino: viene del body o default
+  const return_to =
+    pickString(body, "return_to", "returnTo") ??
+    DEFAULT_RETURN_TO;
 
   const pending = await getPendingSubscription(sb, customer_id, app_id);
   if (pending) return { status: 409, detail: "PENDING_CHANGE" as const, extra: { pendingSubscriptionId: pending.id } };
@@ -313,13 +336,30 @@ async function handleChange(sb: ReturnType<typeof sbService>, customer_id: strin
   const now_iso = new Date().toISOString();
   const start_date = now_iso.slice(0, 10);
 
+  // ✅ URLs de retorno: SIEMPRE con URL() para no romper querystring
+  const success_url = buildReturnUrl(STRIPE_SUCCESS_URL, {
+    stripe: "success",
+    session_id: "{CHECKOUT_SESSION_ID}",
+    org_id,
+    return_to,
+  });
+
+  const cancel_url = buildReturnUrl(STRIPE_CANCEL_URL, {
+    stripe: "cancel",
+    org_id,
+    return_to,
+  });
+
   const checkoutSession = await stripe.checkout.sessions.create({
     mode: "subscription",
     line_items: [{ price: price_id, quantity: 1 }],
     payment_method_types: ["card"],
     customer_email: customer?.email ?? undefined,
-    success_url: `${STRIPE_SUCCESS_URL}?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: STRIPE_CANCEL_URL,
+
+    // ✅ aquí estaba el punto crítico
+    success_url,
+    cancel_url,
+
     client_reference_id: customer_id,
     metadata: {
       app_id,
@@ -328,6 +368,11 @@ async function handleChange(sb: ReturnType<typeof sbService>, customer_id: strin
       target_plan_code,
       billing_frequency,
       replaces_subscription_id: replaces_subscription_id ?? "",
+
+      // ✅ añadimos contexto para que /app/cuenta sepa a dónde volver
+      org_id,
+      return_to,
+
       // compat camel
       appId: app_id,
       customerId: customer_id,
@@ -335,6 +380,8 @@ async function handleChange(sb: ReturnType<typeof sbService>, customer_id: strin
       targetPlanCode: target_plan_code,
       billingFrequency: billing_frequency,
       replacesSubscriptionId: replaces_subscription_id ?? "",
+      orgId: org_id,
+      returnTo: return_to,
     },
   });
 
@@ -370,12 +417,21 @@ async function handleChange(sb: ReturnType<typeof sbService>, customer_id: strin
       target_plan_code,
       billing_frequency,
       replaces_subscription_id,
+      org_id,
+      return_to,
+      success_url,
+      cancel_url,
     },
   });
 
   return {
     status: 200,
-    body: { ok: true, checkoutUrl: checkoutSession.url, pendingSubscriptionId: pending_subscription_id },
+    body: {
+      ok: true,
+      checkoutUrl: checkoutSession.url,
+      pendingSubscriptionId: pending_subscription_id,
+      return_to,
+    },
   };
 }
 
@@ -394,7 +450,6 @@ async function handleScheduleDowngrade(sb: ReturnType<typeof sbService>, custome
   if (!active_sub) return { status: 409, detail: "NO_ACTIVE_SUBSCRIPTION" as const };
 
   if ((active_sub as any)?.required_plan_code) {
-    // ya programado; lo devolvemos como ok true (pero sin inventar detail)
     return {
       status: 200,
       body: {
@@ -584,7 +639,7 @@ Deno.serve(async (req) => {
     }
 
     if (action === "CHANGE") {
-      const result = await handleChange(sb, ctx.customer_id, app_id, body);
+      const result = await handleChange(sb, ctx.customer_id, app_id, org_id, body);
       if ((result as any).detail) {
         const d = (result as any).detail as any;
         if (d === "missing_target_plan_code") return err(req, 400, "missing_target_plan_code");
@@ -624,7 +679,6 @@ Deno.serve(async (req) => {
 
     return err(req, 400, "invalid_action");
   } catch (e) {
-    // Logging interno OK, pero NUNCA devolver stack/error bruto al cliente
     console.error("debacu_eval_subscription_manage error:", e);
     return err(req, 500, "request_failed");
   }

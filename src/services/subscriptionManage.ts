@@ -1,11 +1,15 @@
 // src/services/subscriptionManage.ts
 //
 // ✅ Edge Function + patrón del proyecto:
-//    - JWT REAL de Supabase + debacu_eval_session_token (via callEvalFn)
-//    - Sin tokens inventados (debacu_eval_token)
+//    - JWT REAL de Supabase (via callEvalFn)
+//    - Sin tokens inventados
 //    - Sin endpoint manual ".functions.supabase.co"
 //
-// Requiere: src/services/callEvalFn.ts (ya lo tienes funcionando)
+// ✅ Multi-org + retorno post-Stripe:
+//    - org_id obligatorio (tu Edge Function lo exige)
+//    - return_to para volver al perfil/hotel (evitar volver a /admin)
+//
+// Requiere: src/services/callEvalFn.ts
 
 import { callEvalFn } from "@/services/callEvalFn";
 
@@ -23,7 +27,12 @@ export type SubscriptionManageAction = "CHANGE" | "SCHEDULE_DOWNGRADE" | "CANCEL
 /** Params comunes */
 type BaseParams = {
   customer_id: string;
+  org_id: string; // ✅ requerido por tu Edge Function (requireOrgContext)
   app_id?: string;
+
+  /** ✅ para forzar el return al hotel/perfil (y NO a /admin) */
+  return_to?: string;
+
   billing_frequency?: Exclude<BillingFrequency, "FREE_TRIAL">;
 };
 
@@ -85,18 +94,12 @@ function pickPendingId(obj: any): string | undefined {
 }
 
 function pickCode(obj: any): string | undefined {
-  const v = obj?.code ?? obj?.error_code ?? obj?.errorCode ?? undefined;
+  const v = obj?.code ?? obj?.error_code ?? obj?.errorCode ?? obj?.detail ?? undefined;
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
 
 function pickStatus(err: any): number | undefined {
-  const s =
-    err?.status ??
-    err?.statusCode ??
-    err?.response?.status ??
-    err?.cause?.status ??
-    undefined;
-
+  const s = err?.status ?? err?.statusCode ?? err?.response?.status ?? err?.cause?.status ?? undefined;
   return typeof s === "number" ? s : undefined;
 }
 
@@ -126,14 +129,16 @@ function isLikelyPendingChange(err: any): boolean {
  *
  * IMPORTANTE:
  * - El backend debe devolver 409 cuando ya hay un PENDING_PAYMENT,
- *   con payload { error, code, pending_subscription_id } (o pendingSubscriptionId)
+ *   con payload { error, detail/code, pending_subscription_id } (o pendingSubscriptionId)
  */
 export async function managePlan(params: ManagePlanParams): Promise<ManagePlanResponse> {
   // Body limpio según action
   const body: any = {
     action: params.action,
     customer_id: params.customer_id,
+    org_id: params.org_id, // ✅
     app_id: params.app_id ?? DEFAULT_APP_ID,
+    return_to: params.return_to ?? undefined, // ✅ opcional
   };
 
   if (params.action === "CHANGE" || params.action === "SCHEDULE_DOWNGRADE") {
@@ -183,9 +188,7 @@ export async function managePlan(params: ManagePlanParams): Promise<ManagePlanRe
   const ok = Boolean(payload?.ok ?? true);
   const scheduled = Boolean(payload?.scheduled ?? true);
 
-  if (!ok) {
-    throw new Error(payload?.error ?? "No se pudo programar la bajada de plan.");
-  }
+  if (!ok) throw new Error(payload?.error ?? "No se pudo programar la bajada de plan.");
 
   return {
     ok: true,
@@ -204,8 +207,10 @@ export async function managePlan(params: ManagePlanParams): Promise<ManagePlanRe
 export interface ChangePlanParams {
   target_plan_code: PaidPlanCode;
   customer_id: string;
+  org_id: string; // ✅
   billing_frequency?: Exclude<BillingFrequency, "FREE_TRIAL">;
   app_id?: string;
+  return_to?: string; // ✅
 }
 
 export async function changePlan(params: ChangePlanParams): Promise<ChangePlanResponse> {
@@ -214,7 +219,9 @@ export async function changePlan(params: ChangePlanParams): Promise<ChangePlanRe
     target_plan_code: params.target_plan_code,
     billing_frequency: params.billing_frequency ?? "MONTHLY",
     customer_id: params.customer_id,
+    org_id: params.org_id,
     app_id: params.app_id ?? DEFAULT_APP_ID,
+    return_to: params.return_to,
   });
 
   return res as ChangePlanResponse;
@@ -227,18 +234,27 @@ export async function scheduleDowngrade(params: ChangePlanParams): Promise<Sched
     target_plan_code: params.target_plan_code,
     billing_frequency: params.billing_frequency ?? "MONTHLY",
     customer_id: params.customer_id,
+    org_id: params.org_id,
     app_id: params.app_id ?? DEFAULT_APP_ID,
+    return_to: params.return_to,
   });
 
   return res as ScheduleDowngradeResponse;
 }
 
 /** Cancel downgrade */
-export async function cancelDowngrade(params: { customer_id: string; app_id?: string }): Promise<CancelDowngradeResponse> {
+export async function cancelDowngrade(params: {
+  customer_id: string;
+  org_id: string; // ✅
+  app_id?: string;
+  return_to?: string; // ✅
+}): Promise<CancelDowngradeResponse> {
   const res = await managePlan({
     action: "CANCEL_DOWNGRADE",
     customer_id: params.customer_id,
+    org_id: params.org_id,
     app_id: params.app_id ?? DEFAULT_APP_ID,
+    return_to: params.return_to,
   });
 
   return res as CancelDowngradeResponse;
