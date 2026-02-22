@@ -20,7 +20,7 @@ const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
 const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
 
 // Base URL pública de tu frontend (fallback)
-const SITE_URL_FALLBACK = Deno.env.get("SITE_URL") ?? "https://debacu.com";
+const SITE_URL_FALLBACK = Deno.env.get("SITE_URL") ?? "https://www.debacu.com";
 
 const APP_ID = "DEBACU_EVAL";
 
@@ -73,13 +73,44 @@ function resolveSiteUrl(body: any) {
   return normalizeBaseUrl(SITE_URL_FALLBACK);
 }
 
-function resolveActivateRedirect(body: any, org_id: string) {
-  const activateUrl = safeStr(body?.activateUrl || body?.activate_url || "");
-  if (activateUrl.startsWith("http://") || activateUrl.startsWith("https://")) return activateUrl;
+function forceCanonicalBase(base: string) {
+  try {
+    const u = new URL(base);
+    // fuerza https en prod si quieres (opcional)
+    // u.protocol = "https:";
 
-  const base = resolveSiteUrl(body);
-  // IMPORTANTE: en invite queremos llevar siempre a /auth/activate (tu pantalla)
-  return `${base}/auth/activate?org_id=${encodeURIComponent(org_id)}`;
+    // fuerza www si viene sin
+    if (u.hostname === "debacu.com") u.hostname = "www.debacu.com";
+    return u.toString().replace(/\/+$/, "");
+  } catch {
+    return "https://www.debacu.com";
+  }
+}
+
+function resolveActivateRedirect(body: any, org_id: string) {
+  const activateUrlRaw = safeStr(body?.activateUrl || body?.activate_url || "");
+  const baseRaw = resolveSiteUrl(body);
+  const base = forceCanonicalBase(baseRaw);
+
+  const fallback = `${base}/auth/activate`;
+
+  let u: URL;
+  try {
+    const target =
+      activateUrlRaw.startsWith("http://") || activateUrlRaw.startsWith("https://")
+        ? activateUrlRaw
+        : fallback;
+
+    u = new URL(target);
+  } catch {
+    u = new URL(fallback);
+  }
+
+  u.pathname = "/auth/activate";
+  u.searchParams.set("org_id", org_id);
+  u.hash = "";
+
+  return u.toString();
 }
 
 function resolveRecoveryRedirect(body: any) {
