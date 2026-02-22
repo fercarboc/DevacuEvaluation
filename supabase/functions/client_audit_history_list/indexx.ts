@@ -5,6 +5,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4
 
 import { json, preflight } from "../_shared/cors.ts";
 import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
+import { getOrgEntitlementsOrThrow, assertOrgEnabledOrThrow } from "../_shared/plans.ts";
 
 const APP_ID = "DEBACU_EVAL";
 
@@ -119,32 +120,6 @@ async function resolveOrgAndRoleOrThrow(
 }
 
 /** ======================================================
- * Entitlements
- * ====================================================== */
-async function loadEntitlementsOrThrow(admin: SupabaseClient, orgId: string) {
-  const { data, error } = await admin
-    .from("debacu_eval_org_entitlements_v")
-    .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used")
-    .eq("org_id", orgId)
-    .maybeSingle();
-
-  if (error || !data?.org_id) throw new Error("FORBIDDEN");
-  return data as EntitlementsRow;
-}
-
-/**
- * Auditoría: normalmente quieres permitir:
- * - ACTIVE
- * - TRIAL_ACTIVE (si lo usas)
- * Ajusta según tu modelo real.
- */
-function assertAuditAllowedOrThrow(ent: EntitlementsRow) {
-  const st = String(ent.subscription_status ?? "").toUpperCase();
-  if (st !== "ACTIVE" && st !== "TRIAL_ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
-  if (!ent.customer_id) throw new Error("FORBIDDEN");
-}
-
-/** ======================================================
  * MAIN
  * ====================================================== */
 export default Deno.serve(async (req: Request) => {
@@ -158,15 +133,16 @@ export default Deno.serve(async (req: Request) => {
     const body = (await req.json().catch(() => ({}))) as ReqBody;
 
     const { org_id, role: currentRole, resolvedBy: org_id_resolved_by } = await resolveOrgAndRoleOrThrow(
-      admin,
+      admin as unknown as SupabaseClient,
       user.id,
       body?.org_id ?? null,
     );
 
-    const ent = await loadEntitlementsOrThrow(admin, org_id);
-    assertAuditAllowedOrThrow(ent);
-
+    // ✅ Entitlements unificados + TRIAL_ACTIVE permitido
+    const ent = (await getOrgEntitlementsOrThrow(admin as any, org_id)) as unknown as EntitlementsRow;
+    assertOrgEnabledOrThrow(ent as any); // ACTIVE o TRIAL_ACTIVE
     const customer_id = String(ent.customer_id);
+    if (!customer_id) throw new Error("FORBIDDEN");
 
     const page = clamp(Number(body.page ?? 1) || 1, 1, 10_000);
     const pageSize = clamp(Number(body.pageSize ?? 10) || 10, 5, 100);
@@ -204,7 +180,7 @@ export default Deno.serve(async (req: Request) => {
 
     if (q) {
       const like = `%${q}%`;
-      // Nota: .or() en PostgREST puede ser caro. Si hay índices en id/action/search_value_masked, mejor.
+      // Nota: .or() en PostgREST puede ser caro. Si hay índices, mejor.
       query = query.or(`id.ilike.${like},search_value_masked.ilike.${like},action.ilike.${like}`);
     }
 
@@ -217,8 +193,6 @@ export default Deno.serve(async (req: Request) => {
     let roleByUserId: Record<string, string> = {};
     if (actorIds.length > 0) {
       // FIX STAFF: user_id OR auth_user_id
-      // No podemos hacer OR con .in() directo en ambos campos en un solo query limpio,
-      // así que intentamos por user_id primero, y si falta, por auth_user_id.
       const { data: mems1, error: memErr1 } = await admin
         .from("debacu_eval_org_members")
         .select("user_id, role")
@@ -261,9 +235,7 @@ export default Deno.serve(async (req: Request) => {
 
       const detailLabel = r.entity === "EVALUATION_SEARCH" ? "Consulta de registro" : String(r.entity ?? "—");
 
-      const userRole = r.actor_user_id
-        ? roleByUserId[String(r.actor_user_id)] ?? "—"
-        : currentRole ?? "—";
+      const userRole = r.actor_user_id ? roleByUserId[String(r.actor_user_id)] ?? "—" : currentRole ?? "—";
 
       return {
         id: r.id,

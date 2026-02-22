@@ -6,6 +6,7 @@ import { PDFDocument, StandardFonts, rgb } from "https://esm.sh/pdf-lib@1.17.1";
 
 import { json, preflight } from "../_shared/cors.ts";
 import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
+import { getOrgEntitlementsOrThrow, assertOrgEnabledOrThrow } from "../_shared/plan.ts";
 
 /* ======================================================
  * ENV
@@ -152,20 +153,17 @@ async function resolveTenant(
   };
 }
 
+/**
+ * ✅ NUEVO: usa helper único (ACTIVE o TRIAL_ACTIVE)
+ * Basado en debacu_eval_org_entitlements_v.subscription_status
+ */
 async function requirePlanActiveForOrg(
   admin: ReturnType<typeof createClient>,
   orgId: string
 ): Promise<EntitlementsRow> {
-  const { data, error } = await admin
-    .from("debacu_eval_org_entitlements_v")
-    .select("org_id, customer_id, seats_used, plan_code, max_users, subscription_status")
-    .eq("org_id", orgId)
-    .maybeSingle();
-
-  if (error) throw new Error(`ENTITLEMENTS_FAILED:${error.message}`);
-  if (!data?.org_id || !data?.customer_id) throw new Error("FORBIDDEN_NO_CUSTOMER");
-  if (data.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
-  return data as EntitlementsRow;
+  const ent = await getOrgEntitlementsOrThrow(admin as any, orgId);
+  assertOrgEnabledOrThrow(ent);
+  return ent as EntitlementsRow;
 }
 
 /* ======================================================
@@ -195,7 +193,6 @@ async function fetchEvaluationsForRange(
   from: string,
   to: string
 ): Promise<{ table_used: string; rows: EvalRow[] }> {
-  // OJO: pon aquí primero la REAL (según tú: debacu_evaluations)
   const candidates = [
     "debacu_evaluations",
     "debacu_eval_evaluations",
@@ -251,15 +248,11 @@ async function fetchEvaluationsForRange(
       return { table_used: t, rows };
     } catch (e: any) {
       lastErr = e;
-      // si es schema cache/missing table, probamos el siguiente candidato
       if (isSchemaCacheMissingTable(e)) continue;
-
-      // si no es “missing table”, lo devolvemos directo (para no ocultar RLS, columnas, etc.)
       throw new Error(`QUERY_FAILED(${t}):${String(e?.message ?? e)}`);
     }
   }
 
-  // Si llegó aquí, ninguno existía/estaba expuesto
   throw new Error(`QUERY_FAILED:No candidate evaluations table is visible to PostgREST. Last=${String(lastErr?.message ?? lastErr)}`);
 }
 
@@ -881,7 +874,6 @@ function mapError(e: unknown): { status: number; detail: string } {
     return { status: 400, detail: msg };
   }
 
-  // No lo tapes: si es QUERY_FAILED, devuélvelo
   if (msg.startsWith("QUERY_FAILED")) {
     return { status: 500, detail: msg };
   }
@@ -1143,15 +1135,15 @@ export default Deno.serve(async (req: Request) => {
       generated_by_email: email,
 
       delivered_to_name: tenant.customer_name || "Hotel",
-      delivered_to_org: tenant.org_id, // text nullable, aquí metemos uuid string
+      delivered_to_org: tenant.org_id,
       delivered_to_reason: "SELF_SERVICE_EXPORT",
       delivered_to_reference: String(exportScope),
 
       filter_source: String(exportScope),
-      filter_customer: tenant.customer_id, // text
-      filter_type: String(periodField),    // text
-      filter_from: periodFrom,             // date
-      filter_to: periodTo,                 // date
+      filter_customer: tenant.customer_id,
+      filter_type: String(periodField),
+      filter_from: periodFrom,
+      filter_to: periodTo,
 
       format: exportType,
       row_count: rowCount,
@@ -1208,4 +1200,3 @@ export default Deno.serve(async (req: Request) => {
     return json(req, mapped.status, { ok: false, error: "request_failed", detail: mapped.detail });
   }
 });
-

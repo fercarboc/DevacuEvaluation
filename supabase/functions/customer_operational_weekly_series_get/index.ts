@@ -4,6 +4,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { json, preflight } from "../_shared/cors.ts";
 import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
+import { getOrgEntitlementsOrThrow, assertOrgEnabledOrThrow } from "../_shared/plan.ts";
 
 const DEFAULT_APP_CODE = "DEBACU_EVAL";
 
@@ -123,7 +124,6 @@ async function resolveOrgIdForUserOrThrow(
 
   if (requested && !isUuid(requested)) throw new Error("invalid_org_id");
 
-  // helper: busca membership en un org concreto
   async function findInOrg(orgId: string) {
     const orParts = [`user_id.eq.${uid}`, `auth_user_id.eq.${uid}`];
     if (email) orParts.push(`invited_email.eq.${email}`);
@@ -150,12 +150,10 @@ async function resolveOrgIdForUserOrThrow(
     return data[0] as any;
   }
 
-  // 1) Si viene org_id, validar contra membership
   if (requested) {
     const m = await findInOrg(requested);
     if (!m) throw new Error("FORBIDDEN");
 
-    // autopatch si entró por email y falta auth_user_id
     if (!m.auth_user_id && email && String(m.invited_email ?? "").toLowerCase() === email) {
       console.log("[weekly_series] autopatch_auth_user_id", { member_id: m.id, org_id: m.org_id, uid });
       const { error: upErr } = await admin
@@ -168,7 +166,6 @@ async function resolveOrgIdForUserOrThrow(
     return String(m.org_id);
   }
 
-  // 2) fallback: primera ACTIVE del usuario por uid/email
   const orParts = [`user_id.eq.${uid}`, `auth_user_id.eq.${uid}`];
   if (email) orParts.push(`invited_email.eq.${email}`);
 
@@ -192,7 +189,6 @@ async function resolveOrgIdForUserOrThrow(
 
   const m = data[0] as any;
 
-  // autopatch si entró por email y falta auth_user_id
   if (!m.auth_user_id && email && String(m.invited_email ?? "").toLowerCase() === email) {
     console.log("[weekly_series] autopatch_auth_user_id_fallback", { member_id: m.id, org_id: m.org_id, uid });
     const { error: upErr } = await admin.from("debacu_eval_org_members").update({ auth_user_id: uid }).eq("id", m.id);
@@ -200,35 +196,6 @@ async function resolveOrgIdForUserOrThrow(
   }
 
   return String(m.org_id);
-}
-
-async function loadEntitlementsOrThrow(admin: ReturnType<typeof supabaseServiceClient>, orgId: string) {
-  const { data, error } = await admin
-    .from("debacu_eval_org_entitlements_v")
-    .select("org_id, customer_id, subscription_status, plan_code, max_users, seats_used")
-    .eq("org_id", orgId)
-    .maybeSingle();
-
-  console.log("[weekly_series] entitlements", {
-    orgId,
-    ok: !error,
-    error: error?.message ?? null,
-    has: !!data?.org_id,
-    subscription_status: data?.subscription_status ?? null,
-    plan_code: data?.plan_code ?? null,
-    customer_id: data?.customer_id ?? null,
-  });
-
-  // IMPORTANT: si no hay fila, es un "no hay entitlements" (normalmente error de vista/join)
-  if (error) throw new Error("request_failed");
-  if (!data?.org_id) throw new Error("FORBIDDEN");
-
-  return data as EntitlementsRow;
-}
-
-function assertPlanActiveOrThrow(ent: EntitlementsRow) {
-  if (ent.subscription_status !== "ACTIVE") throw new Error("PLAN_NOT_ACTIVE");
-  if (!ent.customer_id) throw new Error("FORBIDDEN");
 }
 
 async function fetchEvaluationsForRange(
@@ -326,7 +293,7 @@ export default Deno.serve(async (req: Request) => {
   const admin = supabaseServiceClient();
 
   try {
-    console.log("[weekly_series] v2026-02-20-email-membership-autopatch");
+    console.log("[weekly_series] v2026-02-22-entitlements-trial-enabled");
 
     const user = await requireUser(req);
     const userEmail = String((user as any)?.email ?? "").trim() || null;
@@ -361,11 +328,14 @@ export default Deno.serve(async (req: Request) => {
       body.org_id ? String(body.org_id) : null,
     );
 
-    const ent = await loadEntitlementsOrThrow(admin, orgId);
-    assertPlanActiveOrThrow(ent);
+    // ✅ Entitlements via helper + TRIAL_ACTIVE habilitado
+    const ent = (await getOrgEntitlementsOrThrow(admin as any, orgId)) as unknown as EntitlementsRow;
+    assertOrgEnabledOrThrow(ent as any); // acepta ACTIVE o TRIAL_ACTIVE
 
     const customerId = String(ent.customer_id);
-   const app_code = DEFAULT_APP_CODE;
+    if (!customerId) throw new Error("FORBIDDEN");
+
+    const app_code = DEFAULT_APP_CODE;
 
     const evalRows = await fetchEvaluationsForRange(admin, customerId, periodFieldRaw, periodFrom, periodTo);
 
