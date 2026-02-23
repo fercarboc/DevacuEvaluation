@@ -3,14 +3,17 @@ import { useNavigate } from "react-router-dom";
 
 import { supabase } from "@/services/supabaseClient";
 import { orgInviteFinalize } from "@/services/orgInviteFinalize.service";
-import { setEvalOrgId } from "@/services/callEvalFn";
 
 /**
  * ActivateAccountPage
  * - Soporta enlaces Supabase invite/verify que llegan:
  *   A) con ?code=... (PKCE)  -> exchangeCodeForSession
  *   B) con #access_token=...&refresh_token=... (implicit) -> setSession
- * - Luego permite setPassword + orgInviteFinalize(org_id)
+ * - Luego permite setPassword + orgInviteFinalize(orgId)
+ *
+ * IMPORTANT:
+ * - Usar SIEMPRE el mismo supabaseClient (supabaseClient.ts) en todo el front.
+ * - Tras updateUser(password) hacemos un getSession() para asegurar JWT antes de llamar a Edge.
  */
 export default function ActivateAccountPage() {
   const nav = useNavigate();
@@ -25,15 +28,10 @@ export default function ActivateAccountPage() {
     return new URLSearchParams(window.location.search).get("org_id") || "";
   }, []);
 
-  // org_id “final” que usaremos para submit (siempre el de query)
-  const resolvedOrgIdForSubmit = useMemo(() => {
-    return String(orgIdFromUrl || "").trim();
-  }, [orgIdFromUrl]);
-
-  const submit = async (orgId: string) => {
+  const submit = async (resolvedOrgId: string) => {
     setMsg(null);
 
-    if (!orgId) {
+    if (!resolvedOrgId) {
       setMsg("Falta org_id. Reenvía la invitación desde Admin.");
       return;
     }
@@ -48,26 +46,29 @@ export default function ActivateAccountPage() {
 
     setSaving(true);
     try {
-      // Asegura org_id en localStorage para el resto del flujo/app
-      setEvalOrgId(orgId);
-
-      // 1) Guardar contraseña
+      // 1) Set password
       const { error: updErr } = await supabase.auth.updateUser({ password: pw1 });
       if (updErr) throw updErr;
 
-      // 2) Finalizar invitación (INVITED -> ACTIVE, link org, etc.)
-      // IMPORTANTE: esto DEBE ir con JWT (ver orgInviteFinalize.service.ts)
-      await orgInviteFinalize(orgId);
+      // 2) Asegura que ya hay JWT disponible para callEvalFn (requireUser en Edge)
+      const { data: sessData, error: sessErr } = await supabase.auth.getSession();
+      if (sessErr) throw sessErr;
+
+      const jwt = sessData?.session?.access_token || "";
+      if (!jwt) {
+        throw new Error(
+          "No se pudo establecer sesión tras guardar contraseña. Vuelve a abrir el enlace desde el email (no desde un marcador)."
+        );
+      }
+
+      // 3) Finalize membership/org link (INVITED -> ACTIVE, claim by email/auth_user_id, etc.)
+      await orgInviteFinalize(resolvedOrgId);
 
       setMsg("Cuenta activada. Ya puedes entrar.");
       setTimeout(() => nav("/login"), 800);
     } catch (e: any) {
-      const detail =
-        e?.message ||
-        e?.detail ||
-        e?.error ||
-        "Error activando cuenta.";
-      setMsg(String(detail));
+      const detail = e?.message || e?.detail || e?.error || "Error activando cuenta.";
+      setMsg(detail);
     } finally {
       setSaving(false);
     }
@@ -79,23 +80,26 @@ export default function ActivateAccountPage() {
         setMsg(null);
 
         // -----------------------------------------
-        // 1) Intentar establecer sesión desde URL
+        // 1) Try to establish session from URL
         // -----------------------------------------
         const url = new URL(window.location.href);
         const code = url.searchParams.get("code") || "";
 
-        // Caso A: PKCE code en query
+        // Case A: PKCE code in query
         if (code) {
           const { error } = await supabase.auth.exchangeCodeForSession(code);
           if (error) {
-            setMsg("El enlace de activación no es válido o ha caducado. Reenvía la invitación desde Admin.");
+            setMsg(
+              "El enlace de activación no es válido o ha caducado. Reenvía la invitación desde Admin."
+            );
           }
-          // limpiar ?code=... dejando org_id
+
+          // clean ?code=... from URL (keep org_id)
           url.searchParams.delete("code");
           window.history.replaceState({}, "", url.toString());
         }
 
-        // Caso B: access_token en hash
+        // Case B: access_token in hash
         if (!code && window.location.hash) {
           const hash = window.location.hash.replace(/^#/, "");
           const hp = new URLSearchParams(hash);
@@ -113,16 +117,19 @@ export default function ActivateAccountPage() {
             if (error) {
               setMsg("No se pudo establecer sesión con el enlace. Reenvía la invitación desde Admin.");
             }
-            // limpiar hash
+
+            // clean hash from URL
             window.history.replaceState({}, "", window.location.pathname + window.location.search);
           }
         }
 
         // -----------------------------------------
-        // 2) Validar sesión
+        // 2) Validate user session
         // -----------------------------------------
         const { data: userData, error: userErr } = await supabase.auth.getUser();
-        if (userErr) setMsg(userErr.message);
+        if (userErr) {
+          setMsg(userErr.message);
+        }
 
         const user = userData?.user ?? null;
         if (!user) {
@@ -132,31 +139,34 @@ export default function ActivateAccountPage() {
         }
 
         // -----------------------------------------
-        // 3) Resolver org_id y guardarlo
+        // 3) Resolve org_id
         // -----------------------------------------
         const orgIdFromMeta =
-          (user.user_metadata as any)?.org_id ||
-          (user.user_metadata as any)?.orgId ||
-          "";
-
+          (user.user_metadata as any)?.org_id || (user.user_metadata as any)?.orgId || "";
         const resolvedOrgId = String(orgIdFromUrl || orgIdFromMeta || "").trim();
+
         if (!resolvedOrgId) {
           setMsg("Falta org_id en el enlace. Reenvía la invitación desde Admin.");
           setLoading(false);
           return;
         }
 
-        setEvalOrgId(resolvedOrgId);
-
         // -----------------------------------------
-        // 4) OK
+        // 4) Everything OK -> enable form
         // -----------------------------------------
+        setMsg(null);
         setLoading(false);
       } catch (e: any) {
         setMsg(e?.message ?? "Error preparando la activación.");
         setLoading(false);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgIdFromUrl]);
+
+  const resolvedOrgIdForSubmit = useMemo(() => {
+    const urlOrg = orgIdFromUrl || "";
+    return urlOrg.trim();
   }, [orgIdFromUrl]);
 
   return (
@@ -174,10 +184,7 @@ export default function ActivateAccountPage() {
           />
           <span className="text-sm font-semibold text-slate-900">Debacu Evaluation360</span>
         </div>
-        <button
-          onClick={() => nav("/login")}
-          className="text-sm text-slate-600 hover:text-slate-900"
-        >
+        <button onClick={() => nav("/login")} className="text-sm text-slate-600 hover:text-slate-900">
           Ir al login
         </button>
       </div>
@@ -223,9 +230,7 @@ export default function ActivateAccountPage() {
                 />
               </div>
 
-              <div className="text-xs text-blue-200">
-                Uso profesional · Gestión interna · Apoyo operativo
-              </div>
+              <div className="text-xs text-blue-200">Uso profesional · Gestión interna · Apoyo operativo</div>
             </div>
 
             <div className="absolute inset-0 opacity-25 bg-[radial-gradient(circle_at_top,white,transparent_55%)]" />
