@@ -2,50 +2,95 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+// ================================
+// ENV VALIDATION
+// ================================
 
-// OJO: ya NO dependemos de SUPABASE_ANON_KEY para auth server-side
-// const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
+const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+if (!SUPABASE_URL) {
+  console.error("[auth.ts] SUPABASE_URL missing");
+  throw new Error("SUPABASE_URL_NOT_DEFINED");
+}
+
+if (!SERVICE_ROLE_KEY) {
+  console.error("[auth.ts] SUPABASE_SERVICE_ROLE_KEY missing");
+  throw new Error("SERVICE_ROLE_KEY_NOT_DEFINED");
+}
+
+// ================================
+// SERVICE CLIENT
+// ================================
 
 export function supabaseServiceClient() {
-  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
+  return createClient(SUPABASE_URL!, SERVICE_ROLE_KEY!, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
   });
 }
 
+// ================================
+// INTERNAL: Extract Bearer
+// ================================
+
 function getBearer(req: Request) {
-  const auth = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? "";
-  const m = auth.match(/^Bearer\s+(.+)$/i);
-  return m?.[1] ?? "";
+  const raw =
+    req.headers.get("authorization") ??
+    req.headers.get("Authorization") ??
+    "";
+
+  const match = raw.match(/^Bearer\s+(.+)$/i);
+  return match?.[1] ?? "";
 }
 
-/**
- * requireUser
- * Valida JWT usando SERVICE_ROLE_KEY (server-side).
- * Evita depender de SUPABASE_ANON_KEY en secrets (típico fallo en prod).
- */
+// ================================
+// requireUser
+// ================================
+
 export async function requireUser(req: Request) {
+  console.log("[auth.ts] VERSION 2026-02-23-B");
+
   const jwt = getBearer(req);
-  if (!jwt) throw new Error("UNAUTHORIZED");
+
+  if (!jwt) {
+    console.error("[requireUser] No Bearer token found");
+    throw new Error("UNAUTHORIZED_NO_BEARER");
+  }
+
+  console.log("[requireUser] JWT prefix:", jwt.slice(0, 20));
 
   const sb = supabaseServiceClient();
 
-  // IMPORTANTE: pasar jwt explícito
   const { data, error } = await sb.auth.getUser(jwt);
 
-  if (error || !data?.user?.id) {
-    console.error("[requireUser] getUser failed", { error: error?.message });
-    throw new Error("UNAUTHORIZED");
+  if (error) {
+    console.error("[requireUser] getUser error:", {
+      message: error.message,
+      status: (error as any)?.status ?? null,
+    });
+    throw new Error("UNAUTHORIZED_INVALID_JWT");
   }
+
+  if (!data?.user?.id) {
+    console.error("[requireUser] No user resolved from JWT");
+    throw new Error("UNAUTHORIZED_NO_USER");
+  }
+
+  console.log("[requireUser] Authenticated user:", data.user.id);
 
   return data.user; // { id, email, ... }
 }
 
+// ================================
+// requireAdmin
+// ================================
+
 export async function requireAdmin(req: Request) {
   const user = await requireUser(req);
 
-  // check admin SIEMPRE con service role (evita RLS)
   const sb = supabaseServiceClient();
 
   const { data, error } = await sb
@@ -56,13 +101,19 @@ export async function requireAdmin(req: Request) {
     .maybeSingle();
 
   if (error) {
-    console.error("requireAdmin db error:", error);
+    console.error("[requireAdmin] DB error:", error);
     throw new Error("ADMIN_CHECK_FAILED");
   }
 
   if (!data?.user_id) {
+    console.error("[requireAdmin] User is not active admin:", user.id);
     throw new Error("FORBIDDEN");
   }
 
-  return { user_id: user.id, email: user.email ?? null };
+  console.log("[requireAdmin] Admin validated:", user.id);
+
+  return {
+    user_id: user.id,
+    email: user.email ?? null,
+  };
 }

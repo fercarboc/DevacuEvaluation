@@ -54,12 +54,6 @@ function supabaseServiceClient() {
   });
 }
 
-function supabaseAnonClientNoAuth() {
-  return createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
-
 /** ======================================================
  *  Redirect helpers (dinámicos: local/prod/vercel)
  * ====================================================== */
@@ -76,8 +70,6 @@ function resolveSiteUrl(body: any) {
 function forceCanonicalBase(base: string) {
   try {
     const u = new URL(base);
-    // fuerza https en prod si quieres (opcional)
-    // u.protocol = "https:";
 
     // fuerza www si viene sin
     if (u.hostname === "debacu.com") u.hostname = "www.debacu.com";
@@ -87,20 +79,16 @@ function forceCanonicalBase(base: string) {
   }
 }
 
-const CANONICAL_SITE = "https://www.debacu.com";
-
 function resolveActivateRedirect(body: any, org_id: string) {
   const baseRaw = resolveSiteUrl(body);
   const base = forceCanonicalBase(baseRaw);
 
-  // Siempre construimos un URL limpio (ignoramos activateUrlRaw)
+  // Siempre construimos un URL limpio
   const u = new URL(`${base}/auth/activate`);
   u.searchParams.set("org_id", org_id);
   u.hash = "";
   return u.toString();
 }
-
-
 
 function resolveRecoveryRedirect(body: any) {
   const base = resolveSiteUrl(body);
@@ -125,27 +113,84 @@ async function getAuthUserIdByEmail(sbAdmin: ReturnType<typeof supabaseServiceCl
   return null;
 }
 
+/** ======================================================
+ *  Email helpers (NO mailer externo)
+ *  - INVITE: auth.admin.inviteUserByEmail (manda email Supabase)
+ *  - RECOVERY: /auth/v1/recover (manda email Supabase aunque el user ya exista)
+ * ====================================================== */
+async function sendRecoveryEmailViaApi(email: string, redirectTo: string) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      apikey: ANON_KEY,
+      authorization: `Bearer ${ANON_KEY}`,
+    },
+    body: JSON.stringify({
+      email,
+      redirect_to: redirectTo,
+    }),
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    // Supabase suele devolver JSON con error / msg; aquí lo dejamos visible
+    throw new Error(`recovery_failed:${res.status}:${text || "unknown"}`);
+  }
+  return { ok: true };
+}
+
+function isAlreadyRegisteredInviteError(msg: string) {
+  const m = (msg || "").toLowerCase();
+  return (
+    m.includes("already been registered") ||
+    m.includes("already registered") ||
+    m.includes("user already registered") ||
+    m.includes("email address has already been registered")
+  );
+}
+
 /**
- * ✅ ONBOARDING: SIEMPRE INVITE (NO recovery).
- * - Si el user ya existe, Supabase suele reenviar invitación igualmente.
- * - Si no lo hace en tu proyecto, esto al menos mantiene el "type=invite" estable.
+ * ✅ ONBOARDING robusto:
+ * - Intenta INVITE (si no existe user → OK)
+ * - Si el user ya existe → manda RECOVERY email (Supabase), que SIEMPRE funciona para reenviar
  */
-async function sendInviteOnly(params: {
+async function sendInviteOrRecovery(params: {
   sbAdmin: ReturnType<typeof supabaseServiceClient>;
   email: string;
   customer_id: string;
   org_id: string;
-  inviteRedirectTo: string;
+  activateRedirectTo: string; // /auth/activate?org_id=...
 }) {
-  const { sbAdmin, email, customer_id, org_id, inviteRedirectTo } = params;
+  const { sbAdmin, email, customer_id, org_id, activateRedirectTo } = params;
 
-  const { data, error } = await sbAdmin.auth.admin.inviteUserByEmail(email, {
-    redirectTo: inviteRedirectTo,
-    data: { customer_id, org_id, app: APP_ID },
-  });
+  try {
+    const { data, error } = await sbAdmin.auth.admin.inviteUserByEmail(email, {
+      redirectTo: activateRedirectTo,
+      data: { customer_id, org_id, app: APP_ID },
+    });
 
-  if (error) throw new Error(`invite_failed:${error.message}`);
-  return { mode: "INVITED" as const, user_id: data?.user?.id ?? null };
+    if (error) throw error;
+
+    return {
+      mode: "INVITE" as const,
+      user_id: data?.user?.id ?? null,
+    };
+  } catch (e: any) {
+    const raw = e?.message ? String(e.message) : String(e);
+
+    // Caso clave: ya existe -> RECOVERY
+    if (isAlreadyRegisteredInviteError(raw)) {
+      await sendRecoveryEmailViaApi(email, activateRedirectTo);
+      // en recovery no siempre podemos saber el user_id sin listar
+      return {
+        mode: "RECOVERY" as const,
+        user_id: null,
+      };
+    }
+
+    throw new Error(`invite_failed:${raw}`);
+  }
 }
 
 /** ======================================================
@@ -303,7 +348,6 @@ async function ensureOwnerInvitedMembership(
   const auth_user_id = safeStr(params.auth_user_id ?? "");
   if (!org_id || !invited_email) throw new Error("missing_member_inputs");
 
-  // Intento 1: si ya hay por email en org, lo normalizo a OWNER+INVITED
   const { data: byEmail, error: byEmailErr } = await sbAdmin
     .from("debacu_eval_org_members")
     .select("id, role, status, invited_email, auth_user_id, user_id")
@@ -322,7 +366,6 @@ async function ensureOwnerInvitedMembership(
         role: "OWNER",
         status: "INVITED",
         invited_email,
-        // si sabemos el auth_user_id, lo guardamos; si no, no pisamos a null
         ...(auth_user_id ? { auth_user_id, user_id: auth_user_id } : {}),
         updated_at: new Date().toISOString(),
       })
@@ -332,7 +375,6 @@ async function ensureOwnerInvitedMembership(
     return { member_id: byEmail.id as string, mode: "UPDATED_BY_EMAIL" as const };
   }
 
-  // Insert canonical INVITED
   const insPayload: any = {
     org_id,
     role: "OWNER",
@@ -448,9 +490,8 @@ Deno.serve(async (req) => {
     if (action === "APPROVE") {
       const request_id = body?.requestId as string;
       const decision_notes = safeStr(body?.decisionNotes ?? "");
-      const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user.id ?? null;
+      const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user_id ?? null;
 
-      // ✅ respeta sendEmail (por defecto true)
       const sendEmail = body?.sendEmail !== false;
 
       if (!request_id) return errResp(req, 400, "missing_requestId");
@@ -527,15 +568,14 @@ Deno.serve(async (req) => {
 
       const subRes = await ensureFreeTrialSubscription(sbAdmin, customer_id);
 
-      // redirect dinámico con org_id
-      const inviteRedirectTo = resolveActivateRedirect(body, orgRes.org_id);
+      const activateRedirectTo = resolveActivateRedirect(body, orgRes.org_id);
 
-console.log("ACTIVATE_REDIRECT_DEBUG", {
-  org_id: orgRes.org_id,
-  inviteRedirectTo,
-});
+      console.log("ACTIVATE_REDIRECT_DEBUG", {
+        org_id: orgRes.org_id,
+        activateRedirectTo,
+      });
 
-      const recoveryRedirectTo = resolveRecoveryRedirect(body); // (no usado en onboarding, lo dejamos por compat)
+      const recoveryRedirectTo = resolveRecoveryRedirect(body);
 
       let email_sent = false;
       let email_detail: string | null = null;
@@ -546,28 +586,30 @@ console.log("ACTIVATE_REDIRECT_DEBUG", {
 
       if (sendEmail) {
         try {
-          const r = await sendInviteOnly({
+          const r = await sendInviteOrRecovery({
             sbAdmin,
             email,
             customer_id,
             org_id: orgRes.org_id,
-            inviteRedirectTo,
+            activateRedirectTo,
           });
+
           email_sent = true;
           email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
           last_email_status = "SENT";
+
           resolved_auth_user_id = r.user_id ?? (await getAuthUserIdByEmail(sbAdmin, email));
         } catch (e: any) {
           email_sent = false;
           email_detail = e?.message ? String(e.message) : "email_send_failed";
           last_email_status = "FAILED";
+
           resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
         }
       } else {
         resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
       }
 
-      // ✅ membership debe quedar INVITED, no ACTIVE
       await ensureOwnerInvitedMembership(sbAdmin, {
         org_id: orgRes.org_id,
         invited_email: email,
@@ -575,7 +617,6 @@ console.log("ACTIVATE_REDIRECT_DEBUG", {
         created_by_user_id: reviewed_by,
       });
 
-      // ✅ update request (no pisa last_email_* si sendEmail=false)
       const updatePayload: any = {
         status: "APPROVED",
         decision_notes: decision_notes || null,
@@ -610,7 +651,7 @@ console.log("ACTIVATE_REDIRECT_DEBUG", {
         send_email: sendEmail,
         email_sent,
         email_detail,
-        invite_redirect_to: inviteRedirectTo,
+        invite_redirect_to: activateRedirectTo,
         recovery_redirect_to: recoveryRedirectTo,
       });
     }
@@ -619,7 +660,7 @@ console.log("ACTIVATE_REDIRECT_DEBUG", {
     if (action === "REJECT") {
       const request_id = body?.requestId as string;
       const decision_notes = safeStr(body?.decisionNotes ?? "");
-      const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user.id ?? null;
+      const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user_id ?? null;
 
       if (!request_id) return errResp(req, 400, "missing_requestId");
 
@@ -640,9 +681,8 @@ console.log("ACTIVATE_REDIRECT_DEBUG", {
     /** RESEND */
     if (action === "RESEND") {
       const request_id = body?.requestId as string;
-      const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user.id ?? null;
+     const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user_id ?? null;
 
-      // ✅ respeta sendEmail (por defecto true)
       const sendEmail = body?.sendEmail !== false;
 
       if (!request_id) return errResp(req, 400, "missing_requestId");
@@ -678,13 +718,14 @@ console.log("ACTIVATE_REDIRECT_DEBUG", {
         await sbAdmin.from("debacu_eval_access_requests").update({ org_id }).eq("id", request_id);
       }
 
-      const inviteRedirectTo = resolveActivateRedirect(body, org_id);
+      const activateRedirectTo = resolveActivateRedirect(body, org_id);
 
       console.log("ACTIVATE_REDIRECT_DEBUG", {
-  org_id,
-  inviteRedirectTo,
-});
-      const recoveryRedirectTo = resolveRecoveryRedirect(body); // (no usado en onboarding, lo dejamos por compat)
+        org_id,
+        activateRedirectTo,
+      });
+
+      const recoveryRedirectTo = resolveRecoveryRedirect(body);
 
       let email_sent = false;
       let email_detail: string | null = null;
@@ -693,28 +734,30 @@ console.log("ACTIVATE_REDIRECT_DEBUG", {
 
       if (sendEmail) {
         try {
-          const r = await sendInviteOnly({
+          const r = await sendInviteOrRecovery({
             sbAdmin,
             email,
             customer_id,
             org_id,
-            inviteRedirectTo,
+            activateRedirectTo,
           });
+
           email_sent = true;
           email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
           last_email_status = "SENT";
+
           resolved_auth_user_id = r.user_id ?? (await getAuthUserIdByEmail(sbAdmin, email));
         } catch (e: any) {
           email_sent = false;
           email_detail = e?.message ? String(e.message) : "email_send_failed";
           last_email_status = "FAILED";
+
           resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
         }
       } else {
         resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
       }
 
-      // ✅ membership INVITED (no ACTIVE)
       await ensureOwnerInvitedMembership(sbAdmin, {
         org_id,
         invited_email: email,
@@ -742,7 +785,7 @@ console.log("ACTIVATE_REDIRECT_DEBUG", {
         send_email: sendEmail,
         email_sent,
         email_detail,
-        invite_redirect_to: inviteRedirectTo,
+        invite_redirect_to: activateRedirectTo,
         recovery_redirect_to: recoveryRedirectTo,
       });
     }

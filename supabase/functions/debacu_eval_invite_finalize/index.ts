@@ -182,27 +182,21 @@ Deno.serve(async (req) => {
 
   try {
     // ✅ must be called with Authorization: Bearer <access_token>
-    const authed = await requireUser(req);
+    const authed = await requireUser(req); // <-- devuelve user directo {id,email,...}
     const sb = supabaseServiceClient();
 
     const body = await readJson(req);
 
-    // org_id can come from:
-    // - frontend body (recommended)
-    // - query string param to your /auth/activate page, then passed to this function
     const org_id = safeStr(body?.org_id ?? body?.orgId ?? body?.org ?? "");
     if (!org_id) return errResp(req, 400, "missing_org_id");
 
-    const auth_user_id = safeStr(authed.user?.id ?? "");
+    // ✅ FIX: authed.id (no authed.user.id)
+    const auth_user_id = safeStr((authed as any)?.id ?? "");
     if (!auth_user_id) return errResp(req, 401, "missing_auth_user");
 
-    const email = safeLowerEmail(authed.user?.email ?? "");
+    // ✅ FIX: authed.email (no authed.user.email)
+    const email = safeLowerEmail((authed as any)?.email ?? "");
     if (!email) return errResp(req, 400, "missing_user_email");
-
-    // Optional: app id guard if you store it in metadata
-    // (not required, but useful)
-    // const appMeta = safeStr((authed.user as any)?.user_metadata?.app ?? "");
-    // if (appMeta && appMeta !== APP_ID) return errResp(req, 403, "wrong_app");
 
     // 1) Check org exists
     const { data: org, error: orgErr } = await sb
@@ -214,7 +208,7 @@ Deno.serve(async (req) => {
     if (orgErr) return errResp(req, 500, "db_org_find_failed");
     if (!org?.id) return errResp(req, 404, "org_not_found");
 
-    // 2) Ensure member is ACTIVE OWNER (claim by auth_user_id or invited_email)
+    // 2) Ensure member is ACTIVE OWNER
     const mem = await ensureOwnerActiveMembership({
       sb,
       org_id,
@@ -222,18 +216,14 @@ Deno.serve(async (req) => {
       invited_email: email,
     });
 
-    // 3) (Optional but recommended) ensure customer/auth_user_id link
-    // If your customers table has auth_user_id column (you have it), update it.
-    // If you don't want to touch customers here, you can remove this block.
+    // 3) Link customer.auth_user_id (best-effort)
     const { error: custUpdErr } = await sb
       .from("customers")
-      .update({ auth_user_id: auth_user_id })
+      .update({ auth_user_id })
       .eq("id", org.customer_id)
       .eq("app_id", APP_ID);
 
-    // ignore if column/constraint mismatch (but better to keep strict)
     if (custUpdErr) {
-      // don’t hard fail onboarding for this; return warning
       return json(req, 200, {
         ok: true,
         org_id,
@@ -243,7 +233,6 @@ Deno.serve(async (req) => {
       });
     }
 
-    // 4) Done
     return json(req, 200, {
       ok: true,
       org_id,
@@ -253,14 +242,9 @@ Deno.serve(async (req) => {
   } catch (e: any) {
     const msg = e?.message ?? String(e);
 
-    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED")
-      return errResp(req, 401, "UNAUTHORIZED");
-
-    // Tu frontend está viendo NO_ORG_MEMBER... => lo devolvemos como 400/403 claro
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return errResp(req, 401, "UNAUTHORIZED");
     if (msg === "FORBIDDEN") return errResp(req, 403, "FORBIDDEN");
-
-    if (String(msg).startsWith("missing_") || String(msg).startsWith("invalid_"))
-      return errResp(req, 400, msg);
+    if (String(msg).startsWith("missing_") || String(msg).startsWith("invalid_")) return errResp(req, 400, msg);
 
     return errResp(req, 500, "internal_error");
   }

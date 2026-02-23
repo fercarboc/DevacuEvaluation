@@ -6,7 +6,6 @@ import { CreditCard, FileText, Loader2 } from "lucide-react";
 import { getAccountBundle } from "@/services/accountService";
 import { use_subscription_state } from "@/services/debacu_eval_subscription_state.service";
 
-import { createCheckout } from "@/services/checkoutCreate.service";
 import { changeSubscriptionPlan } from "@/services/subscriptionChange.service";
 
 import type { PlanCode, PaidPlanCode } from "@/types/types";
@@ -49,6 +48,18 @@ const PLAN_RANK: Record<PlanCode, number> = { FREE: 0, BASIC: 1, MEDIUM: 2, PREM
 
 function buildReturnTo() {
   return window.location.pathname + window.location.search;
+}
+
+function pickCheckoutUrl(resp: any): string {
+  const v =
+    resp?.checkoutUrl ??
+    resp?.checkout_url ??
+    resp?.url ??
+    resp?.data?.checkoutUrl ??
+    resp?.data?.checkout_url ??
+    resp?.data?.url ??
+    "";
+  return typeof v === "string" ? v : "";
 }
 
 export const PlanesTab: React.FC<TabProps> = ({ user }) => {
@@ -102,7 +113,8 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
 
   const planPriceLabel = isFreePlan ? "Gratis" : formatCurrency(monthlyFee);
 
-  const hasPendingChange = (activeSub?.status ?? subscriptionState?.status) === "PENDING_PAYMENT";
+  const hasPendingChange =
+    (activeSub?.status ?? subscriptionState?.status) === "PENDING_PAYMENT";
 
   const requiredPlan = String((activeSub as any)?.required_plan_code ?? "").trim();
   const hasScheduledDowngrade = Boolean((activeSub as any)?.stripe_schedule_id || requiredPlan);
@@ -115,14 +127,11 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
       setPlanError(null);
 
       try {
-        // En tu app, a veces getAccountBundle usa customer_id y a veces user.id.
-        // Probamos lo mejor posible sin romper:
         const idToTry = (user as any)?.customerId ?? (user as any)?.customer_id ?? user.id;
 
         const bundle = await getAccountBundle(idToTry);
         if (cancelled) return;
 
-        // invoices: normalizamos a tu estructura actual
         const invoiceRows = (bundle?.invoices ?? []) as any[];
         setInvoices(
           invoiceRows.map((row) => {
@@ -149,7 +158,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
           })
         );
 
-        // plans: si bundle.plans ya viene “bonito”, lo usamos; si no, construimos desde metadata
         const planRows = (bundle?.plans ?? []) as any[];
 
         const constructedPlans: AvailablePlan[] = PAID_PLAN_CODES.map((code) => {
@@ -174,7 +182,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         if (hasSessionId) {
           url.searchParams.delete("session_id");
           window.history.replaceState({}, "", url.toString());
-          // damos margen al webhook + refresh server-side
           setTimeout(() => void refresh(), 2500);
         }
       } catch (e: any) {
@@ -211,26 +218,39 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         return;
       }
 
+      // Si hay downgrade programado, obligamos a cancelarlo antes (evita estados raros)
+      if (hasScheduledDowngrade) {
+        setPlanError("Tienes una bajada programada. Cancélala antes de cambiar de plan.");
+        return;
+      }
+
       const targetRank = PLAN_RANK[target] ?? 0;
       const isUpgrade = targetRank > currentRank;
       const isDowngrade = targetRank < currentRank;
 
       if (!isUpgrade && !isDowngrade) return;
 
-      // 🔹 Caso 1: FREE -> primer pago (checkout)
-      if (isFreePlan) {
-        const { url } = await createCheckout({
+      // ✅ Downgrade: programar para el siguiente ciclo
+      if (isDowngrade && !isFreePlan) {
+        const resp = await changeSubscriptionPlan({
           org_id,
+          action: "SCHEDULE_DOWNGRADE",
           plan_code: target,
           billing_frequency: "MONTHLY",
           return_to,
         });
 
-        window.location.href = url;
+        // Normalmente no hay checkout aquí
+        if ((resp as any)?.ok) {
+          await refresh();
+          return;
+        }
+
+        await refresh();
         return;
       }
 
-      // 🔹 Caso 2: CHANGE en plan pagado
+      // ✅ Upgrade (o FREE->pago): CHANGE => crea Checkout
       const resp = await changeSubscriptionPlan({
         org_id,
         action: "CHANGE",
@@ -239,17 +259,23 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         return_to,
       });
 
-      // upgrade => checkout_url
-      if ((resp as any)?.checkout_url) {
-        window.location.href = String((resp as any).checkout_url);
+      const checkoutUrl = pickCheckoutUrl(resp);
+      if (checkoutUrl) {
+        window.location.href = checkoutUrl;
         return;
       }
 
-      // downgrade scheduled => refresca estado
+      // Si no hay checkoutUrl, refrescamos estado
       await refresh();
     } catch (e: any) {
       console.error(e);
-      setPlanError(e?.message ?? "No se pudo iniciar el cambio de plan.");
+      const detail = String(e?.message ?? "");
+      // UX: si el backend avisa de downgrade, lo hacemos claro
+      if (detail.includes("USE_SCHEDULE_DOWNGRADE")) {
+        setPlanError("Para bajar de plan debes programarlo para el próximo ciclo (no se aplica al momento).");
+      } else {
+        setPlanError(e?.message ?? "No se pudo iniciar el cambio de plan.");
+      }
     } finally {
       setIsChangingPlan(false);
       setSelectedPlanCode(null);
@@ -415,9 +441,8 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
                 const optionRank = PLAN_RANK[option.code] ?? 0;
                 const canChange = optionRank !== currentRank;
 
-                // Si hay downgrade programado, NO dejamos tocar planes hasta que se cancele (evita estados raros)
                 const buttonDisabled =
-                  isChangingPlan || hasPendingChange || hasScheduledDowngrade || isActive || !canChange;
+                  isChangingPlan || hasPendingChange || isActive || !canChange;
 
                 const buttonLabel = isActive
                   ? "Plan actual"
@@ -453,7 +478,7 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
                       <button
                         type="button"
                         disabled={buttonDisabled}
-                        onClick={() => handlePlanChange(option.code)}
+                        onClick={() => void handlePlanChange(option.code)}
                         className={`px-4 py-2 rounded-lg text-xs font-semibold uppercase transition ${
                           buttonDisabled
                             ? "bg-slate-200 text-slate-500 cursor-not-allowed"
@@ -477,14 +502,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
             <div className="px-6 pb-4">
               <p className="text-xs font-semibold text-amber-700 uppercase">
                 Cambio de plan pendiente · espera confirmación de Stripe
-              </p>
-            </div>
-          )}
-
-          {hasScheduledDowngrade && !hasPendingChange && (
-            <div className="px-6 pb-4">
-              <p className="text-xs font-semibold text-amber-700 uppercase">
-                Tienes una bajada programada · cancélala para poder cambiar de plan
               </p>
             </div>
           )}
