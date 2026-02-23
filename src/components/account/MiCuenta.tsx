@@ -1,7 +1,9 @@
 // src/pages/MiCuenta.tsx
 import React, { useMemo, useState } from "react";
 import type { User } from "@/types/types";
-import { SubscriptionManager2 } from "../SubscriptionManager2";
+ 
+
+import { PlanesTab } from "./PlanesTab";
 import { PerfilHotel } from "./PerfilHotel";
 import { Catalogo } from "./Catalogo";
 import { DatosBancoHotel } from "./DatosBancoHotel";
@@ -66,11 +68,11 @@ export function MiCuenta({ user }: { user: User }) {
         ))}
       </div>
 
-      {activeTab === "planes" && <SubscriptionManager2 user={user} />}
+      {activeTab === "planes" && <PlanesTab user={user} />}
 
       {activeTab === "perfilHotel" && <PerfilHotel user={user} />}
 
-      {activeTab === "catalogo" && <Catalogo user={user} />}
+      {activeTab === "catalogo" && <Catalogo />}
 
       {activeTab === "banco" && <DatosBancoHotel user={user} />}
 
