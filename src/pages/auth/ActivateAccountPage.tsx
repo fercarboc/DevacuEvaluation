@@ -1,3 +1,4 @@
+// src/pages/auth/ActivateAccountPage.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -6,14 +7,14 @@ import { orgInviteFinalize } from "@/services/orgInviteFinalize.service";
 
 /**
  * ActivateAccountPage
- * - Soporta enlaces Supabase invite/verify que llegan:
- *   A) con ?code=... (PKCE)  -> exchangeCodeForSession
- *   B) con #access_token=...&refresh_token=... (implicit) -> setSession
- * - Luego permite setPassword + orgInviteFinalize(orgId)
+ * Soporta:
+ *  A) ?type=invite&token_hash=...   -> verifyOtp (RECOMENDADO en emails Supabase)
+ *  B) ?code=...                     -> exchangeCodeForSession (PKCE)
+ *  C) #access_token=...&refresh_token=... -> setSession (implicit)
  *
- * IMPORTANT:
- * - Usar SIEMPRE el mismo supabaseClient (supabaseClient.ts) en todo el front.
- * - Tras updateUser(password) hacemos un getSession() para asegurar JWT antes de llamar a Edge.
+ * Luego:
+ *  - updateUser(password)
+ *  - orgInviteFinalize(org_id) (Edge con JWT)
  */
 export default function ActivateAccountPage() {
   const nav = useNavigate();
@@ -24,9 +25,8 @@ export default function ActivateAccountPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const orgIdFromUrl = useMemo(() => {
-    return new URLSearchParams(window.location.search).get("org_id") || "";
-  }, []);
+  const qs = useMemo(() => new URLSearchParams(window.location.search), []);
+  const orgIdFromUrl = useMemo(() => qs.get("org_id") || "", [qs]);
 
   const submit = async (resolvedOrgId: string) => {
     setMsg(null);
@@ -46,22 +46,20 @@ export default function ActivateAccountPage() {
 
     setSaving(true);
     try {
-      // 1) Set password
-      const { error: updErr } = await supabase.auth.updateUser({ password: pw1 });
-      if (updErr) throw updErr;
-
-      // 2) Asegura que ya hay JWT disponible para callEvalFn (requireUser en Edge)
-      const { data: sessData, error: sessErr } = await supabase.auth.getSession();
-      if (sessErr) throw sessErr;
-
-      const jwt = sessData?.session?.access_token || "";
-      if (!jwt) {
+      // 0) Asegura sesión real antes de tocar nada
+      const { data: s0 } = await supabase.auth.getSession();
+      const jwt0 = s0?.session?.access_token || "";
+      if (!jwt0) {
         throw new Error(
-          "No se pudo establecer sesión tras guardar contraseña. Vuelve a abrir el enlace desde el email (no desde un marcador)."
+          "No hay sesión activa. Abre el enlace desde el email (no desde un marcador) o reenvía la invitación."
         );
       }
 
-      // 3) Finalize membership/org link (INVITED -> ACTIVE, claim by email/auth_user_id, etc.)
+      // 1) Set password (usuario ya autenticado por el invite)
+      const { error: updErr } = await supabase.auth.updateUser({ password: pw1 });
+      if (updErr) throw updErr;
+
+      // 2) Finaliza: INVITED -> ACTIVE, claim por email/auth_user_id, etc.
       await orgInviteFinalize(resolvedOrgId);
 
       setMsg("Cuenta activada. Ya puedes entrar.");
@@ -79,28 +77,56 @@ export default function ActivateAccountPage() {
       try {
         setMsg(null);
 
-        // -----------------------------------------
-        // 1) Try to establish session from URL
-        // -----------------------------------------
         const url = new URL(window.location.href);
-        const code = url.searchParams.get("code") || "";
 
-        // Case A: PKCE code in query
-        if (code) {
+        // -----------------------------------------
+        // 1) Establecer sesión desde URL (3 casos)
+        // -----------------------------------------
+
+        // Caso A: Supabase email links modernos: type + token_hash (invite / recovery / magiclink)
+        const type = url.searchParams.get("type") || "";
+        const token_hash = url.searchParams.get("token_hash") || "";
+
+        if (type && token_hash) {
+          // ✅ CLAVE: esto crea la sesión en el navegador
+          const { error } = await supabase.auth.verifyOtp({
+            type: type as any,
+            token_hash,
+          });
+
+          if (error) {
+            setMsg(
+              "El enlace de activación no es válido o ha caducado. Reenvía la invitación desde Admin."
+            );
+            setLoading(false);
+            return;
+          }
+
+          // Limpia token_hash/type de la URL (mantén org_id)
+          url.searchParams.delete("type");
+          url.searchParams.delete("token_hash");
+          window.history.replaceState({}, "", url.toString());
+        }
+
+        // Caso B: PKCE code en query
+        const code = url.searchParams.get("code") || "";
+        if (!type && !token_hash && code) {
           const { error } = await supabase.auth.exchangeCodeForSession(code);
           if (error) {
             setMsg(
               "El enlace de activación no es válido o ha caducado. Reenvía la invitación desde Admin."
             );
+            setLoading(false);
+            return;
           }
 
-          // clean ?code=... from URL (keep org_id)
+          // Limpia code de la URL (mantén org_id)
           url.searchParams.delete("code");
           window.history.replaceState({}, "", url.toString());
         }
 
-        // Case B: access_token in hash
-        if (!code && window.location.hash) {
+        // Caso C: access_token en hash
+        if (!type && !token_hash && !code && window.location.hash) {
           const hash = window.location.hash.replace(/^#/, "");
           const hp = new URLSearchParams(hash);
 
@@ -108,38 +134,44 @@ export default function ActivateAccountPage() {
           const refresh_token = hp.get("refresh_token") || "";
           const error_description = hp.get("error_description") || hp.get("error") || "";
 
-          if (error_description) {
-            setMsg(decodeURIComponent(error_description));
-          }
+          if (error_description) setMsg(decodeURIComponent(error_description));
 
           if (access_token && refresh_token) {
             const { error } = await supabase.auth.setSession({ access_token, refresh_token });
             if (error) {
-              setMsg("No se pudo establecer sesión con el enlace. Reenvía la invitación desde Admin.");
+              setMsg(
+                "No se pudo establecer sesión con el enlace. Reenvía la invitación desde Admin."
+              );
+              setLoading(false);
+              return;
             }
 
-            // clean hash from URL
+            // Limpia hash
             window.history.replaceState({}, "", window.location.pathname + window.location.search);
           }
         }
 
         // -----------------------------------------
-        // 2) Validate user session
+        // 2) Validar sesión
         // -----------------------------------------
-        const { data: userData, error: userErr } = await supabase.auth.getUser();
-        if (userErr) {
-          setMsg(userErr.message);
+        const { data: sess } = await supabase.auth.getSession();
+        const jwt = sess?.session?.access_token || "";
+        if (!jwt) {
+          setMsg("No hay sesión activa. Abre este enlace desde el email de invitación.");
+          setLoading(false);
+          return;
         }
 
+        const { data: userData } = await supabase.auth.getUser();
         const user = userData?.user ?? null;
         if (!user) {
-          setMsg("No hay sesión activa. Abre este enlace desde el email de invitación (no desde un marcador).");
+          setMsg("No se pudo leer el usuario. Reenvía la invitación desde Admin.");
           setLoading(false);
           return;
         }
 
         // -----------------------------------------
-        // 3) Resolve org_id
+        // 3) Resolver org_id
         // -----------------------------------------
         const orgIdFromMeta =
           (user.user_metadata as any)?.org_id || (user.user_metadata as any)?.orgId || "";
@@ -152,7 +184,7 @@ export default function ActivateAccountPage() {
         }
 
         // -----------------------------------------
-        // 4) Everything OK -> enable form
+        // 4) OK: mostrar formulario
         // -----------------------------------------
         setMsg(null);
         setLoading(false);
@@ -164,10 +196,7 @@ export default function ActivateAccountPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgIdFromUrl]);
 
-  const resolvedOrgIdForSubmit = useMemo(() => {
-    const urlOrg = orgIdFromUrl || "";
-    return urlOrg.trim();
-  }, [orgIdFromUrl]);
+  const resolvedOrgIdForSubmit = useMemo(() => orgIdFromUrl.trim(), [orgIdFromUrl]);
 
   return (
     <div className="min-h-screen bg-slate-50">
