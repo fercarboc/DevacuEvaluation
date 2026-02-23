@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 
 import { supabase } from "@/services/supabaseClient";
 import { orgInviteFinalize } from "@/services/orgInviteFinalize.service";
+import { setEvalOrgId } from "@/services/callEvalFn";
 
 /**
  * ActivateAccountPage
@@ -25,13 +26,16 @@ export default function ActivateAccountPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const qs = useMemo(() => new URLSearchParams(window.location.search), []);
-  const orgIdFromUrl = useMemo(() => qs.get("org_id") || "", [qs]);
+  const [resolvedOrgId, setResolvedOrgId] = useState<string>("");
 
-  const submit = async (resolvedOrgId: string) => {
+  const qs = useMemo(() => new URLSearchParams(window.location.search), []);
+  const orgIdFromUrl = useMemo(() => (qs.get("org_id") || "").trim(), [qs]);
+
+  const submit = async () => {
     setMsg(null);
 
-    if (!resolvedOrgId) {
+    const orgId = resolvedOrgId.trim();
+    if (!orgId) {
       setMsg("Falta org_id. Reenvía la invitación desde Admin.");
       return;
     }
@@ -46,8 +50,10 @@ export default function ActivateAccountPage() {
 
     setSaving(true);
     try {
-      // 0) Asegura sesión real antes de tocar nada
-      const { data: s0 } = await supabase.auth.getSession();
+      // 0) Debe haber sesión (creada por verifyOtp/exchangeCode/setSession)
+      const { data: s0, error: sErr } = await supabase.auth.getSession();
+      if (sErr) throw new Error(`Supabase getSession error: ${sErr.message}`);
+
       const jwt0 = s0?.session?.access_token || "";
       if (!jwt0) {
         throw new Error(
@@ -55,15 +61,18 @@ export default function ActivateAccountPage() {
         );
       }
 
-      // 1) Set password (usuario ya autenticado por el invite)
+      // 1) Guardar contraseña
       const { error: updErr } = await supabase.auth.updateUser({ password: pw1 });
       if (updErr) throw updErr;
 
-      // 2) Finaliza: INVITED -> ACTIVE, claim por email/auth_user_id, etc.
-      await orgInviteFinalize(resolvedOrgId);
+      // 2) Guardar org_id para el resto del flujo (por si callEvalFn inyecta)
+      setEvalOrgId(orgId);
+
+      // 3) Finalizar invitación (INVITED -> ACTIVE, claim por email/auth_user_id, etc.)
+      await orgInviteFinalize(orgId);
 
       setMsg("Cuenta activada. Ya puedes entrar.");
-      setTimeout(() => nav("/login"), 800);
+      setTimeout(() => nav("/login"), 900);
     } catch (e: any) {
       const detail = e?.message || e?.detail || e?.error || "Error activando cuenta.";
       setMsg(detail);
@@ -84,11 +93,10 @@ export default function ActivateAccountPage() {
         // -----------------------------------------
 
         // Caso A: Supabase email links modernos: type + token_hash (invite / recovery / magiclink)
-        const type = url.searchParams.get("type") || "";
-        const token_hash = url.searchParams.get("token_hash") || "";
+        const type = (url.searchParams.get("type") || "").trim();
+        const token_hash = (url.searchParams.get("token_hash") || "").trim();
 
         if (type && token_hash) {
-          // ✅ CLAVE: esto crea la sesión en el navegador
           const { error } = await supabase.auth.verifyOtp({
             type: type as any,
             token_hash,
@@ -109,7 +117,7 @@ export default function ActivateAccountPage() {
         }
 
         // Caso B: PKCE code en query
-        const code = url.searchParams.get("code") || "";
+        const code = (url.searchParams.get("code") || "").trim();
         if (!type && !token_hash && code) {
           const { error } = await supabase.auth.exchangeCodeForSession(code);
           if (error) {
@@ -120,7 +128,6 @@ export default function ActivateAccountPage() {
             return;
           }
 
-          // Limpia code de la URL (mantén org_id)
           url.searchParams.delete("code");
           window.history.replaceState({}, "", url.toString());
         }
@@ -130,8 +137,8 @@ export default function ActivateAccountPage() {
           const hash = window.location.hash.replace(/^#/, "");
           const hp = new URLSearchParams(hash);
 
-          const access_token = hp.get("access_token") || "";
-          const refresh_token = hp.get("refresh_token") || "";
+          const access_token = (hp.get("access_token") || "").trim();
+          const refresh_token = (hp.get("refresh_token") || "").trim();
           const error_description = hp.get("error_description") || hp.get("error") || "";
 
           if (error_description) setMsg(decodeURIComponent(error_description));
@@ -152,9 +159,11 @@ export default function ActivateAccountPage() {
         }
 
         // -----------------------------------------
-        // 2) Validar sesión
+        // 2) Validar sesión (OBLIGATORIO)
         // -----------------------------------------
-        const { data: sess } = await supabase.auth.getSession();
+        const { data: sess, error: sessErr } = await supabase.auth.getSession();
+        if (sessErr) throw new Error(`Supabase getSession error: ${sessErr.message}`);
+
         const jwt = sess?.session?.access_token || "";
         if (!jwt) {
           setMsg("No hay sesión activa. Abre este enlace desde el email de invitación.");
@@ -162,7 +171,9 @@ export default function ActivateAccountPage() {
           return;
         }
 
-        const { data: userData } = await supabase.auth.getUser();
+        const { data: userData, error: userErr } = await supabase.auth.getUser();
+        if (userErr) throw new Error(userErr.message);
+
         const user = userData?.user ?? null;
         if (!user) {
           setMsg("No se pudo leer el usuario. Reenvía la invitación desde Admin.");
@@ -171,17 +182,25 @@ export default function ActivateAccountPage() {
         }
 
         // -----------------------------------------
-        // 3) Resolver org_id
+        // 3) Resolver org_id (URL > user_metadata)
         // -----------------------------------------
-        const orgIdFromMeta =
-          (user.user_metadata as any)?.org_id || (user.user_metadata as any)?.orgId || "";
-        const resolvedOrgId = String(orgIdFromUrl || orgIdFromMeta || "").trim();
+        const metaOrg =
+          (user.user_metadata as any)?.org_id ||
+          (user.user_metadata as any)?.orgId ||
+          (user.app_metadata as any)?.org_id ||
+          "";
 
-        if (!resolvedOrgId) {
+        const resolved = String(orgIdFromUrl || metaOrg || "").trim();
+
+        if (!resolved) {
           setMsg("Falta org_id en el enlace. Reenvía la invitación desde Admin.");
           setLoading(false);
           return;
         }
+
+        // Guardar org_id para el resto del frontend
+        setEvalOrgId(resolved);
+        setResolvedOrgId(resolved);
 
         // -----------------------------------------
         // 4) OK: mostrar formulario
@@ -193,10 +212,7 @@ export default function ActivateAccountPage() {
         setLoading(false);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgIdFromUrl]);
-
-  const resolvedOrgIdForSubmit = useMemo(() => orgIdFromUrl.trim(), [orgIdFromUrl]);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -306,8 +322,8 @@ export default function ActivateAccountPage() {
                 </div>
 
                 <button
-                  onClick={() => submit(resolvedOrgIdForSubmit)}
-                  disabled={saving || !resolvedOrgIdForSubmit}
+                  onClick={submit}
+                  disabled={saving || !resolvedOrgId}
                   className="mt-7 w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
                 >
                   {saving ? "Guardando..." : "Guardar contraseña"}

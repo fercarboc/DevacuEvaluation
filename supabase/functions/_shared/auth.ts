@@ -4,7 +4,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+
+// OJO: ya NO dependemos de SUPABASE_ANON_KEY para auth server-side
+// const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
 export function supabaseServiceClient() {
   return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
@@ -12,17 +14,30 @@ export function supabaseServiceClient() {
   });
 }
 
-export async function requireUser(req: Request) {
+function getBearer(req: Request) {
   const auth = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? "";
-  if (!auth.toLowerCase().startsWith("bearer ")) throw new Error("UNAUTHORIZED");
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  return m?.[1] ?? "";
+}
 
-  const sbUser = createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: auth } },
-  });
+/**
+ * requireUser
+ * Valida JWT usando SERVICE_ROLE_KEY (server-side).
+ * Evita depender de SUPABASE_ANON_KEY en secrets (típico fallo en prod).
+ */
+export async function requireUser(req: Request) {
+  const jwt = getBearer(req);
+  if (!jwt) throw new Error("UNAUTHORIZED");
 
-  const { data, error } = await sbUser.auth.getUser();
-  if (error || !data?.user?.id) throw new Error("UNAUTHORIZED");
+  const sb = supabaseServiceClient();
+
+  // IMPORTANTE: pasar jwt explícito
+  const { data, error } = await sb.auth.getUser(jwt);
+
+  if (error || !data?.user?.id) {
+    console.error("[requireUser] getUser failed", { error: error?.message });
+    throw new Error("UNAUTHORIZED");
+  }
 
   return data.user; // { id, email, ... }
 }
@@ -30,7 +45,7 @@ export async function requireUser(req: Request) {
 export async function requireAdmin(req: Request) {
   const user = await requireUser(req);
 
-  // IMPORTANTE: check admin SIEMPRE con service role (evita RLS)
+  // check admin SIEMPRE con service role (evita RLS)
   const sb = supabaseServiceClient();
 
   const { data, error } = await sb
