@@ -5,12 +5,11 @@ import { CreditCard, FileText, Loader2 } from "lucide-react";
 
 import { getAccountBundle } from "@/services/accountService";
 import { use_subscription_state } from "@/services/debacu_eval_subscription_state.service";
-
 import { changeSubscriptionPlan } from "@/services/subscriptionChange.service";
 
 import type { PlanCode, PaidPlanCode } from "@/types/types";
 import { PAID_PLAN_CODES } from "@/types/types";
-import { getEvalOrgId } from "@/services/callEvalFn";
+import { getEvalOrgId, setEvalOrgId } from "@/services/callEvalFn";
 
 type TabProps = { user: User };
 
@@ -23,7 +22,6 @@ type AvailablePlan = {
   maxQueries: number;
 };
 
-// Ext local
 type Invoice = InvoiceBase & {
   url?: string | null;
   number?: string | null;
@@ -50,16 +48,9 @@ function buildReturnTo() {
   return window.location.pathname + window.location.search;
 }
 
-function pickCheckoutUrl(resp: any): string {
-  const v =
-    resp?.checkoutUrl ??
-    resp?.checkout_url ??
-    resp?.url ??
-    resp?.data?.checkoutUrl ??
-    resp?.data?.checkout_url ??
-    resp?.data?.url ??
-    "";
-  return typeof v === "string" ? v : "";
+function pickCheckoutUrl(resp: any): string | null {
+  const v = resp?.checkoutUrl ?? resp?.checkout_url ?? resp?.url ?? null;
+  return typeof v === "string" && v.startsWith("http") ? v : null;
 }
 
 export const PlanesTab: React.FC<TabProps> = ({ user }) => {
@@ -72,7 +63,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
   const [isChangingPlan, setIsChangingPlan] = useState(false);
   const [selectedPlanCode, setSelectedPlanCode] = useState<PlanCode | null>(null);
 
-  // Estado de suscripción (usa org_id contexto / o lo resuelve server-side)
   const { state: subscriptionState, refresh } = use_subscription_state();
 
   const activeSub = subscriptionState?.subscription ?? null;
@@ -113,11 +103,17 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
 
   const planPriceLabel = isFreePlan ? "Gratis" : formatCurrency(monthlyFee);
 
-  const hasPendingChange =
-    (activeSub?.status ?? subscriptionState?.status) === "PENDING_PAYMENT";
+  const hasPendingChange = (activeSub?.status ?? subscriptionState?.status) === "PENDING_PAYMENT";
 
   const requiredPlan = String((activeSub as any)?.required_plan_code ?? "").trim();
   const hasScheduledDowngrade = Boolean((activeSub as any)?.stripe_schedule_id || requiredPlan);
+
+  useEffect(() => {
+    // ✅ si vuelves de Stripe con org_id, guárdalo para evitar “no puedo cargar dashboard”
+    const u = new URL(window.location.href);
+    const orgId = u.searchParams.get("org_id");
+    if (orgId) setEvalOrgId(orgId);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -176,7 +172,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
 
         setAvailablePlans(constructedPlans);
 
-        // ✅ retorno post-stripe (success_url trae session_id)
         const url = new URL(window.location.href);
         const hasSessionId = url.searchParams.has("session_id");
         if (hasSessionId) {
@@ -218,19 +213,13 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         return;
       }
 
-      // Si hay downgrade programado, obligamos a cancelarlo antes (evita estados raros)
-      if (hasScheduledDowngrade) {
-        setPlanError("Tienes una bajada programada. Cancélala antes de cambiar de plan.");
-        return;
-      }
-
       const targetRank = PLAN_RANK[target] ?? 0;
       const isUpgrade = targetRank > currentRank;
       const isDowngrade = targetRank < currentRank;
 
       if (!isUpgrade && !isDowngrade) return;
 
-      // ✅ Downgrade: programar para el siguiente ciclo
+      // ✅ Downgrade: se programa para el siguiente ciclo
       if (isDowngrade && !isFreePlan) {
         const resp = await changeSubscriptionPlan({
           org_id,
@@ -240,7 +229,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
           return_to,
         });
 
-        // Normalmente no hay checkout aquí
         if ((resp as any)?.ok) {
           await refresh();
           return;
@@ -250,7 +238,7 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         return;
       }
 
-      // ✅ Upgrade (o FREE->pago): CHANGE => crea Checkout
+      // ✅ Upgrade (y también FREE->pago): CHANGE => crea checkout
       const resp = await changeSubscriptionPlan({
         org_id,
         action: "CHANGE",
@@ -265,12 +253,10 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         return;
       }
 
-      // Si no hay checkoutUrl, refrescamos estado
       await refresh();
     } catch (e: any) {
       console.error(e);
       const detail = String(e?.message ?? "");
-      // UX: si el backend avisa de downgrade, lo hacemos claro
       if (detail.includes("USE_SCHEDULE_DOWNGRADE")) {
         setPlanError("Para bajar de plan debes programarlo para el próximo ciclo (no se aplica al momento).");
       } else {
@@ -313,7 +299,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
   return (
     <section className="grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)]">
       <div className="space-y-6">
-        {/* Plan actual */}
         <div className="bg-white border border-slate-200 rounded-2xl shadow-sm">
           <div className="px-6 py-5 flex items-center justify-between border-b border-slate-100">
             <div className="flex items-center gap-2">
@@ -377,7 +362,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
           </div>
         </div>
 
-        {/* Facturas */}
         <div className="bg-white border border-slate-200 rounded-2xl shadow-sm">
           <div className="px-6 py-4 flex items-center justify-between border-b border-slate-100">
             <p className="text-sm font-semibold text-slate-900 flex items-center gap-2">
@@ -424,7 +408,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         {planError && <p className="text-sm text-red-600">{planError}</p>}
       </div>
 
-      {/* Planes disponibles */}
       <div className="space-y-4">
         <div className="bg-white border border-slate-200 rounded-2xl shadow-sm">
           <div className="px-6 py-4">
@@ -441,8 +424,7 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
                 const optionRank = PLAN_RANK[option.code] ?? 0;
                 const canChange = optionRank !== currentRank;
 
-                const buttonDisabled =
-                  isChangingPlan || hasPendingChange || isActive || !canChange;
+                const buttonDisabled = isChangingPlan || hasPendingChange || isActive || !canChange;
 
                 const buttonLabel = isActive
                   ? "Plan actual"
@@ -478,7 +460,7 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
                       <button
                         type="button"
                         disabled={buttonDisabled}
-                        onClick={() => void handlePlanChange(option.code)}
+                        onClick={() => handlePlanChange(option.code)}
                         className={`px-4 py-2 rounded-lg text-xs font-semibold uppercase transition ${
                           buttonDisabled
                             ? "bg-slate-200 text-slate-500 cursor-not-allowed"

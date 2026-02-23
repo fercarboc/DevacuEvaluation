@@ -1,10 +1,9 @@
 // supabase/functions/stripe_webhook_subscriptions/index.ts
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import Stripe from "https://esm.sh/stripe@16.12.0?target=deno";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { json, preflight } from "../_shared/cors.ts";
-
-// deno-lint-ignore-file no-explicit-any
 
 function mustEnv(name: string) {
   const v = Deno.env.get(name);
@@ -255,6 +254,90 @@ async function cancelStripeSubscriptionSafe(stripeSubId: string) {
   }
 }
 
+/**
+ * ✅ Vincular stripe_customer_id a customers SIN pisar si ya existe uno distinto.
+ * (El bug que viste: si Stripe te crea otro Customer, NO queremos sobreescribir).
+ */
+async function linkStripeCustomerSafe(opts: { customer_id: string; app_id?: string | null; stripe_customer_id: string }) {
+  const { customer_id, stripe_customer_id } = opts;
+  const app_id = opts.app_id ?? "DEBACU_EVAL";
+
+  const { data: dbCust, error: readErr } = await supabase
+    .from("customers")
+    .select("id, stripe_customer_id")
+    .eq("id", customer_id)
+    .maybeSingle();
+
+  if (readErr) {
+    console.error("customers read stripe_customer_id error:", readErr);
+    return { ok: false as const, reason: "READ_FAILED" as const };
+  }
+
+  const existing = String((dbCust as any)?.stripe_customer_id ?? "").trim();
+
+  // si ya hay otro distinto, NO tocar
+  if (existing && existing !== stripe_customer_id) {
+    console.error("stripe_customer_id mismatch (NOT overwriting)", {
+      customer_id,
+      existing,
+      incoming: stripe_customer_id,
+    });
+    return { ok: true as const, skipped: true as const };
+  }
+
+  if (existing === stripe_customer_id) return { ok: true as const, already: true as const };
+
+  const { error: upErr } = await supabase
+    .from("customers")
+    .update({
+      stripe_customer_id,
+      app_id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", customer_id);
+
+  if (upErr) {
+    console.error("customers update stripe_customer_id error:", upErr);
+    return { ok: false as const, reason: "UPDATE_FAILED" as const };
+  }
+
+  return { ok: true as const };
+}
+
+/**
+ * Si en metadata no viene replaces_stripe_subscription_id,
+ * intentamos derivarlo desde la suscripción pending (replaces_subscription_id -> stripe_subscription_id)
+ */
+async function deriveReplacesStripeSubIdFromPending(pending_subscription_id: string): Promise<string | null> {
+  const { data: pending, error: e1 } = await supabase
+    .from("subscriptions")
+    .select("id, replaces_subscription_id")
+    .eq("id", pending_subscription_id)
+    .maybeSingle();
+
+  if (e1) {
+    console.error("deriveReplacesStripeSubIdFromPending pending lookup error:", e1);
+    return null;
+  }
+
+  const replacesId = (pending as any)?.replaces_subscription_id ?? null;
+  if (!replacesId) return null;
+
+  const { data: prev, error: e2 } = await supabase
+    .from("subscriptions")
+    .select("stripe_subscription_id, provider_subscription_id")
+    .eq("id", replacesId)
+    .maybeSingle();
+
+  if (e2) {
+    console.error("deriveReplacesStripeSubIdFromPending prev lookup error:", e2);
+    return null;
+  }
+
+  const sid = (prev as any)?.stripe_subscription_id ?? (prev as any)?.provider_subscription_id ?? null;
+  return typeof sid === "string" && sid.trim() ? sid.trim() : null;
+}
+
 async function activatePendingSubscription(opts: {
   pending_subscription_id: string;
   stripe_subscription_id: string | null;
@@ -361,13 +444,9 @@ async function upsertDebacuEvalInvoice(inv: Stripe.Invoice) {
         customer_id = custByEmail.id ?? null;
         app_id = (custByEmail as any).app_id ?? null;
 
-        if (!(custByEmail as any).stripe_customer_id && stripe_customer_id) {
-          const { error: ePatch } = await supabase
-            .from("customers")
-            .update({ stripe_customer_id, updated_at: new Date().toISOString() })
-            .eq("id", customer_id);
-
-          if (ePatch) console.error("customers patch stripe_customer_id error:", ePatch);
+        // ✅ NO pisar si ya existe distinto
+        if (customer_id && stripe_customer_id) {
+          await linkStripeCustomerSafe({ customer_id, app_id: app_id ?? "DEBACU_EVAL", stripe_customer_id });
         }
       }
     }
@@ -515,23 +594,19 @@ Deno.serve(async (req) => {
         const app_id = mdGet(session.metadata, "app_id", "appId");
         const customer_id = mdGet(session.metadata, "customer_id", "customerId");
 
-        // ✅ NUEVO: para upgrades, cancelamos la suscripción anterior en Stripe
-        const replaces_stripe_subscription_id =
-          mdGet(session.metadata, "replaces_stripe_subscription_id", "replacesStripeSubscriptionId") ??
-          null;
+        // ✅ para upgrades: id directo en metadata (si lo mandas)
+        let replaces_stripe_subscription_id =
+          mdGet(session.metadata, "replaces_stripe_subscription_id", "replacesStripeSubscriptionId") ?? null;
 
-        // si viene customer_id + stripe_customer_id, lo vinculamos
+        // ✅ fallback: derivar desde la pending
+        if (!replaces_stripe_subscription_id && pending_subscription_id) {
+          replaces_stripe_subscription_id = await deriveReplacesStripeSubIdFromPending(pending_subscription_id);
+        }
+
+        // ✅ si viene customer_id + stripe_customer_id, lo vinculamos SIN pisar si ya existía distinto
+        let link_res: any = null;
         if (customer_id && stripe_customer_id) {
-          const { error: upCustErr } = await supabase
-            .from("customers")
-            .update({
-              stripe_customer_id,
-              app_id: app_id ?? "DEBACU_EVAL",
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", customer_id);
-
-          if (upCustErr) console.error("customers update stripe_customer_id error:", upCustErr);
+          link_res = await linkStripeCustomerSafe({ customer_id, app_id: app_id ?? "DEBACU_EVAL", stripe_customer_id });
         }
 
         let stripe_price_id: string | null = null;
@@ -568,6 +643,7 @@ Deno.serve(async (req) => {
             mode: session.mode,
             metadata: session.metadata,
             replaces_stripe_subscription_id,
+            link_res,
           },
         });
 
@@ -585,7 +661,7 @@ Deno.serve(async (req) => {
           period_start_unix,
         });
 
-        // ✅ NUEVO: si es upgrade y tenemos la anterior, la cancelamos en Stripe
+        // ✅ si es upgrade y tenemos la anterior, la cancelamos en Stripe
         // (solo si no coincide con la nueva)
         let cancel_prev: any = null;
         if (
@@ -617,7 +693,8 @@ Deno.serve(async (req) => {
           typeof inv.customer === "string" ? inv.customer : inv.customer?.id ?? null;
 
         const ctx = await upsertDebacuEvalInvoice(inv);
-        const ctx2 = ctx.customer_id && ctx.app_id ? ctx : await resolveEventContext({ stripe_subscription_id, stripe_customer_id });
+        const ctx2 =
+          ctx.customer_id && ctx.app_id ? ctx : await resolveEventContext({ stripe_subscription_id, stripe_customer_id });
 
         await logEvent({
           stripe_event_id: event.id,
@@ -650,7 +727,8 @@ Deno.serve(async (req) => {
           typeof inv.customer === "string" ? inv.customer : inv.customer?.id ?? null;
 
         const ctx = await upsertDebacuEvalInvoice(inv);
-        const ctx2 = ctx.customer_id && ctx.app_id ? ctx : await resolveEventContext({ stripe_subscription_id, stripe_customer_id });
+        const ctx2 =
+          ctx.customer_id && ctx.app_id ? ctx : await resolveEventContext({ stripe_subscription_id, stripe_customer_id });
 
         if (stripe_subscription_id) {
           await supabase
