@@ -1,22 +1,9 @@
-// src/pages/auth/ActivateAccountPage.tsx
-import React, { useEffect, useMemo, useState } from "react";
+// src/pages/ActivateAccountPage.tsx
+import React, { useEffect, useState } from "react";
+import { supabase } from "@/services/supabase";
+import { orgInviteFinalize } from "@/services/orgInviteFinalize.service";
 import { useNavigate } from "react-router-dom";
 
-import { supabase } from "@/services/supabaseClient";
-import { orgInviteFinalize } from "@/services/orgInviteFinalize.service";
-import { setEvalOrgId } from "@/services/callEvalFn";
-
-/**
- * ActivateAccountPage
- * Soporta:
- *  A) ?type=invite&token_hash=...   -> verifyOtp (RECOMENDADO en emails Supabase)
- *  B) ?code=...                     -> exchangeCodeForSession (PKCE)
- *  C) #access_token=...&refresh_token=... -> setSession (implicit)
- *
- * Luego:
- *  - updateUser(password)
- *  - orgInviteFinalize(org_id) (Edge con JWT)
- */
 export default function ActivateAccountPage() {
   const nav = useNavigate();
 
@@ -24,78 +11,28 @@ export default function ActivateAccountPage() {
   const [pw1, setPw1] = useState("");
   const [pw2, setPw2] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [orgId, setOrgId] = useState<string>("");
 
-  const [resolvedOrgId, setResolvedOrgId] = useState<string>("");
-
-  const qs = useMemo(() => new URLSearchParams(window.location.search), []);
-  const orgIdFromUrl = useMemo(() => (qs.get("org_id") || "").trim(), [qs]);
-
-  const submit = async () => {
-    setMsg(null);
-
-    const orgId = resolvedOrgId.trim();
-    if (!orgId) {
-      setMsg("Falta org_id. Reenvía la invitación desde Admin.");
-      return;
-    }
-    if (pw1.length < 8) {
-      setMsg("La contraseña debe tener al menos 8 caracteres.");
-      return;
-    }
-    if (pw1 !== pw2) {
-      setMsg("Las contraseñas no coinciden.");
-      return;
-    }
-
-    setSaving(true);
-    try {
-      // 0) Debe haber sesión (creada por verifyOtp/exchangeCode/setSession)
-      const { data: s0, error: sErr } = await supabase.auth.getSession();
-      if (sErr) throw new Error(`Supabase getSession error: ${sErr.message}`);
-
-      const jwt0 = s0?.session?.access_token || "";
-      if (!jwt0) {
-        throw new Error(
-          "No hay sesión activa. Abre el enlace desde el email (no desde un marcador) o reenvía la invitación."
-        );
-      }
-
-      // 1) Guardar contraseña
-      const { error: updErr } = await supabase.auth.updateUser({ password: pw1 });
-      if (updErr) throw updErr;
-
-      // 2) Guardar org_id para el resto del flujo (por si callEvalFn inyecta)
-      setEvalOrgId(orgId);
-
-      // 3) Finalizar invitación (INVITED -> ACTIVE, claim por email/auth_user_id, etc.)
-      await orgInviteFinalize(orgId);
-
-      setMsg("Cuenta activada. Ya puedes entrar.");
-      setTimeout(() => nav("/login"), 900);
-    } catch (e: any) {
-      const detail = e?.message || e?.detail || e?.error || "Error activando cuenta.";
-      setMsg(detail);
-    } finally {
-      setSaving(false);
-    }
-  };
-
+  // ======================================================
+  // 1️⃣ Verificar OTP de invitación
+  // ======================================================
   useEffect(() => {
     (async () => {
       try {
-        setMsg(null);
-
         const url = new URL(window.location.href);
+        const type = url.searchParams.get("type");
+        const token_hash = url.searchParams.get("token_hash");
+        const org_id = url.searchParams.get("org_id") || "";
 
-        // -----------------------------------------
-        // 1) Establecer sesión desde URL (3 casos)
-        // -----------------------------------------
+        if (!org_id) {
+          setMsg("Enlace inválido (falta org_id).");
+          setLoading(false);
+          return;
+        }
 
-        // Caso A: Supabase email links modernos: type + token_hash (invite / recovery / magiclink)
-        const type = (url.searchParams.get("type") || "").trim();
-        const token_hash = (url.searchParams.get("token_hash") || "").trim();
+        setOrgId(org_id);
 
+        // Si viene token_hash → verificar invitación
         if (type && token_hash) {
           const { error } = await supabase.auth.verifyOtp({
             type: type as any,
@@ -110,238 +47,166 @@ export default function ActivateAccountPage() {
             return;
           }
 
-          // Limpia token_hash/type de la URL (mantén org_id)
-          url.searchParams.delete("type");
-          url.searchParams.delete("token_hash");
-          window.history.replaceState({}, "", url.toString());
-        }
+          // Confirmar sesión creada
+          const { data: sessionData } = await supabase.auth.getSession();
 
-        // Caso B: PKCE code en query
-        const code = (url.searchParams.get("code") || "").trim();
-        if (!type && !token_hash && code) {
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error) {
+          if (!sessionData?.session?.access_token) {
             setMsg(
-              "El enlace de activación no es válido o ha caducado. Reenvía la invitación desde Admin."
+              "No se pudo establecer sesión con el enlace. Reenvía la invitación."
             );
             setLoading(false);
             return;
           }
 
-          url.searchParams.delete("code");
+          // 🔐 SOLO ahora limpiamos token_hash/type
+          url.searchParams.delete("type");
+          url.searchParams.delete("token_hash");
           window.history.replaceState({}, "", url.toString());
         }
 
-        // Caso C: access_token en hash
-        if (!type && !token_hash && !code && window.location.hash) {
-          const hash = window.location.hash.replace(/^#/, "");
-          const hp = new URLSearchParams(hash);
-
-          const access_token = (hp.get("access_token") || "").trim();
-          const refresh_token = (hp.get("refresh_token") || "").trim();
-          const error_description = hp.get("error_description") || hp.get("error") || "";
-
-          if (error_description) setMsg(decodeURIComponent(error_description));
-
-          if (access_token && refresh_token) {
-            const { error } = await supabase.auth.setSession({ access_token, refresh_token });
-            if (error) {
-              setMsg(
-                "No se pudo establecer sesión con el enlace. Reenvía la invitación desde Admin."
-              );
-              setLoading(false);
-              return;
-            }
-
-            // Limpia hash
-            window.history.replaceState({}, "", window.location.pathname + window.location.search);
-          }
-        }
-
-        // -----------------------------------------
-        // 2) Validar sesión (OBLIGATORIO)
-        // -----------------------------------------
-        const { data: sess, error: sessErr } = await supabase.auth.getSession();
-        if (sessErr) throw new Error(`Supabase getSession error: ${sessErr.message}`);
-
-        const jwt = sess?.session?.access_token || "";
-        if (!jwt) {
-          setMsg("No hay sesión activa. Abre este enlace desde el email de invitación.");
+        // Verificar que hay sesión activa
+        const { data: s2 } = await supabase.auth.getSession();
+        if (!s2?.session?.access_token) {
+          setMsg("No hay sesión activa. Usa el enlace original del email.");
           setLoading(false);
           return;
         }
 
-        const { data: userData, error: userErr } = await supabase.auth.getUser();
-        if (userErr) throw new Error(userErr.message);
-
-        const user = userData?.user ?? null;
-        if (!user) {
-          setMsg("No se pudo leer el usuario. Reenvía la invitación desde Admin.");
-          setLoading(false);
-          return;
-        }
-
-        // -----------------------------------------
-        // 3) Resolver org_id (URL > user_metadata)
-        // -----------------------------------------
-        const metaOrg =
-          (user.user_metadata as any)?.org_id ||
-          (user.user_metadata as any)?.orgId ||
-          (user.app_metadata as any)?.org_id ||
-          "";
-
-        const resolved = String(orgIdFromUrl || metaOrg || "").trim();
-
-        if (!resolved) {
-          setMsg("Falta org_id en el enlace. Reenvía la invitación desde Admin.");
-          setLoading(false);
-          return;
-        }
-
-        // Guardar org_id para el resto del frontend
-        setEvalOrgId(resolved);
-        setResolvedOrgId(resolved);
-
-        // -----------------------------------------
-        // 4) OK: mostrar formulario
-        // -----------------------------------------
-        setMsg(null);
         setLoading(false);
-      } catch (e: any) {
-        setMsg(e?.message ?? "Error preparando la activación.");
+      } catch (e) {
+        console.error(e);
+        setMsg("Error inesperado al procesar la activación.");
         setLoading(false);
       }
     })();
-  }, [orgIdFromUrl]);
+  }, []);
 
+  // ======================================================
+  // 2️⃣ Guardar contraseña + finalizar invitación
+  // ======================================================
+  const handleSubmit = async () => {
+    setMsg(null);
+
+    if (pw1.length < 8) {
+      setMsg("La contraseña debe tener al menos 8 caracteres.");
+      return;
+    }
+
+    if (pw1 !== pw2) {
+      setMsg("Las contraseñas no coinciden.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      // Actualizar contraseña
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: pw1,
+      });
+
+      if (updateError) {
+        setMsg("No se pudo actualizar la contraseña.");
+        setLoading(false);
+        return;
+      }
+
+      // Confirmar sesión antes de finalizar
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData?.session?.access_token) {
+        setMsg("Sesión no válida tras actualizar contraseña.");
+        setLoading(false);
+        return;
+      }
+
+      // Finalizar invitación (requiere sesión)
+      await orgInviteFinalize(orgId);
+
+      // Redirigir a login
+      nav("/login");
+    } catch (err: any) {
+      console.error(err);
+      setMsg(err?.message || "Error al finalizar la activación.");
+      setLoading(false);
+    }
+  };
+
+  // ======================================================
+  // UI
+  // ======================================================
   return (
-    <div className="min-h-screen bg-slate-50">
-      {/* Topbar */}
-      <div className="w-full px-4 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <img
-            src="/img/debacu-logo.png"
-            alt="Debacu"
-            className="h-8 w-auto"
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).style.display = "none";
-            }}
-          />
-          <span className="text-sm font-semibold text-slate-900">Debacu Evaluation360</span>
+    <div className="min-h-screen flex items-center justify-center bg-gray-100 px-4">
+      <div className="w-full max-w-6xl bg-white rounded-2xl shadow-lg flex overflow-hidden">
+        {/* Panel izquierdo */}
+        <div className="hidden md:flex md:w-1/2 bg-gradient-to-br from-blue-900 to-blue-700 text-white p-10 flex-col justify-center">
+          <h2 className="text-2xl font-semibold mb-2">
+            Debacu Evaluation
+          </h2>
+          <p className="text-lg opacity-90 mb-6">
+            Herramienta profesional para hoteles
+          </p>
+          <h1 className="text-3xl font-bold mb-4">
+            Más control operativo.
+            <br />
+            Menos incidencias repetidas.
+          </h1>
+          <p className="opacity-80">
+            Activa tu acceso en menos de un minuto y empieza a trabajar con tu equipo.
+          </p>
         </div>
-        <button onClick={() => nav("/login")} className="text-sm text-slate-600 hover:text-slate-900">
-          Ir al login
-        </button>
-      </div>
 
-      {/* Body */}
-      <div className="mx-auto max-w-6xl px-4 pb-10">
-        <div className="grid grid-cols-1 md:grid-cols-2 overflow-hidden rounded-3xl border bg-white shadow-sm">
-          {/* LEFT BRANDING */}
-          <div className="hidden md:flex relative p-10 text-white bg-gradient-to-br from-[#0B1F3A] to-[#163E73]">
-            <div className="relative z-10 flex flex-col justify-between w-full">
-              <div className="flex items-center gap-3">
-                <img
-                  src="/img/debacu-logo-white.png"
-                  alt="Debacu"
-                  className="h-10 w-auto"
-                  onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).style.display = "none";
-                  }}
-                />
-                <div>
-                  <div className="text-lg font-semibold leading-tight">Debacu Evaluation</div>
-                  <div className="text-xs text-blue-200">Herramienta profesional para hoteles</div>
-                </div>
-              </div>
+        {/* Panel derecho */}
+        <div className="w-full md:w-1/2 p-10">
+          <h2 className="text-2xl font-semibold mb-2">Activa tu cuenta</h2>
+          <p className="text-gray-600 mb-6">
+            Inserta tu contraseña para activar el servicio y acceder a Debacu Evaluation360.
+          </p>
 
-              <div className="mt-10">
-                <h2 className="text-3xl font-semibold leading-tight">
-                  Más control operativo.
-                  <br />
-                  Menos incidencias repetidas.
-                </h2>
-                <p className="mt-3 text-sm text-blue-100 max-w-md">
-                  Activa tu acceso en menos de un minuto y empieza a trabajar con tu equipo.
-                </p>
-
-                <img
-                  src="/img/activate-hero.png"
-                  alt="Debacu"
-                  className="mt-10 w-full max-w-lg rounded-2xl shadow-lg border border-white/10"
-                  onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).style.display = "none";
-                  }}
-                />
-              </div>
-
-              <div className="text-xs text-blue-200">Uso profesional · Gestión interna · Apoyo operativo</div>
+          {msg && (
+            <div className="mb-4 p-3 rounded bg-red-100 text-red-700 text-sm">
+              {msg}
             </div>
+          )}
 
-            <div className="absolute inset-0 opacity-25 bg-[radial-gradient(circle_at_top,white,transparent_55%)]" />
-          </div>
+          {!loading && (
+            <>
+              <div className="mb-4">
+                <label className="block text-sm mb-1">Nueva contraseña</label>
+                <input
+                  type="password"
+                  value={pw1}
+                  onChange={(e) => setPw1(e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2"
+                  placeholder="Mínimo 8 caracteres"
+                />
+              </div>
 
-          {/* RIGHT FORM */}
-          <div className="p-6 sm:p-10">
-            <h1 className="text-2xl font-semibold text-slate-900">Activa tu cuenta</h1>
-            <p className="text-sm text-slate-600 mt-2">
-              Inserta tu contraseña para activar el servicio y acceder a Debacu Evaluation360.
-            </p>
+              <div className="mb-6">
+                <label className="block text-sm mb-1">Repetir contraseña</label>
+                <input
+                  type="password"
+                  value={pw2}
+                  onChange={(e) => setPw2(e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2"
+                />
+              </div>
 
-            {loading ? (
-              <div className="mt-8 text-sm text-slate-500">Cargando...</div>
-            ) : (
-              <>
-                {msg ? (
-                  <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">
-                    {msg}
-                  </div>
-                ) : null}
+              <button
+                onClick={handleSubmit}
+                disabled={loading}
+                className="w-full bg-blue-900 hover:bg-blue-800 text-white py-2 rounded-lg transition"
+              >
+                Guardar contraseña
+              </button>
 
-                <div className="mt-6 space-y-4">
-                  <div>
-                    <label className="text-sm font-medium text-slate-700">Nueva contraseña</label>
-                    <input
-                      type="password"
-                      className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-slate-900/20"
-                      placeholder="Mínimo 8 caracteres"
-                      value={pw1}
-                      onChange={(e) => setPw1(e.target.value)}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-medium text-slate-700">Repetir contraseña</label>
-                    <input
-                      type="password"
-                      className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-slate-900/20"
-                      value={pw2}
-                      onChange={(e) => setPw2(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <button
-                  onClick={submit}
-                  disabled={saving || !resolvedOrgId}
-                  className="mt-7 w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
-                >
-                  {saving ? "Guardando..." : "Guardar contraseña"}
-                </button>
-
-                <button
-                  onClick={() => nav("/login")}
-                  className="mt-3 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-800 hover:bg-slate-50"
-                >
-                  Ir al login
-                </button>
-
-                <div className="mt-6 text-xs text-slate-500">
-                  Si este enlace te devuelve error, reenvía la invitación desde Admin (no uses enlaces antiguos).
-                </div>
-              </>
-            )}
-          </div>
+              <button
+                onClick={() => nav("/login")}
+                className="w-full mt-3 border py-2 rounded-lg text-gray-700"
+              >
+                Ir al login
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
