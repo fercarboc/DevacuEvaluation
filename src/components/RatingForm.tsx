@@ -792,36 +792,60 @@ export const RatingForm: React.FC<RatingFormProps> = ({
                       <label className="block text-xs font-semibold text-slate-700 mb-1">
                         Nacionalidad (código)
                       </label>
-                      <input
-                        type="text"
+
+                      <select
                         value={form.nationality}
-                        onChange={(e) => {
-                          const v = sanitizeAlpha3(e.target.value);
-                          setForm((p) => ({ ...p, nationality: v }));
-                          setErrors((prev) => ({ ...prev, nationality: undefined }));
-                        }}
-                        onBlur={() => {
-                          const ce = validateControlled({
-                            email: form.email,
-                            phone: form.phone,
-                            nationality: form.nationality,
-                          });
-                          setErrors((prev) => ({ ...prev, nationality: ce.nationality }));
-                        }}
-                        list="country-alpha3"
-                        maxLength={3}
-                        className={`block w-full px-3 py-2 border rounded-xl focus:ring-indigo-500 focus:border-indigo-500 text-sm uppercase ${
+                        onChange={(e) =>
+                          setForm((p) => ({
+                            ...p,
+                            nationality: e.target.value,
+                          }))
+                        }
+                        className={`block w-full px-3 py-2 border rounded-xl focus:ring-indigo-500 focus:border-indigo-500 text-sm bg-white ${
                           errors.nationality ? "border-red-300 bg-red-50" : "border-slate-300"
                         }`}
-                        placeholder="ESP, FRA, GBR..."
-                      />
-                      <datalist id="country-alpha3">
-                        {COUNTRIES_ALPHA3.map((c) => (
-                          <option key={c} value={c} />
-                        ))}
-                      </datalist>
+                      >
+                        <option value="">Selecciona…</option>
+
+                        {/* Europa */}
+                        <option value="ESP">ESP - España</option>
+                        <option value="FRA">FRA - Francia</option>
+                        <option value="GBR">GBR - Reino Unido</option>
+                        <option value="PRT">PRT - Portugal</option>
+                        <option value="DEU">DEU - Alemania</option>
+                        <option value="ITA">ITA - Italia</option>
+                        <option value="NLD">NLD - Países Bajos</option>
+                        <option value="BEL">BEL - Bélgica</option>
+                        <option value="CHE">CHE - Suiza</option>
+                        <option value="IRL">IRL - Irlanda</option>
+
+                        {/* América */}
+                        <option value="USA">USA - Estados Unidos</option>
+                        <option value="CAN">CAN - Canadá</option>
+                        <option value="MEX">MEX - México</option>
+                        <option value="BRA">BRA - Brasil</option>
+                        <option value="ARG">ARG - Argentina</option>
+                        <option value="CHL">CHL - Chile</option>
+                        <option value="COL">COL - Colombia</option>
+                        <option value="PER">PER - Perú</option>
+                        <option value="URY">URY - Uruguay</option>
+
+                        {/* África */}
+                        <option value="MAR">MAR - Marruecos</option>
+                        <option value="DZA">DZA - Argelia</option>
+                        <option value="TUN">TUN - Túnez</option>
+                        <option value="EGY">EGY - Egipto</option>
+                        <option value="ZAF">ZAF - Sudáfrica</option>
+
+                        {/* Oceanía */}
+                        <option value="AUS">AUS - Australia</option>
+                        <option value="NZL">NZL - Nueva Zelanda</option>
+                      </select>
+
                       {errors.nationality && (
-                        <p className="text-[11px] text-red-600 mt-1">{errors.nationality}</p>
+                        <p className="text-[11px] text-red-600 mt-1">
+                          {errors.nationality}
+                        </p>
                       )}
                     </div>
                   </div>
