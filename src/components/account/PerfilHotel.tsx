@@ -19,7 +19,6 @@ import {
   CheckCircle2,
   XCircle,
   Mail,
-  Phone,
   User as UserIcon,
   IdCard,
 } from "lucide-react";
@@ -143,6 +142,9 @@ const DEFAULTS: Omit<HotelProfileRow, "customer_id" | "app_id"> = {
   profile_completed_at: null,
 };
 
+type FieldErrors = Partial<Record<keyof HotelProfileRow, string>>;
+type TouchedMap = Partial<Record<keyof HotelProfileRow, boolean>>;
+
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
@@ -171,10 +173,16 @@ function fracToPct(frac: number | null): number | null {
   return clamp(frac * 100, 0, 100);
 }
 
-function isHHMM(v: string | null | undefined) {
+/**
+ * Acepta HH:MM o HH:MM:SS y normaliza a HH:MM.
+ * Devuelve null si es inválido o vacío.
+ */
+function normalizeTimeHHMMOrNull(v: string | null | undefined): string | null {
   const s = String(v ?? "").trim();
-  if (!s) return true; // allow null/empty
-  return /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
+  if (!s) return null;
+  const m = s.match(/^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/);
+  if (!m) return null;
+  return `${m[1]}:${m[2]}`;
 }
 
 function isComplete(p: HotelProfileRow) {
@@ -187,9 +195,14 @@ function isComplete(p: HotelProfileRow) {
   );
 }
 
-function normalizeStrOrNull(v: string | null | undefined) {
+function trimOrNull(v: string | null | undefined) {
   const s = String(v ?? "").trim();
   return s ? s : null;
+}
+
+function upperOrNull(v: string | null | undefined) {
+  const s = String(v ?? "").trim();
+  return s ? s.toUpperCase() : null;
 }
 
 function normalizeEmailOrNull(v: string | null | undefined) {
@@ -198,6 +211,60 @@ function normalizeEmailOrNull(v: string | null | undefined) {
   // validación suave: no bloquea por regex estricta
   if (!s.includes("@") || !s.includes(".")) return s;
   return s;
+}
+
+// Teléfono: permite + al inicio y luego solo dígitos
+function sanitizePhone(v: string) {
+  const raw = String(v ?? "");
+  const hasPlus = raw.trim().startsWith("+");
+  const digits = raw.replace(/[^\d]/g, "");
+  if (!digits) return "";
+  return hasPlus ? `+${digits}` : digits;
+}
+
+// CP: solo dígitos
+function sanitizePostalCode(v: string) {
+  return String(v ?? "").replace(/[^\d]/g, "").slice(0, 10);
+}
+
+function validateProfile(p: HotelProfileRow): FieldErrors {
+  const e: FieldErrors = {};
+
+  // Obligatorios (auditoría completa)
+  if (!trimOrNull(p.property_type)) e.property_type = "Selecciona un tipo.";
+  if (!trimOrNull(p.country)) e.country = "El país es obligatorio.";
+  if (!trimOrNull(p.province)) e.province = "La provincia es obligatoria.";
+  if (!trimOrNull(p.city)) e.city = "La ciudad es obligatoria.";
+
+  // Horas: válido si null/empty; si hay valor, debe normalizar
+  if (p.checkin_time && !normalizeTimeHHMMOrNull(p.checkin_time)) {
+    e.checkin_time = "Check-in inválido (HH:MM).";
+  }
+  if (p.checkout_time && !normalizeTimeHHMMOrNull(p.checkout_time)) {
+    e.checkout_time = "Check-out inválido (HH:MM).";
+  }
+
+  // Email (si lo informan)
+  const email = trimOrNull(p.contact_email);
+  if (email && (!email.includes("@") || !email.includes("."))) {
+    e.contact_email = "Email inválido.";
+  }
+
+  // Teléfono (si lo informan)
+  const phone = trimOrNull(p.contact_phone);
+  if (phone) {
+    const digits = phone.replace(/[^\d]/g, "");
+    if (digits.length < 7) e.contact_phone = "Teléfono demasiado corto.";
+  }
+
+  // CP (si lo informan) => mínimo 4 dígitos, por no forzar país
+  const pc = trimOrNull(p.postal_code);
+  if (pc) {
+    const digits = pc.replace(/[^\d]/g, "");
+    if (digits.length < 4) e.postal_code = "Código postal demasiado corto.";
+  }
+
+  return e;
 }
 
 export function PerfilHotel({ user }: Props) {
@@ -209,11 +276,31 @@ export function PerfilHotel({ user }: Props) {
   const [auditOk, setAuditOk] = useState<boolean | null>(null);
   const [missingFields, setMissingFields] = useState<string[]>([]);
 
+  // ✅ control inputs
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  const [touched, setTouched] = useState<TouchedMap>({});
+
   const [profile, setProfile] = useState<HotelProfileRow>(() => ({
     customer_id: (user as any)?.customerId ?? (user as any)?.id ?? "",
     app_id: "DEBACU_EVAL",
     ...DEFAULTS,
   }));
+
+  function markTouched<K extends keyof HotelProfileRow>(key: K) {
+    setTouched((t) => ({ ...t, [key]: true }));
+  }
+
+  function setField<K extends keyof HotelProfileRow>(key: K, value: HotelProfileRow[K]) {
+    setProfile((p) => ({ ...p, [key]: value }));
+
+    // validación en vivo (solo si ya tocaron el campo)
+    setFieldErrors((prev) => {
+      if (!touched[key]) return prev;
+      const nextProfile = { ...profile, [key]: value } as HotelProfileRow;
+      const nextErrors = validateProfile(nextProfile);
+      return { ...prev, [key]: nextErrors[key] };
+    });
+  }
 
   const occupancyPct = useMemo(
     () => fracToPct(profile.occupancy_target),
@@ -272,8 +359,15 @@ export function PerfilHotel({ user }: Props) {
                   : clamp(Number(row.cancellation_rate_target), 0, 1),
 
               timezone: row.timezone ?? DEFAULTS.timezone,
-              checkin_time: row.checkin_time ?? DEFAULTS.checkin_time,
-              checkout_time: row.checkout_time ?? DEFAULTS.checkout_time,
+              // Normaliza por si BD devuelve HH:MM:SS
+              checkin_time:
+                normalizeTimeHHMMOrNull(row.checkin_time) ??
+                normalizeTimeHHMMOrNull(DEFAULTS.checkin_time) ??
+                "14:00",
+              checkout_time:
+                normalizeTimeHHMMOrNull(row.checkout_time) ??
+                normalizeTimeHHMMOrNull(DEFAULTS.checkout_time) ??
+                "12:00",
 
               has_restaurant:
                 row.has_restaurant === null || row.has_restaurant === undefined
@@ -300,9 +394,12 @@ export function PerfilHotel({ user }: Props) {
             }
           : base;
 
-        // ✅ Ya NO hay customers: todo viene de profile
         return merged;
       });
+
+      // resetea errores/touched tras cargar
+      setFieldErrors({});
+      setTouched({});
     } catch (e: any) {
       console.error(e);
       setError(e?.message ?? "No se pudo cargar el perfil del hotel.");
@@ -322,86 +419,149 @@ export function PerfilHotel({ user }: Props) {
     setMessage(null);
 
     try {
-      const cat = clamp(Number(profile.hotel_category ?? 3), 1, 5);
+      // 1) Normaliza valores antes de validar/guardar
+      const normalized: HotelProfileRow = {
+        ...profile,
+        hotel_name: trimOrNull(profile.hotel_name),
+
+        // ubicación (en mayúsculas para normalizar)
+        country: upperOrNull(profile.country),
+        province: upperOrNull(profile.province),
+        city: upperOrNull(profile.city),
+
+        // contacto/dirección (trim; email no a mayúsculas)
+        contact_email: trimOrNull(profile.contact_email),
+        // aplica saneo (si hay valor)
+        contact_phone: trimOrNull(profile.contact_phone),
+        address: trimOrNull(profile.address),
+        postal_code: trimOrNull(profile.postal_code),
+        contact_person: trimOrNull(profile.contact_person),
+        contact_role: trimOrNull(profile.contact_role),
+
+        // operativa
+        timezone: trimOrNull(profile.timezone),
+
+        // Normaliza horas SIEMPRE a HH:MM, y si vienen vacías -> defaults para evitar el bug “2ª vez”
+        checkin_time: normalizeTimeHHMMOrNull(profile.checkin_time) ?? "14:00",
+        checkout_time: normalizeTimeHHMMOrNull(profile.checkout_time) ?? "12:00",
+      };
+
+      // refleja normalización en UI (incluye horas ya saneadas)
+      setProfile(normalized);
+
+      const errors = validateProfile(normalized);
+      setFieldErrors(errors);
+
+      // marcamos como "touched" lo obligatorio para que se vean errores si faltan
+      setTouched((t) => ({
+        ...t,
+        property_type: true,
+        country: true,
+        province: true,
+        city: true,
+        checkin_time: true,
+        checkout_time: true,
+        // opcionales: solo si ya los tocaron
+        contact_email: t.contact_email ?? false,
+        contact_phone: t.contact_phone ?? false,
+        postal_code: t.postal_code ?? false,
+      }));
+
+      if (Object.keys(errors).length > 0) {
+        const list = Object.values(errors).filter(Boolean).slice(0, 6).join(" · ");
+        throw new Error(list || "Faltan/corrige campos obligatorios.");
+      }
+
+      const cat = clamp(Number(normalized.hotel_category ?? 3), 1, 5);
       const hi =
-        profile.season_mult_high === null ? null : Number(profile.season_mult_high);
+        normalized.season_mult_high === null ? null : Number(normalized.season_mult_high);
       const lo =
-        profile.season_mult_low === null ? null : Number(profile.season_mult_low);
+        normalized.season_mult_low === null ? null : Number(normalized.season_mult_low);
 
       if (hi !== null && (!Number.isFinite(hi) || hi <= 0))
         throw new Error("Temporada alta: valor inválido.");
       if (lo !== null && (!Number.isFinite(lo) || lo <= 0))
         throw new Error("Temporada baja: valor inválido.");
 
-      if (!isHHMM(profile.checkin_time)) throw new Error("Hora de check-in inválida (HH:MM).");
-      if (!isHHMM(profile.checkout_time)) throw new Error("Hora de check-out inválida (HH:MM).");
-
       const payload: Partial<HotelProfileRow> = {
         app_id: "DEBACU_EVAL",
-        hotel_name: normalizeStrOrNull(profile.hotel_name),
-        property_type: (profile.property_type ?? null) as any,
+        hotel_name: trimOrNull(normalized.hotel_name),
+        property_type: (normalized.property_type ?? null) as any,
         hotel_category: cat,
 
         // ✅ DB (perfil)
-        country: normalizeStrOrNull(profile.country),
-        province: normalizeStrOrNull(profile.province),
-        city: normalizeStrOrNull(profile.city),
+        country: trimOrNull(normalized.country),
+        province: trimOrNull(normalized.province),
+        city: trimOrNull(normalized.city),
 
         // ✅ DB (contacto/dirección)
-        contact_email: normalizeEmailOrNull(profile.contact_email),
-        contact_phone: normalizeStrOrNull(profile.contact_phone),
-        address: normalizeStrOrNull(profile.address),
-        postal_code: normalizeStrOrNull(profile.postal_code),
-        contact_person: normalizeStrOrNull(profile.contact_person),
-        contact_role: normalizeStrOrNull(profile.contact_role),
+        contact_email: normalizeEmailOrNull(normalized.contact_email),
 
-        currency: normalizeStrOrNull(profile.currency) ?? "EUR",
+        // saneo “duro”: tel y cp solo se mandan ya saneados
+        contact_phone: (() => {
+          const s = trimOrNull(normalized.contact_phone);
+          if (!s) return null;
+          const v = sanitizePhone(s);
+          return v ? v : null;
+        })(),
+        address: trimOrNull(normalized.address),
+        postal_code: (() => {
+          const s = trimOrNull(normalized.postal_code);
+          if (!s) return null;
+          const v = sanitizePostalCode(s);
+          return v ? v : null;
+        })(),
+        contact_person: trimOrNull(normalized.contact_person),
+        contact_role: trimOrNull(normalized.contact_role),
+
+        currency: trimOrNull(normalized.currency) ?? "EUR",
 
         monthly_stays_estimated:
-          profile.monthly_stays_estimated === null
+          normalized.monthly_stays_estimated === null
             ? null
-            : clamp(Number(profile.monthly_stays_estimated), 0, 1_000_000),
+            : clamp(Number(normalized.monthly_stays_estimated), 0, 1_000_000),
         adr_real:
-          profile.adr_real === null ? null : clamp(Number(profile.adr_real), 0, 1_000_000),
+          normalized.adr_real === null ? null : clamp(Number(normalized.adr_real), 0, 1_000_000),
 
         season_mult_high: hi === null ? null : clamp(hi, 0, 100),
         season_mult_low: lo === null ? null : clamp(lo, 0, 100),
 
         occupancy_target:
-          profile.occupancy_target === null
+          normalized.occupancy_target === null
             ? null
-            : clamp(Number(profile.occupancy_target), 0, 1),
+            : clamp(Number(normalized.occupancy_target), 0, 1),
         cancellation_rate_target:
-          profile.cancellation_rate_target === null
+          normalized.cancellation_rate_target === null
             ? null
-            : clamp(Number(profile.cancellation_rate_target), 0, 1),
+            : clamp(Number(normalized.cancellation_rate_target), 0, 1),
         revpar_target:
-          profile.revpar_target === null
+          normalized.revpar_target === null
             ? null
-            : clamp(Number(profile.revpar_target), 0, 1_000_000),
+            : clamp(Number(normalized.revpar_target), 0, 1_000_000),
 
         // Operativa avanzada
-        timezone: normalizeStrOrNull(profile.timezone) ?? "Europe/Madrid",
-        checkin_time: normalizeStrOrNull(profile.checkin_time),
-        checkout_time: normalizeStrOrNull(profile.checkout_time),
+        timezone: trimOrNull(normalized.timezone) ?? "Europe/Madrid",
+        checkin_time: normalized.checkin_time,
+        checkout_time: normalized.checkout_time,
+
         rooms_count:
-          profile.rooms_count === null
+          normalized.rooms_count === null
             ? null
-            : clampInt(Number(profile.rooms_count), 0, 100_000),
+            : clampInt(Number(normalized.rooms_count), 0, 100_000),
         max_occupancy:
-          profile.max_occupancy === null
+          normalized.max_occupancy === null
             ? null
-            : clampInt(Number(profile.max_occupancy), 0, 100_000),
+            : clampInt(Number(normalized.max_occupancy), 0, 100_000),
 
         monthly_revenue_estimate:
-          profile.monthly_revenue_estimate === null
+          normalized.monthly_revenue_estimate === null
             ? null
-            : clamp(Number(profile.monthly_revenue_estimate), 0, 1_000_000_000),
+            : clamp(Number(normalized.monthly_revenue_estimate), 0, 1_000_000_000),
 
-        has_restaurant: Boolean(profile.has_restaurant),
-        has_spa: Boolean(profile.has_spa),
-        has_parking: Boolean(profile.has_parking),
-        allows_pets: Boolean(profile.allows_pets),
+        has_restaurant: Boolean(normalized.has_restaurant),
+        has_spa: Boolean(normalized.has_spa),
+        has_parking: Boolean(normalized.has_parking),
+        allows_pets: Boolean(normalized.allows_pets),
       };
 
       const completeAfterSave = Boolean(
@@ -423,10 +583,21 @@ export function PerfilHotel({ user }: Props) {
       setAuditOk(typeof res?.audit_ok === "boolean" ? res.audit_ok : auditOk);
       setMissingFields(Array.isArray(res?.missing_fields) ? res.missing_fields : missingFields);
 
-      setProfile((prev) => ({
-        ...prev,
+      // Asegura horas normalizadas tras respuesta
+      const mergedProfile: HotelProfileRow = {
+        ...profile,
         ...res.profile,
-      }));
+        checkin_time:
+          normalizeTimeHHMMOrNull(res.profile?.checkin_time) ??
+          normalizeTimeHHMMOrNull(profile.checkin_time) ??
+          "14:00",
+        checkout_time:
+          normalizeTimeHHMMOrNull(res.profile?.checkout_time) ??
+          normalizeTimeHHMMOrNull(profile.checkout_time) ??
+          "12:00",
+      };
+
+      setProfile(mergedProfile);
 
       setMessage(completeAfterSave ? "Guardado ✅" : "Guardado, pero faltan campos obligatorios.");
     } catch (e: any) {
@@ -507,6 +678,14 @@ export function PerfilHotel({ user }: Props) {
     );
   }
 
+  const errCls = (k: keyof HotelProfileRow, base: string) =>
+    `${base} ${touched[k] && fieldErrors[k] ? "border-red-300 bg-red-50" : ""}`;
+
+  const errMsg = (k: keyof HotelProfileRow) =>
+    touched[k] && fieldErrors[k] ? (
+      <div className="mt-1 text-xs text-red-600">{fieldErrors[k]}</div>
+    ) : null;
+
   return (
     <div className="space-y-4">
       <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
@@ -529,224 +708,307 @@ export function PerfilHotel({ user }: Props) {
           <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 flex items-start gap-2">
             <BadgeInfo className="w-4 h-4 mt-0.5" />
             <div>
-              Perfil incompleto: rellena <b>Tipo</b>, <b>País</b>, <b>Provincia</b> y <b>Ciudad</b> para habilitar
-              auditoría completa.
+              Perfil incompleto: rellena <b>Tipo</b>, <b>País</b>, <b>Provincia</b> y{" "}
+              <b>Ciudad</b> para habilitar auditoría completa.
             </div>
           </div>
         )}
 
         {/* === 3 CARDS HORIZONTALES (más profesional) === */}
-<div className="mt-6 grid gap-4 xl:grid-cols-3">
-  {/* Card base */}
-  <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-    <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-      <div className="flex items-center gap-2">
-        <Building2 className="w-4 h-4 text-slate-600" />
-        <p className="text-sm font-semibold text-slate-900">Identificación</p>
-      </div>
-      <span className="text-[11px] font-medium text-slate-500">Hotel</span>
-    </div>
+        <div className="mt-6 grid gap-4 xl:grid-cols-3">
+          {/* Card base */}
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Building2 className="w-4 h-4 text-slate-600" />
+                <p className="text-sm font-semibold text-slate-900">Identificación</p>
+              </div>
+              <span className="text-[11px] font-medium text-slate-500">Hotel</span>
+            </div>
 
-    <div className="p-5 space-y-4">
-      {/* fila 1 */}
-      <div>
-        <label className="text-[11px] font-semibold text-slate-500">Nombre del hotel</label>
-        <input
-          className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-          value={profile.hotel_name ?? ""}
-          onChange={(e) => setProfile((p) => ({ ...p, hotel_name: e.target.value || null }))}
-          placeholder="Ej: Hotel Palmeras"
-        />
-      </div>
+            <div className="p-5 space-y-4">
+              {/* fila 1 */}
+              <div>
+                <label className="text-[11px] font-semibold text-slate-500">Nombre del hotel</label>
+                <input
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                  value={profile.hotel_name ?? ""}
+                  onBlur={() => {
+                    markTouched("hotel_name");
+                    setField("hotel_name", trimOrNull(profile.hotel_name));
+                  }}
+                  onChange={(e) => setField("hotel_name", e.target.value ? e.target.value : null)}
+                  placeholder="Ej: Hotel Palmeras"
+                />
+              </div>
 
-      {/* fila 2 (2 columnas) */}
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="text-[11px] font-semibold text-slate-500">Tipo *</label>
-          <select
-            className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-            value={profile.property_type ?? ""}
-            onChange={(e) => setProfile((p) => ({ ...p, property_type: (e.target.value || null) as any }))}
-          >
-            <option value="">Selecciona…</option>
-            <option value="HOTEL">Hotel</option>
-            <option value="RURAL_HOUSE">Casa rural</option>
-            <option value="APARTMENTS">Apartamentos</option>
-            <option value="HOSTEL">Hostal</option>
-            <option value="CAMPING">Camping</option>
-            <option value="OTHER">Otro</option>
-          </select>
-        </div>
+              {/* fila 2 (2 columnas) */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-500">Tipo *</label>
+                  <select
+                    className={errCls(
+                      "property_type",
+                      "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                    )}
+                    value={profile.property_type ?? ""}
+                    onBlur={() => markTouched("property_type")}
+                    onChange={(e) => setField("property_type", (e.target.value || null) as any)}
+                  >
+                    <option value="">Selecciona…</option>
+                    <option value="HOTEL">Hotel</option>
+                    <option value="RURAL_HOUSE">Casa rural</option>
+                    <option value="APARTMENTS">Apartamentos</option>
+                    <option value="HOSTEL">Hostal</option>
+                    <option value="CAMPING">Camping</option>
+                    <option value="OTHER">Otro</option>
+                  </select>
+                  {errMsg("property_type")}
+                </div>
 
-        <div>
-          <label className="text-[11px] font-semibold text-slate-500">Categoría</label>
-          <select
-            className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-            value={profile.hotel_category ?? 3}
-            onChange={(e) => setProfile((p) => ({ ...p, hotel_category: Number(e.target.value) }))}
-          >
-            <option value={1}>1 ★</option>
-            <option value={2}>2 ★</option>
-            <option value={3}>3 ★</option>
-            <option value={4}>4 ★</option>
-            <option value={5}>5 ★</option>
-          </select>
-        </div>
-      </div>
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-500">Categoría</label>
+                  <select
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                    value={profile.hotel_category ?? 3}
+                    onChange={(e) => setField("hotel_category", Number(e.target.value))}
+                  >
+                    <option value={1}>1 ★</option>
+                    <option value={2}>2 ★</option>
+                    <option value={3}>3 ★</option>
+                    <option value={4}>4 ★</option>
+                    <option value={5}>5 ★</option>
+                  </select>
+                </div>
+              </div>
 
-      {/* fila 3 */}
-      <div>
-        <label className="text-[11px] font-semibold text-slate-500">Moneda</label>
-        <select
-          className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-          value={profile.currency ?? "EUR"}
-          onChange={(e) => setProfile((p) => ({ ...p, currency: e.target.value || "EUR" }))}
-        >
-          <option value="EUR">EUR</option>
-          <option value="USD">USD</option>
-          <option value="GBP">GBP</option>
-        </select>
-      </div>
-    </div>
-  </div>
+              {/* fila 3 */}
+              <div>
+                <label className="text-[11px] font-semibold text-slate-500">Moneda</label>
+                <select
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                  value={profile.currency ?? "EUR"}
+                  onChange={(e) => setField("currency", e.target.value || "EUR")}
+                >
+                  <option value="EUR">EUR</option>
+                  <option value="USD">USD</option>
+                  <option value="GBP">GBP</option>
+                </select>
+              </div>
+            </div>
+          </div>
 
-  {/* UBICACIÓN (incluye domicilio + cp) */}
-  <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-    <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-      <div className="flex items-center gap-2">
-        <MapPin className="w-4 h-4 text-slate-600" />
-        <p className="text-sm font-semibold text-slate-900">Ubicación</p>
-      </div>
-      <span className="text-[11px] font-medium text-slate-500">Fiscal/Operativa</span>
-    </div>
+          {/* UBICACIÓN (incluye domicilio + cp) */}
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <MapPin className="w-4 h-4 text-slate-600" />
+                <p className="text-sm font-semibold text-slate-900">Ubicación</p>
+              </div>
+              <span className="text-[11px] font-medium text-slate-500">Fiscal/Operativa</span>
+            </div>
 
-    <div className="p-5 space-y-4">
-      <div>
-        <label className="text-[11px] font-semibold text-slate-500">País *</label>
-        <input
-          className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-          value={profile.country ?? ""}
-          onChange={(e) => setProfile((p) => ({ ...p, country: e.target.value || null }))}
-          placeholder="Ej: España"
-        />
-      </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="text-[11px] font-semibold text-slate-500">País *</label>
+                <input
+                  className={errCls(
+                    "country",
+                    "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                  )}
+                  value={profile.country ?? ""}
+                  onBlur={() => {
+                    markTouched("country");
+                    setField("country", upperOrNull(profile.country));
+                  }}
+                  onChange={(e) => setField("country", e.target.value ? e.target.value : null)}
+                  placeholder="Ej: España"
+                />
+                {errMsg("country")}
+              </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="text-[11px] font-semibold text-slate-500">Provincia *</label>
-          <input
-            className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-            value={profile.province ?? ""}
-            onChange={(e) => setProfile((p) => ({ ...p, province: e.target.value || null }))}
-            placeholder="Ej: Cantabria"
-          />
-        </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-500">Provincia *</label>
+                  <input
+                    className={errCls(
+                      "province",
+                      "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                    )}
+                    value={profile.province ?? ""}
+                    onBlur={() => {
+                      markTouched("province");
+                      setField("province", upperOrNull(profile.province));
+                    }}
+                    onChange={(e) => setField("province", e.target.value ? e.target.value : null)}
+                    placeholder="Ej: Cantabria"
+                  />
+                  {errMsg("province")}
+                </div>
 
-        <div>
-          <label className="text-[11px] font-semibold text-slate-500">Ciudad *</label>
-          <input
-            className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-            value={profile.city ?? ""}
-            onChange={(e) => setProfile((p) => ({ ...p, city: e.target.value || null }))}
-            placeholder="Ej: Torrelavega"
-          />
-        </div>
-      </div>
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-500">Ciudad *</label>
+                  <input
+                    className={errCls(
+                      "city",
+                      "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                    )}
+                    value={profile.city ?? ""}
+                    onBlur={() => {
+                      markTouched("city");
+                      setField("city", upperOrNull(profile.city));
+                    }}
+                    onChange={(e) => setField("city", e.target.value ? e.target.value : null)}
+                    placeholder="Ej: Torrelavega"
+                  />
+                  {errMsg("city")}
+                </div>
+              </div>
 
-      {/* ✅ Domicilio + CP aquí */}
-      <div>
-        <label className="text-[11px] font-semibold text-slate-500">Domicilio</label>
-        <input
-          className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-          value={profile.address ?? ""}
-          onChange={(e) => setProfile((p) => ({ ...p, address: e.target.value || null }))}
-          placeholder="Ej: Calle Mayor 12"
-        />
-      </div>
+              {/* ✅ Domicilio + CP aquí */}
+              <div>
+                <label className="text-[11px] font-semibold text-slate-500">Domicilio</label>
+                <input
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                  value={profile.address ?? ""}
+                  onBlur={() => {
+                    markTouched("address");
+                    setField("address", trimOrNull(profile.address));
+                  }}
+                  onChange={(e) => setField("address", e.target.value ? e.target.value : null)}
+                  placeholder="Ej: Calle Mayor 12"
+                />
+              </div>
 
-      <div className="grid grid-cols-2 gap-3 items-end">
-        <div>
-          <label className="text-[11px] font-semibold text-slate-500">Código postal</label>
-          <input
-            className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-            value={profile.postal_code ?? ""}
-            onChange={(e) => setProfile((p) => ({ ...p, postal_code: e.target.value || null }))}
-            placeholder="Ej: 39620"
-          />
-        </div>
+              <div className="grid grid-cols-2 gap-3 items-end">
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-500">Código postal</label>
+                  <input
+                    inputMode="numeric"
+                    autoComplete="postal-code"
+                    className={errCls(
+                      "postal_code",
+                      "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                    )}
+                    value={profile.postal_code ?? ""}
+                    onBlur={() => {
+                      markTouched("postal_code");
+                      setField("postal_code", trimOrNull(profile.postal_code));
+                    }}
+                    onChange={(e) => {
+                      const v = sanitizePostalCode(e.target.value);
+                      setField("postal_code", v ? v : null);
+                    }}
+                    placeholder="Ej: 39620"
+                  />
+                  {errMsg("postal_code")}
+                </div>
 
-        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-          Si falta ubicación, la auditoría sale “incompleta”.
-        </div>
-      </div>
-    </div>
-  </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                  Si falta ubicación, la auditoría sale “incompleta”.
+                </div>
+              </div>
+            </div>
+          </div>
 
-  {/* CONTACTO (sin domicilio/cp) */}
-  <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-    <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-      <div className="flex items-center gap-2">
-        <Mail className="w-4 h-4 text-slate-600" />
-        <p className="text-sm font-semibold text-slate-900">Contacto</p>
-      </div>
-      <span className="text-[11px] font-medium text-slate-500">Soporte/Avisos</span>
-    </div>
+          {/* CONTACTO (sin domicilio/cp) */}
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Mail className="w-4 h-4 text-slate-600" />
+                <p className="text-sm font-semibold text-slate-900">Contacto</p>
+              </div>
+              <span className="text-[11px] font-medium text-slate-500">Soporte/Avisos</span>
+            </div>
 
-    <div className="p-5 space-y-4">
-      <div>
-        <label className="text-[11px] font-semibold text-slate-500">Email de contacto</label>
-        <input
-          className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-          value={profile.contact_email ?? ""}
-          onChange={(e) => setProfile((p) => ({ ...p, contact_email: e.target.value || null }))}
-          placeholder="Ej: recepcion@hotel.com"
-        />
-      </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="text-[11px] font-semibold text-slate-500">Email de contacto</label>
+                <input
+                  inputMode="email"
+                  autoComplete="email"
+                  className={errCls(
+                    "contact_email",
+                    "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                  )}
+                  value={profile.contact_email ?? ""}
+                  onBlur={() => {
+                    markTouched("contact_email");
+                    setField("contact_email", trimOrNull(profile.contact_email));
+                  }}
+                  onChange={(e) => setField("contact_email", e.target.value ? e.target.value : null)}
+                  placeholder="Ej: recepcion@hotel.com"
+                />
+                {errMsg("contact_email")}
+              </div>
 
-      <div>
-        <label className="text-[11px] font-semibold text-slate-500">Teléfono de contacto</label>
-        <input
-          className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-          value={profile.contact_phone ?? ""}
-          onChange={(e) => setProfile((p) => ({ ...p, contact_phone: e.target.value || null }))}
-          placeholder="Ej: +34 600 123 456"
-        />
-      </div>
+              <div>
+                <label className="text-[11px] font-semibold text-slate-500">Teléfono de contacto</label>
+                <input
+                  inputMode="tel"
+                  autoComplete="tel"
+                  className={errCls(
+                    "contact_phone",
+                    "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                  )}
+                  value={profile.contact_phone ?? ""}
+                  onBlur={() => {
+                    markTouched("contact_phone");
+                    setField("contact_phone", trimOrNull(profile.contact_phone));
+                  }}
+                  onChange={(e) => {
+                    const v = sanitizePhone(e.target.value);
+                    setField("contact_phone", v ? v : null);
+                  }}
+                  placeholder="Ej: +34600123456"
+                />
+                {errMsg("contact_phone")}
+              </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="text-[11px] font-semibold text-slate-500">Persona de contacto</label>
-          <div className="relative">
-            <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-            <input
-              className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-              value={profile.contact_person ?? ""}
-              onChange={(e) => setProfile((p) => ({ ...p, contact_person: e.target.value || null }))}
-              placeholder="Ej: Ana López"
-            />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-500">Persona de contacto</label>
+                  <div className="relative">
+                    <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                    <input
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                      value={profile.contact_person ?? ""}
+                      onBlur={() => {
+                        markTouched("contact_person");
+                        setField("contact_person", trimOrNull(profile.contact_person));
+                      }}
+                      onChange={(e) =>
+                        setField("contact_person", e.target.value ? e.target.value : null)
+                      }
+                      placeholder="Ej: Ana López"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-500">Cargo</label>
+                  <div className="relative">
+                    <IdCard className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                    <input
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                      value={profile.contact_role ?? ""}
+                      onBlur={() => {
+                        markTouched("contact_role");
+                        setField("contact_role", trimOrNull(profile.contact_role));
+                      }}
+                      onChange={(e) => setField("contact_role", e.target.value ? e.target.value : null)}
+                      placeholder="Ej: Dirección / Recepción"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                Operativo (soporte, incidencias, auditoría). No es PII de huéspedes.
+              </div>
+            </div>
           </div>
         </div>
-
-        <div>
-          <label className="text-[11px] font-semibold text-slate-500">Cargo</label>
-          <div className="relative">
-            <IdCard className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-            <input
-              className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
-              value={profile.contact_role ?? ""}
-              onChange={(e) => setProfile((p) => ({ ...p, contact_role: e.target.value || null }))}
-              placeholder="Ej: Dirección / Recepción"
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-        Operativo (soporte, incidencias, auditoría). No es PII de huéspedes.
-      </div>
-    </div>
-  </div>
-</div>
 
         {/* Economía / Temporadas */}
         <div className="mt-4 bg-white border border-slate-200 rounded-2xl p-5">
@@ -763,9 +1025,7 @@ export function PerfilHotel({ user }: Props) {
                 min={0}
                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                 value={profile.monthly_stays_estimated ?? ""}
-                onChange={(e) =>
-                  setProfile((p) => ({ ...p, monthly_stays_estimated: toNumOrNull(e.target.value) }))
-                }
+                onChange={(e) => setField("monthly_stays_estimated", toNumOrNull(e.target.value))}
                 placeholder="Ej: 140"
               />
             </div>
@@ -778,7 +1038,7 @@ export function PerfilHotel({ user }: Props) {
                 step="0.01"
                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                 value={profile.adr_real ?? ""}
-                onChange={(e) => setProfile((p) => ({ ...p, adr_real: toNumOrNull(e.target.value) }))}
+                onChange={(e) => setField("adr_real", toNumOrNull(e.target.value))}
                 placeholder="Ej: 95.00"
               />
             </div>
@@ -792,9 +1052,7 @@ export function PerfilHotel({ user }: Props) {
                   min={0}
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                   value={profile.season_mult_high ?? ""}
-                  onChange={(e) =>
-                    setProfile((p) => ({ ...p, season_mult_high: toNumOrNull(e.target.value) }))
-                  }
+                  onChange={(e) => setField("season_mult_high", toNumOrNull(e.target.value))}
                 />
               </div>
               <div>
@@ -805,9 +1063,7 @@ export function PerfilHotel({ user }: Props) {
                   min={0}
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                   value={profile.season_mult_low ?? ""}
-                  onChange={(e) =>
-                    setProfile((p) => ({ ...p, season_mult_low: toNumOrNull(e.target.value) }))
-                  }
+                  onChange={(e) => setField("season_mult_low", toNumOrNull(e.target.value))}
                 />
               </div>
             </div>
@@ -834,29 +1090,44 @@ export function PerfilHotel({ user }: Props) {
               <input
                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                 value={profile.timezone ?? ""}
-                onChange={(e) => setProfile((p) => ({ ...p, timezone: e.target.value || null }))}
+                onBlur={() => {
+                  markTouched("timezone");
+                  setField("timezone", trimOrNull(profile.timezone));
+                }}
+                onChange={(e) => setField("timezone", e.target.value ? e.target.value : null)}
                 placeholder="Ej: Europe/Madrid"
               />
+              {errMsg("timezone")}
             </div>
 
             <div>
               <label className="text-xs font-semibold text-slate-600">Check-in</label>
               <input
                 type="time"
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                className={errCls(
+                  "checkin_time",
+                  "mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                )}
                 value={profile.checkin_time ?? ""}
-                onChange={(e) => setProfile((p) => ({ ...p, checkin_time: e.target.value || null }))}
+                onBlur={() => markTouched("checkin_time")}
+                onChange={(e) => setField("checkin_time", e.target.value || null)}
               />
+              {errMsg("checkin_time")}
             </div>
 
             <div>
               <label className="text-xs font-semibold text-slate-600">Check-out</label>
               <input
                 type="time"
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                className={errCls(
+                  "checkout_time",
+                  "mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                )}
                 value={profile.checkout_time ?? ""}
-                onChange={(e) => setProfile((p) => ({ ...p, checkout_time: e.target.value || null }))}
+                onBlur={() => markTouched("checkout_time")}
+                onChange={(e) => setField("checkout_time", e.target.value || null)}
               />
+              {errMsg("checkout_time")}
             </div>
 
             <div>
@@ -867,9 +1138,10 @@ export function PerfilHotel({ user }: Props) {
                 step="1"
                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                 value={profile.rooms_count ?? ""}
-                onChange={(e) => setProfile((p) => ({ ...p, rooms_count: toNumOrNull(e.target.value) }))}
+                onChange={(e) => setField("rooms_count", toNumOrNull(e.target.value))}
                 placeholder="Ej: 25"
               />
+              {errMsg("rooms_count")}
             </div>
 
             <div>
@@ -880,7 +1152,7 @@ export function PerfilHotel({ user }: Props) {
                 step="1"
                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                 value={profile.max_occupancy ?? ""}
-                onChange={(e) => setProfile((p) => ({ ...p, max_occupancy: toNumOrNull(e.target.value) }))}
+                onChange={(e) => setField("max_occupancy", toNumOrNull(e.target.value))}
                 placeholder="Ej: 60"
               />
             </div>
@@ -893,9 +1165,7 @@ export function PerfilHotel({ user }: Props) {
                 step="0.01"
                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                 value={profile.monthly_revenue_estimate ?? ""}
-                onChange={(e) =>
-                  setProfile((p) => ({ ...p, monthly_revenue_estimate: toNumOrNull(e.target.value) }))
-                }
+                onChange={(e) => setField("monthly_revenue_estimate", toNumOrNull(e.target.value))}
                 placeholder="Ej: 42000"
               />
             </div>
@@ -907,7 +1177,7 @@ export function PerfilHotel({ user }: Props) {
               <input
                 type="checkbox"
                 checked={Boolean(profile.has_restaurant)}
-                onChange={(e) => setProfile((p) => ({ ...p, has_restaurant: e.target.checked }))}
+                onChange={(e) => setField("has_restaurant", e.target.checked)}
               />
               Restaurante
             </label>
@@ -917,7 +1187,7 @@ export function PerfilHotel({ user }: Props) {
               <input
                 type="checkbox"
                 checked={Boolean(profile.has_spa)}
-                onChange={(e) => setProfile((p) => ({ ...p, has_spa: e.target.checked }))}
+                onChange={(e) => setField("has_spa", e.target.checked)}
               />
               Spa
             </label>
@@ -927,7 +1197,7 @@ export function PerfilHotel({ user }: Props) {
               <input
                 type="checkbox"
                 checked={Boolean(profile.has_parking)}
-                onChange={(e) => setProfile((p) => ({ ...p, has_parking: e.target.checked }))}
+                onChange={(e) => setField("has_parking", e.target.checked)}
               />
               Parking
             </label>
@@ -937,7 +1207,7 @@ export function PerfilHotel({ user }: Props) {
               <input
                 type="checkbox"
                 checked={Boolean(profile.allows_pets)}
-                onChange={(e) => setProfile((p) => ({ ...p, allows_pets: e.target.checked }))}
+                onChange={(e) => setField("allows_pets", e.target.checked)}
               />
               Admite mascotas
             </label>
@@ -967,7 +1237,7 @@ export function PerfilHotel({ user }: Props) {
                 value={occupancyPct ?? ""}
                 onChange={(e) => {
                   const pct = toNumOrNull(e.target.value);
-                  setProfile((p) => ({ ...p, occupancy_target: pctToFrac(pct) }));
+                  setField("occupancy_target", pctToFrac(pct));
                 }}
                 placeholder="Ej: 70"
               />
@@ -984,7 +1254,7 @@ export function PerfilHotel({ user }: Props) {
                 value={cancelPct ?? ""}
                 onChange={(e) => {
                   const pct = toNumOrNull(e.target.value);
-                  setProfile((p) => ({ ...p, cancellation_rate_target: pctToFrac(pct) }));
+                  setField("cancellation_rate_target", pctToFrac(pct));
                 }}
                 placeholder="Ej: 10"
               />
@@ -998,7 +1268,7 @@ export function PerfilHotel({ user }: Props) {
                 step="0.01"
                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                 value={profile.revpar_target ?? ""}
-                onChange={(e) => setProfile((p) => ({ ...p, revpar_target: toNumOrNull(e.target.value) }))}
+                onChange={(e) => setField("revpar_target", toNumOrNull(e.target.value))}
                 placeholder="Ej: 65.00"
               />
             </div>

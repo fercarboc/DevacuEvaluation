@@ -1,3 +1,4 @@
+// src/components/RatingForm.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Save,
@@ -15,6 +16,49 @@ import { StarRating } from "./StarRating";
 import { addEvaluation } from "../services/evaluationService";
 import { callEvalFn } from "@/services/callEvalFn";
 
+/** =========================================================
+ *  Países (ISO-3166 alpha-3) - lista cerrada para evitar basura
+ *  ========================================================= */
+const COUNTRIES_ALPHA3 = [
+  "ESP","FRA","GBR","USA","PRT","DEU","ITA","NLD","BEL","CHE","AUT","IRL",
+  "SWE","NOR","DNK","FIN","ISL","POL","CZE","SVK","HUN","ROU","BGR","GRC",
+  "TUR","MAR","DZA","TUN","EGY","MEX","BRA","ARG","CHL","COL","PER","URY",
+  "CAN","AUS","NZL","JPN","CHN","KOR","IND","ZAF",
+] as const;
+
+function isCountryAlpha3(v: string | null | undefined) {
+  const s = String(v ?? "").trim().toUpperCase();
+  return (COUNTRIES_ALPHA3 as readonly string[]).includes(s);
+}
+
+function sanitizeAlpha3(input: string) {
+  return String(input ?? "")
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "")
+    .slice(0, 3);
+}
+
+function isValidEmail(email: string) {
+  const s = String(email ?? "").trim();
+  if (!s) return true; // opcional
+  if (s.length > 254) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s);
+}
+
+function sanitizeDigits(input: string, maxLen = 15) {
+  return String(input ?? "").replace(/\D/g, "").slice(0, maxLen);
+}
+
+function isValidPhoneDigits(phone: string, minLen = 7, maxLen = 15) {
+  const s = String(phone ?? "").trim();
+  if (!s) return true; // opcional
+  if (!/^\d+$/.test(s)) return false;
+  return s.length >= minLen && s.length <= maxLen;
+}
+
+/** =========================================================
+ *  Props / Types
+ *  ========================================================= */
 interface RatingFormProps {
   currentCustomerId: string;
   currentCustomerName: string;
@@ -70,6 +114,11 @@ type HotelProfile = {
   season_mult_low: number | null;
 };
 
+type FormErrors = Partial<Record<"email" | "phone" | "nationality", string>>;
+
+/** =========================================================
+ *  Helpers existentes (SIN CAMBIAR LÓGICA)
+ *  ========================================================= */
 function clampText(s: string, max: number) {
   const t = (s ?? "").trim();
   return t.length > max ? t.slice(0, max) : t;
@@ -83,6 +132,7 @@ function sanitizeDoc(input: string) {
   const raw = input ?? "";
   return raw.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
 }
+// (mantengo tu sanitizePhone, pero ahora el input se controla con digits para evitar letras)
 function sanitizePhone(input: string) {
   const raw = input ?? "";
   return raw.replace(/\D/g, "").slice(0, 11);
@@ -119,7 +169,9 @@ function normalizeEconomics(input: {
   economic_recovered?: number | null;
 }) {
   const gross =
-    input.economic_impact_gross == null ? null : Math.abs(Number(input.economic_impact_gross));
+    input.economic_impact_gross == null
+      ? null
+      : Math.abs(Number(input.economic_impact_gross));
   const recovered =
     input.economic_recovered == null ? null : Math.abs(Number(input.economic_recovered));
 
@@ -179,6 +231,31 @@ function Modal({
   );
 }
 
+/** =========================================================
+ *  Validación SOLO de campos “controlados” (sin cambiar lógica)
+ *  ========================================================= */
+function validateControlled(nextForm: {
+  email: string;
+  phone: string;
+  nationality: string;
+}): FormErrors {
+  const e: FormErrors = {};
+
+  const em = String(nextForm.email ?? "").trim();
+  if (em && !isValidEmail(em)) e.email = "Email inválido.";
+
+  const ph = String(nextForm.phone ?? "").trim();
+  if (ph && !isValidPhoneDigits(ph, 7, 15)) e.phone = "Teléfono inválido (solo dígitos, 7-15).";
+
+  const nat = String(nextForm.nationality ?? "").trim();
+  if (nat) {
+    const c = nat.toUpperCase();
+    if (!isCountryAlpha3(c)) e.nationality = "Código inválido (usa ESP, FRA, GBR...).";
+  }
+
+  return e;
+}
+
 export const RatingForm: React.FC<RatingFormProps> = ({
   currentCustomerId,
   currentCustomerName,
@@ -199,6 +276,9 @@ export const RatingForm: React.FC<RatingFormProps> = ({
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [incidentCatalog, setIncidentCatalog] = useState<IncidentCatalogItem[]>([]);
   const [itemCatalog, setItemCatalog] = useState<ItemCatalogItem[]>([]);
+
+  // ✅ errores controlados (email/phone/nationality)
+  const [errors, setErrors] = useState<FormErrors>({});
 
   const [form, setForm] = useState({
     fullName: "",
@@ -222,100 +302,98 @@ export const RatingForm: React.FC<RatingFormProps> = ({
   /** =========================================================
    *  Carga perfil + catálogos (Edge)
    * ========================================================= */
-useEffect(() => {
-  (async () => {
-    try {
-      setProfileError(null);
-      setCatalogError(null);
-      setProfileLoading(true);
-      setCatalogLoading(true);
+  useEffect(() => {
+    (async () => {
+      try {
+        setProfileError(null);
+        setCatalogError(null);
+        setProfileLoading(true);
+        setCatalogLoading(true);
 
-    // 1) perfil
-const prof = await callEvalFn<any>("debacu_eval_hotel_profile_get", {}).catch(() => null);
+        // 1) perfil
+        const prof = await callEvalFn<any>("debacu_eval_hotel_profile_get", {}).catch(() => null);
 
-if (prof?.ok) {
-  const root = prof as any;
-  const pr = root.profile ?? root.data?.profile ?? root.data ?? null;
+        if (prof?.ok) {
+          const root = prof as any;
+          const pr = root.profile ?? root.data?.profile ?? root.data ?? null;
 
-  const profileCompleted =
-    pr?.profile_completed === true ||
-    pr?.profile_completed === "true" ||
-    pr?.profileCompleted === true ||
-    pr?.profileCompleted === "true";
+          const profileCompleted =
+            pr?.profile_completed === true ||
+            pr?.profile_completed === "true" ||
+            pr?.profileCompleted === true ||
+            pr?.profileCompleted === "true";
 
-  const missing =
-    Array.isArray(root.missing_fields)
-      ? root.missing_fields
-      : Array.isArray(pr?.missing_fields)
-      ? pr.missing_fields
-      : Array.isArray(root.missing)
-      ? root.missing
-      : Array.isArray(pr?.missing)
-      ? pr.missing
-      : [];
+          const missing =
+            Array.isArray(root.missing_fields)
+              ? root.missing_fields
+              : Array.isArray(pr?.missing_fields)
+              ? pr.missing_fields
+              : Array.isArray(root.missing)
+              ? root.missing
+              : Array.isArray(pr?.missing)
+              ? pr.missing
+              : [];
 
-  const p: HotelProfile = {
-    is_complete: profileCompleted,
-    missing,
-    hotel_category: pr?.hotel_category ?? null,
-    monthly_stays_estimated: pr?.monthly_stays_estimated ?? null,
-    adr_real: pr?.adr_real ?? null,
-    season_mult_high: pr?.season_mult_high ?? null,
-    season_mult_low: pr?.season_mult_low ?? null,
-  };
+          const p: HotelProfile = {
+            is_complete: profileCompleted,
+            missing,
+            hotel_category: pr?.hotel_category ?? null,
+            monthly_stays_estimated: pr?.monthly_stays_estimated ?? null,
+            adr_real: pr?.adr_real ?? null,
+            season_mult_high: pr?.season_mult_high ?? null,
+            season_mult_low: pr?.season_mult_low ?? null,
+          };
 
-  setProfile(p);
+          setProfile(p);
 
-  if (p.is_complete) {
-    setShowProfileNotice(false);
-    localStorage.removeItem(LS_KEY_HIDE_PROFILE_NOTICE);
-  } else {
-    const hide = localStorage.getItem(LS_KEY_HIDE_PROFILE_NOTICE) === "1";
-    if (!hide) setShowProfileNotice(true);
-  }
-      } else {
-        setProfile({
-          is_complete: false,
-          missing: ["No se pudo verificar la configuración del hotel."],
-          hotel_category: null,
-          monthly_stays_estimated: null,
-          adr_real: null,
-          season_mult_high: null,
-          season_mult_low: null,
-        });
-        setProfileError("No se pudo cargar el perfil del hotel.");
-        const hide = localStorage.getItem(LS_KEY_HIDE_PROFILE_NOTICE) === "1";
-        if (!hide) setShowProfileNotice(true);
+          if (p.is_complete) {
+            setShowProfileNotice(false);
+            localStorage.removeItem(LS_KEY_HIDE_PROFILE_NOTICE);
+          } else {
+            const hide = localStorage.getItem(LS_KEY_HIDE_PROFILE_NOTICE) === "1";
+            if (!hide) setShowProfileNotice(true);
+          }
+        } else {
+          setProfile({
+            is_complete: false,
+            missing: ["No se pudo verificar la configuración del hotel."],
+            hotel_category: null,
+            monthly_stays_estimated: null,
+            adr_real: null,
+            season_mult_high: null,
+            season_mult_low: null,
+          });
+          setProfileError("No se pudo cargar el perfil del hotel.");
+          const hide = localStorage.getItem(LS_KEY_HIDE_PROFILE_NOTICE) === "1";
+          if (!hide) setShowProfileNotice(true);
+        }
+
+        // 2) incident catalog (effective)
+        const inc = await callEvalFn<any>("debacu_eval_incident_catalog_list", {}).catch(() => null);
+        if (inc?.ok && Array.isArray(inc?.items)) {
+          setIncidentCatalog(inc.items as IncidentCatalogItem[]);
+        } else {
+          setIncidentCatalog([]);
+          setCatalogError((prev) => prev ?? "No se pudo cargar el catálogo de incidencias.");
+        }
+
+        // 3) item catalog (effective)
+        const items = await callEvalFn<any>("debacu_eval_item_catalog_list", {}).catch(() => null);
+        if (items?.ok && Array.isArray(items?.items)) {
+          setItemCatalog(items.items as ItemCatalogItem[]);
+        } else {
+          setItemCatalog([]);
+          setCatalogError((prev) => prev ?? "No se pudo cargar el catálogo de items.");
+        }
+      } catch (e) {
+        console.error(e);
+        setCatalogError("No se pudo cargar perfil/catálogos (revisa Edge Functions).");
+      } finally {
+        setProfileLoading(false);
+        setCatalogLoading(false);
       }
-
-      // 2) incident catalog (effective)
-      const inc = await callEvalFn<any>("debacu_eval_incident_catalog_list", {}).catch(() => null);
-      if (inc?.ok && Array.isArray(inc?.items)) {
-        setIncidentCatalog(inc.items as IncidentCatalogItem[]);
-      } else {
-        setIncidentCatalog([]);
-        setCatalogError((prev) => prev ?? "No se pudo cargar el catálogo de incidencias.");
-      }
-
-      // 3) item catalog (effective)
-      const items = await callEvalFn<any>("debacu_eval_item_catalog_list", {}).catch(() => null);
-      if (items?.ok && Array.isArray(items?.items)) {
-        setItemCatalog(items.items as ItemCatalogItem[]);
-      } else {
-        setItemCatalog([]);
-        setCatalogError((prev) => prev ?? "No se pudo cargar el catálogo de items.");
-      }
-    } catch (e) {
-      console.error(e);
-      setCatalogError("No se pudo cargar perfil/catálogos (revisa Edge Functions).");
-    } finally {
-      setProfileLoading(false);
-      setCatalogLoading(false);
-    }
-  })();
-}, []);
-
-
+    })();
+  }, []);
 
   const closeProfileNotice = () => {
     if (dontShowAgain) {
@@ -361,6 +439,12 @@ if (prof?.ok) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRisk]);
 
+  // ✅ Validación controlada (no cambia la lógica: solo bloquea basura)
+  const controlledErrors = useMemo(
+    () => validateControlled({ email: form.email, phone: form.phone, nationality: form.nationality }),
+    [form.email, form.phone, form.nationality]
+  );
+
   const canSubmit = useMemo(() => {
     if (status === "submitting") return false;
 
@@ -368,6 +452,9 @@ if (prof?.ok) {
     if (!form.fullName.trim()) return false;
     if (!form.platform) return false;
     if (form.platform === "OTROS" && !form.platformOther.trim()) return false;
+
+    // 🚫 si meten email/teléfono/nacionalidad inválidos, no se envía
+    if (Object.keys(controlledErrors).length > 0) return false;
 
     if (isRisk) {
       if (!incidentSelected) return false;
@@ -378,7 +465,7 @@ if (prof?.ok) {
 
     if (!isRisk && form.incident_type) return false;
     return true;
-  }, [form, status, isRisk, incidentSelected]);
+  }, [form, status, isRisk, incidentSelected, controlledErrors]);
 
   const addItemRow = () => {
     setForm((p) => ({
@@ -403,6 +490,18 @@ if (prof?.ok) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // ✅ refuerza validación controlada en submit
+    const ce = validateControlled({
+      email: form.email,
+      phone: form.phone,
+      nationality: form.nationality,
+    });
+    setErrors(ce);
+    if (Object.keys(ce).length > 0) {
+      alert(Object.values(ce).filter(Boolean).join(" · "));
+      return;
+    }
 
     if (!canSubmit) {
       alert("Revisa el formulario: faltan campos obligatorios o criterios mínimos.");
@@ -439,7 +538,9 @@ if (prof?.ok) {
       const payload = {
         document: form.document.trim() ? sanitizeDoc(form.document) : "GEN-SIN-DOC",
         full_name: sanitizeUpperLettersAndSpaces(form.fullName).trim(),
-        nationality: form.nationality.trim() ? form.nationality.trim().toUpperCase() : null,
+        nationality: form.nationality.trim()
+          ? form.nationality.trim().toUpperCase()
+          : null,
         phone: form.phone.trim() ? sanitizePhone(form.phone) : null,
         email: form.email.trim() ? form.email.trim().toLowerCase() : null,
 
@@ -465,6 +566,7 @@ if (prof?.ok) {
       setStatus("success");
       setTimeout(() => {
         setStatus("idle");
+        setErrors({});
         setForm({
           fullName: "",
           document: "",
@@ -637,11 +739,25 @@ if (prof?.ok) {
                       <input
                         type="tel"
                         value={form.phone}
-                        onChange={(e) => setForm((p) => ({ ...p, phone: sanitizePhone(e.target.value) }))}
-                        maxLength={11}
-                        className="block w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                        onChange={(e) => {
+                          const v = sanitizeDigits(e.target.value, 15);
+                          setForm((p) => ({ ...p, phone: v }));
+                          setErrors((prev) => ({ ...prev, phone: undefined }));
+                        }}
+                        onBlur={() => {
+                          const ce = validateControlled({
+                            email: form.email,
+                            phone: form.phone,
+                            nationality: form.nationality,
+                          });
+                          setErrors((prev) => ({ ...prev, phone: ce.phone }));
+                        }}
+                        className={`block w-full px-3 py-2 border rounded-xl focus:ring-indigo-500 focus:border-indigo-500 text-sm ${
+                          errors.phone ? "border-red-300 bg-red-50" : "border-slate-300"
+                        }`}
                         placeholder="Ej: 600123456"
                       />
+                      {errors.phone && <p className="text-[11px] text-red-600 mt-1">{errors.phone}</p>}
                     </div>
 
                     <div>
@@ -651,10 +767,25 @@ if (prof?.ok) {
                       <input
                         type="email"
                         value={form.email}
-                        onChange={(e) => setForm((p) => ({ ...p, email: e.target.value.trim() }))}
-                        className="block w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                        onChange={(e) => {
+                          const v = e.target.value.trim();
+                          setForm((p) => ({ ...p, email: v }));
+                          setErrors((prev) => ({ ...prev, email: undefined }));
+                        }}
+                        onBlur={() => {
+                          const ce = validateControlled({
+                            email: form.email,
+                            phone: form.phone,
+                            nationality: form.nationality,
+                          });
+                          setErrors((prev) => ({ ...prev, email: ce.email }));
+                        }}
+                        className={`block w-full px-3 py-2 border rounded-xl focus:ring-indigo-500 focus:border-indigo-500 text-sm ${
+                          errors.email ? "border-red-300 bg-red-50" : "border-slate-300"
+                        }`}
                         placeholder="cliente@email.com"
                       />
+                      {errors.email && <p className="text-[11px] text-red-600 mt-1">{errors.email}</p>}
                     </div>
 
                     <div>
@@ -664,11 +795,34 @@ if (prof?.ok) {
                       <input
                         type="text"
                         value={form.nationality}
-                        onChange={(e) => setForm((p) => ({ ...p, nationality: e.target.value.toUpperCase().slice(0, 3) }))}
+                        onChange={(e) => {
+                          const v = sanitizeAlpha3(e.target.value);
+                          setForm((p) => ({ ...p, nationality: v }));
+                          setErrors((prev) => ({ ...prev, nationality: undefined }));
+                        }}
+                        onBlur={() => {
+                          const ce = validateControlled({
+                            email: form.email,
+                            phone: form.phone,
+                            nationality: form.nationality,
+                          });
+                          setErrors((prev) => ({ ...prev, nationality: ce.nationality }));
+                        }}
+                        list="country-alpha3"
                         maxLength={3}
-                        className="block w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-indigo-500 focus:border-indigo-500 text-sm uppercase"
+                        className={`block w-full px-3 py-2 border rounded-xl focus:ring-indigo-500 focus:border-indigo-500 text-sm uppercase ${
+                          errors.nationality ? "border-red-300 bg-red-50" : "border-slate-300"
+                        }`}
                         placeholder="ESP, FRA, GBR..."
                       />
+                      <datalist id="country-alpha3">
+                        {COUNTRIES_ALPHA3.map((c) => (
+                          <option key={c} value={c} />
+                        ))}
+                      </datalist>
+                      {errors.nationality && (
+                        <p className="text-[11px] text-red-600 mt-1">{errors.nationality}</p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -976,6 +1130,7 @@ if (prof?.ok) {
                       Requisitos mínimos: plataforma + estrellas + nombre.
                       {isRisk ? " Si es incidencia (≤3★): tipo + identificador fuerte." : ""}
                       {form.platform === "OTROS" ? " En “Otros” debes especificar el origen." : ""}
+                      {Object.keys(controlledErrors).length > 0 ? " Revisa email/teléfono/nacionalidad." : ""}
                     </div>
                   )}
 
