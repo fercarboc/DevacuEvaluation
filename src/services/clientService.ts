@@ -238,10 +238,25 @@ function looksLikePhone(q: string) {
   const p = q.replace(/\D/g, "");
   return p.length >= 8 && p.length <= 15;
 }
-function looksLikeDoc(q: string) {
-  const t = q.trim().toUpperCase().replace(/\s+/g, "");
-  return /^[XYZ]?\d{5,10}[A-Z]?$/.test(t);
+
+
+ function looksLikeDoc(q: string) {
+  const t = q.trim().toUpperCase().replace(/[\s-]/g, ""); // quita espacios y guiones
+
+  // DNI: 8 dígitos + letra
+  if (/^\d{8}[A-Z]$/.test(t)) return true;
+
+  // NIE: X/Y/Z + 7 dígitos + letra
+  if (/^[XYZ]\d{7}[A-Z]$/.test(t)) return true;
+
+  // Pasaporte / doc genérico: letras+digits, longitud razonable.
+  // Importante: EXIGE al menos una letra para NO tragarse teléfonos.
+  if (/[A-Z]/.test(t) && /\d/.test(t) && t.length >= 7 && t.length <= 20) return true;
+
+  return false;
 }
+
+
 function looksLikeNameOnly(q: string) {
   const t = q.trim();
   if (t.length < 5) return false;
@@ -262,9 +277,13 @@ function normalizeEmail(q: string) {
 function onlyDigits(q: string) {
   return q.replace(/\D/g, "");
 }
+
+
 function normalizeDoc(q: string) {
-  return q.trim().toUpperCase().replace(/\s+/g, "");
+  return q.trim().toUpperCase().replace(/[\s-]/g, "");
 }
+
+
 function normalizePhone(q: string) {
   const digits = onlyDigits(q);
   const last9 = digits.length >= 9 ? digits.slice(-9) : digits;
