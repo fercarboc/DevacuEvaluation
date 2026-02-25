@@ -1,5 +1,5 @@
 // supabase/functions/debacu_eval_import_csv/index.ts
-
+// deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -47,14 +47,10 @@ async function generateIdentityKey(identifier: string) {
     ["sign"]
   );
 
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    enc.encode(identifier)
-  );
+  const signature = await crypto.subtle.sign("HMAC", key, enc.encode(identifier));
 
   return Array.from(new Uint8Array(signature))
-    .map(b => b.toString(16).padStart(2, "0"))
+    .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
 
@@ -89,7 +85,7 @@ Deno.serve(async (req) => {
 
     if (batchError) throw batchError;
 
-    const results = [];
+    const results: any[] = [];
 
     for (const row of rows) {
       let error_code: string | null = null;
@@ -124,12 +120,11 @@ Deno.serve(async (req) => {
       }
 
       // Jerarquía identidad
-      const raw_identifier =
-        document_norm
-          ? `DOC:${document_norm}`
-          : email_norm
-          ? `EMAIL:${email_norm}`
-          : `PHONE:${phone_digits}`;
+      const raw_identifier = document_norm
+        ? `DOC:${document_norm}`
+        : email_norm
+        ? `EMAIL:${email_norm}`
+        : `PHONE:${phone_digits}`;
 
       const identity_key = await generateIdentityKey(raw_identifier);
 
@@ -199,7 +194,6 @@ Deno.serve(async (req) => {
       }),
       { headers: { "Content-Type": "application/json" } }
     );
-
   } catch (err) {
     console.error(err);
     return new Response(JSON.stringify({ error: "import_failed" }), { status: 500 });

@@ -15,6 +15,7 @@ function mustEnv(name: string) {
 
 const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+const GLOBAL_PEPPER = mustEnv("DEBACU_GLOBAL_PEPPER");
 
 function sbService() {
   return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
@@ -38,15 +39,17 @@ function err(
     | "must_accept_declaration"
     | "ONBOARDING_REQUIRED"
     | "missing_required_fields"
+    | "NO_IDENTIFIER"
     | "INCIDENT_INVALID"
     | "insert_failed"
-    | "request_failed",
+    | "request_failed"
+    | "METHOD_NOT_ALLOWED",
 ) {
   return json(req, status, { ok: false, error: "request_failed", detail });
 }
 
 /* ======================================================
- * Helpers (tu lógica)
+ * Helpers
  * ====================================================== */
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -72,9 +75,47 @@ function seasonMultiplier(season: string | null, profile: any) {
   return 1;
 }
 
+// Normalizaciones (alineadas con tu schema)
+function normalizeDocument(v?: string) {
+  if (!v) return null;
+  return v.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+}
+function normalizeEmail(v?: string) {
+  if (!v) return null;
+  const email = v.trim().toLowerCase();
+  if (!email.includes("@")) return null;
+  return email;
+}
+function normalizePhone(v?: string) {
+  if (!v) return null;
+  const digits = v.replace(/\D/g, "");
+  if (digits.length < 7) return null;
+  return digits;
+}
+function normalizeCountry(v?: string) {
+  if (!v) return "ESP";
+  return v.trim().toUpperCase().slice(0, 3);
+}
+
+async function generateIdentityKey(identifier: string) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(GLOBAL_PEPPER),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+
+  const signature = await crypto.subtle.sign("HMAC", key, enc.encode(identifier));
+
+  return Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 /* ======================================================
- * AuthZ tenant (STRICT: org_id requerido)
- * - FIX: membership lookup soporta user_id OR auth_user_id
+ * AuthZ tenant (STRICT)
  * ====================================================== */
 async function requireOrgContext(
   admin: ReturnType<typeof sbService>,
@@ -83,7 +124,6 @@ async function requireOrgContext(
 ) {
   const uid = String(user_id);
 
-  // membership ACTIVE en org (OR user_id/auth_user_id)
   const { data: mem, error: memErr } = await admin
     .from("debacu_eval_org_members")
     .select("org_id, role, status")
@@ -94,7 +134,6 @@ async function requireOrgContext(
 
   if (memErr || !mem?.org_id) return null;
 
-  // customer_id preferente por view
   let customer_id: string | null = null;
 
   const { data: ent, error: entErr } = await admin
@@ -105,7 +144,6 @@ async function requireOrgContext(
 
   if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
 
-  // fallback organizations
   if (!customer_id) {
     const { data: org, error: orgErr } = await admin
       .from("debacu_eval_organizations")
@@ -123,17 +161,10 @@ async function requireOrgContext(
 /* ======================================================
  * Data fetchers
  * ====================================================== */
-
-/** ✅ TABLA CORRECTA: debacu_eval_hotel_profile */
-async function getHotelProfile(
-  admin: ReturnType<typeof sbService>,
-  customer_id: string,
-) {
+async function getHotelProfile(admin: ReturnType<typeof sbService>, customer_id: string) {
   const { data, error } = await admin
     .from("debacu_eval_hotel_profile")
-    .select(
-      "customer_id, hotel_category, adr_real, season_mult_high, season_mult_low, profile_completed",
-    )
+    .select("customer_id, hotel_category, adr_real, season_mult_high, season_mult_low, profile_completed")
     .eq("customer_id", customer_id)
     .maybeSingle();
 
@@ -141,10 +172,7 @@ async function getHotelProfile(
   return data ?? null;
 }
 
-async function getAdrReference(
-  admin: ReturnType<typeof sbService>,
-  hotel_category: number,
-) {
+async function getAdrReference(admin: ReturnType<typeof sbService>, hotel_category: number) {
   const { data, error } = await admin
     .from("debacu_adr_reference_by_category")
     .select("adr_reference")
@@ -155,15 +183,10 @@ async function getAdrReference(
   return num(data?.adr_reference);
 }
 
-async function getIncidentCatalog(
-  admin: ReturnType<typeof sbService>,
-  incident_type: string,
-) {
+async function getIncidentCatalog(admin: ReturnType<typeof sbService>, incident_type: string) {
   const { data, error } = await admin
     .from("debacu_incident_catalog")
-    .select(
-      "incident_type, is_active, severity, default_gross_min, default_gross_max, default_recovery_pct, title, description, suggested_actions",
-    )
+    .select("incident_type, is_active, severity, default_gross_min, default_gross_max, default_recovery_pct, title, description, suggested_actions")
     .eq("incident_type", incident_type)
     .maybeSingle();
 
@@ -173,16 +196,10 @@ async function getIncidentCatalog(
   return data;
 }
 
-async function getIncidentOverride(
-  admin: ReturnType<typeof sbService>,
-  customer_id: string,
-  incident_type: string,
-) {
+async function getIncidentOverride(admin: ReturnType<typeof sbService>, customer_id: string, incident_type: string) {
   const { data, error } = await admin
     .from("debacu_hotel_incident_overrides")
-    .select(
-      "incident_type, is_active, severity_override, default_gross_min_override, default_gross_max_override, default_recovery_pct_override, title_override, description_override, suggested_actions_override",
-    )
+    .select("incident_type, is_active, severity_override, default_gross_min_override, default_gross_max_override, default_recovery_pct_override, title_override, description_override, suggested_actions_override")
     .eq("customer_id", customer_id)
     .eq("incident_type", incident_type)
     .maybeSingle();
@@ -193,12 +210,7 @@ async function getIncidentOverride(
   return data;
 }
 
-/** Fuente de precio por hotel: debacu_hotel_item_catalog */
-async function getHotelItemUnitPrice(
-  admin: ReturnType<typeof sbService>,
-  customer_id: string,
-  item_code: string,
-) {
+async function getHotelItemUnitPrice(admin: ReturnType<typeof sbService>, customer_id: string, item_code: string) {
   const { data, error } = await admin
     .from("debacu_hotel_item_catalog")
     .select("unit_price, is_active")
@@ -219,13 +231,7 @@ Deno.serve(async (req) => {
   const FN = "debacu-eval-add";
 
   if (req.method === "OPTIONS") return preflight(req);
-  if (req.method !== "POST") {
-    return json(req, 405, {
-      ok: false,
-      error: "request_failed",
-      detail: "METHOD_NOT_ALLOWED",
-    });
-  }
+  if (req.method !== "POST") return err(req, 405, "METHOD_NOT_ALLOWED");
 
   try {
     // 1) JWT user (JWT-only)
@@ -239,61 +245,61 @@ Deno.serve(async (req) => {
     const org_id = str(body.org_id ?? body.orgId);
     if (!org_id) return err(req, 400, "missing_org_id");
 
-    const accept_declaration =
-      body.accept_declaration ?? body.acceptDeclaration ?? true;
+    const accept_declaration = body.accept_declaration ?? body.acceptDeclaration ?? true;
     const input = body.input;
-
     if (!input) return err(req, 400, "missing_input");
     if (accept_declaration !== true) return err(req, 400, "must_accept_declaration");
 
     const admin = sbService();
 
-    // 3) tenant context (STRICT) + FIX membership
+    // 3) tenant context
     const ctx = await requireOrgContext(admin, user.id, org_id);
     if (!ctx) return err(req, 403, "FORBIDDEN");
 
-    logLine({
-      fn: FN,
-      stage: "start",
-      user_id: user.id,
-      org_id: ctx.org_id,
-      customer_id: ctx.customer_id,
-      app_id: ctx.app_id,
-      role: ctx.role,
-    });
+    logLine({ fn: FN, stage: "start", user_id: user.id, org_id: ctx.org_id, customer_id: ctx.customer_id, role: ctx.role });
 
     // 4) perfil hotel (obligatorio)
     const profile = await getHotelProfile(admin, ctx.customer_id);
-
-    const hotelCategoryOk =
-      profile?.hotel_category !== null && profile?.hotel_category !== undefined;
+    const hotelCategoryOk = profile?.hotel_category !== null && profile?.hotel_category !== undefined;
     const profileCompletedOk = profile?.profile_completed === true;
+    if (!profile || !hotelCategoryOk || !profileCompletedOk) return err(req, 409, "ONBOARDING_REQUIRED");
 
-    if (!profile || !hotelCategoryOk || !profileCompletedOk) {
-      return err(req, 409, "ONBOARDING_REQUIRED");
-    }
+    // 5) normalizados + identity_key
+    const document_raw = str(input.document);
+    const email_raw = str(input.email);
+    const phone_raw = str(input.phone);
 
-    // 5) campos base
-    const document = str(input.document);
+    const document_norm = normalizeDocument(document_raw);
+    const email_norm = normalizeEmail(email_raw);
+    const phone_digits = normalizePhone(phone_raw);
+
+    if (!document_norm && !email_norm && !phone_digits) return err(req, 400, "NO_IDENTIFIER");
+
+    const raw_identifier =
+      document_norm
+        ? `DOC:${document_norm}`
+        : email_norm
+        ? `EMAIL:${email_norm}`
+        : `PHONE:${phone_digits}`;
+
+    const identity_key = await generateIdentityKey(raw_identifier);
+
     const full_name = str(input.full_name ?? input.fullName);
     const rating = clampInt(input.rating, 1, 5);
 
-    if (!document || !full_name) {
-      return err(req, 400, "missing_required_fields");
-    }
+    if (!full_name) return err(req, 400, "missing_required_fields");
 
+    // 6) incident/economy
     const incident_type = str(input.incident_type ?? input.incidentType) || null;
     const season_applied = str(input.season_applied ?? input.seasonApplied) || null;
 
     const impact_items_raw = input.impact_items ?? input.impactItems ?? null;
     const impact_items = Array.isArray(impact_items_raw) ? impact_items_raw : [];
 
-    // snapshots
     const hotel_category = Number(profile.hotel_category);
     const adr_reference = await getAdrReference(admin, hotel_category);
     const adr_real_snapshot = num(profile.adr_real);
 
-    // economía
     let economic_impact_gross: number | null = null;
     let economic_recovered: number | null = null;
     let economic_net_loss: number | null = null;
@@ -305,14 +311,12 @@ Deno.serve(async (req) => {
       const ovr = await getIncidentOverride(admin, ctx.customer_id, incident_type);
       const mult = seasonMultiplier(season_applied, profile);
 
-      // 1) gross desde items
       let gross_items = 0;
 
       for (const it of impact_items) {
         const code = str(it?.code ?? it?.item_code ?? it?.itemCode);
         const qtyRaw = it?.qty ?? it?.quantity ?? 1;
         const qty = Math.max(1, Math.trunc(Number(qtyRaw)));
-
         if (!code) continue;
 
         const unit = await getHotelItemUnitPrice(admin, ctx.customer_id, code);
@@ -321,16 +325,13 @@ Deno.serve(async (req) => {
         gross_items += unit * qty;
       }
 
-      // 2) fallback: gross_min
-      const gross_min =
-        num(ovr?.default_gross_min_override) ?? num(cat.default_gross_min) ?? 0;
+      const gross_min = num(ovr?.default_gross_min_override) ?? num(cat.default_gross_min) ?? 0;
 
       economic_impact_gross =
         gross_items > 0
           ? Math.round(gross_items * mult * 100) / 100
           : Math.round(gross_min * mult * 100) / 100;
 
-      // 3) recovered
       const recovered_input = num(input.economic_recovered ?? input.economicRecovered);
       if (recovered_input !== null) {
         economic_recovered = Math.round(Math.max(0, recovered_input) * 100) / 100;
@@ -339,30 +340,50 @@ Deno.serve(async (req) => {
           num(ovr?.default_recovery_pct_override) ??
           num(cat.default_recovery_pct) ??
           0;
-        economic_recovered =
-          Math.round((economic_impact_gross * pct / 100) * 100) / 100;
+        economic_recovered = Math.round((economic_impact_gross * pct / 100) * 100) / 100;
       }
 
-      // 4) net loss
-      economic_net_loss =
-        Math.round((economic_impact_gross - (economic_recovered ?? 0)) * 100) / 100;
+      economic_net_loss = Math.round((economic_impact_gross - (economic_recovered ?? 0)) * 100) / 100;
       if (economic_net_loss < 0) economic_net_loss = 0;
     }
 
-    // 6) INSERT
+    const evaluation_date = str(input.evaluation_date ?? input.evaluationDate) || todayISO();
+
+    // 7) creator_customer_* (si los quieres rellenar)
+    // - creador = customer_id del org, nombre opcional desde organizations
+    let creator_customer_name: string | null = null;
+    const { data: orgRow } = await admin
+      .from("debacu_eval_organizations")
+      .select("name")
+      .eq("id", ctx.org_id)
+      .maybeSingle();
+    if (orgRow?.name) creator_customer_name = String(orgRow.name);
+
     const payload: Record<string, unknown> = {
-      document,
+      // identidad
+      identity_key,
+      document: document_raw || null,
+      document_norm,
+      email: email_raw ? email_raw.trim() : null,
+      email_norm,
+      phone: phone_raw ? phone_raw.trim() : null,
+      phone_digits,
+
+      // básicos
       full_name,
-      nationality: str(input.nationality) || null,
-      phone: str(input.phone) || null,
-      email: str(input.email).toLowerCase() || null,
+      nationality: normalizeCountry(str(input.nationality)),
       rating,
       comment: str(input.comment).slice(0, 240) || null,
       platform: str(input.platform) || APP_ID,
-      evaluation_date: str(input.evaluation_date ?? input.evaluationDate) || todayISO(),
+      evaluation_date,
 
-      // tenant ownership
+      // tenant
       customer_id: ctx.customer_id,
+
+      // creator
+      creator_customer_id: ctx.customer_id,
+      creator_customer_uuid: ctx.customer_id, // si en tu modelo "uuid" = customer_id; si no, bórralo
+      creator_customer_name,
 
       // snapshots
       hotel_category,
@@ -384,36 +405,30 @@ Deno.serve(async (req) => {
       .from("debacu_evaluations")
       .insert(payload)
       .select(
-        "id, document, full_name, nationality, phone, email, rating, comment, platform, evaluation_date," +
-          "customer_id, hotel_category, incident_type, economic_impact_gross, economic_recovered, economic_net_loss," +
-          "impact_items, season_applied, adr_reference, adr_real_snapshot, created_at",
+        "id, identity_key, document, document_norm, email, email_norm, phone, phone_digits, full_name, nationality, rating, comment, platform, evaluation_date," +
+          "customer_id, creator_customer_id, creator_customer_name," +
+          "hotel_category, incident_type, economic_impact_gross, economic_recovered, economic_net_loss," +
+          "impact_items, season_applied, adr_reference, adr_real_snapshot, created_at, updated_at",
       )
       .single();
 
     if (error) {
-      logLine({
-        fn: FN,
-        stage: "insert_err",
-        code: (error as any)?.code ?? null,
-        msg: error.message,
-      });
+      logLine({ fn: FN, stage: "insert_err", code: (error as any)?.code ?? null, msg: error.message });
       return err(req, 500, "insert_failed");
     }
 
-    logLine({
-      fn: FN,
-      stage: "ok",
-      user_id: user.id,
-      org_id: ctx.org_id,
-      customer_id: ctx.customer_id,
-      app_id: ctx.app_id,
-      evaluation_id: data?.id ?? null,
+    // 8) actualizar índice global (mismo RPC que usas en import)
+    await admin.rpc("debacu_eval_upsert_guest_index_from_stay", {
+      p_identity_key: identity_key,
+      p_activity_date: evaluation_date,
+      p_is_completed: true,
     });
+
+    logLine({ fn: FN, stage: "ok", user_id: user.id, org_id: ctx.org_id, customer_id: ctx.customer_id, evaluation_id: data?.id ?? null });
 
     return json(req, 200, { ok: true, row: data });
   } catch (e) {
     console.error("debacu-eval-add error:", e);
-    // No leaks
     return err(req, 500, "request_failed");
   }
 });

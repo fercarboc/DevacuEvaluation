@@ -920,3 +920,29 @@ export async function getWeeklySeries7d(args: {
   if (!resp?.ok) throw new Error(resp?.error || resp?.detail || "fetch_failed");
   return (resp.series ?? []) as WeeklySeriesRow[];
 }
+
+
+export type GlobalGuestLookupResp = {
+  exists: boolean;
+  risk_band: "LOW" | "MEDIUM" | "HIGH" | null;
+  stays_count: number;
+  reservations_count: number;
+  incidents_count: number;
+  total_gross: number;
+  total_recovered: number;
+  total_net_loss: number;
+  first_seen_date: string | null;
+  last_seen_date: string | null;
+  last_incident_date: string | null;
+  input_kind: "DOC" | "EMAIL" | "PHONE";
+};
+
+export async function global_guest_lookup(input: {
+  document?: string | null;
+  email?: string | null;
+  phone?: string | null;
+}): Promise<GlobalGuestLookupResp> {
+  const raw = await callEdge<any>("debacu_eval_global_guest_lookup", input);
+  // callEdge ya desenvuelve ok/data normalmente
+  return raw as GlobalGuestLookupResp;
+}
