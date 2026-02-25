@@ -23,7 +23,7 @@ import StatsViewAuditor from "@/views/StatsViewAuditor";
 import HistoryViewAuditor from "@/views/HistoryViewAuditor";
 import ExportsViewAuditor from "@/views/ExportsViewAuditor";
 
-// ✅ Screening CSV (nuevo)
+// ✅ Screening CSV
 import ScreeningCsv from "@/pages/app/ScreeningCsv";
 
 import {
@@ -106,14 +106,8 @@ export default function AuthedApp() {
    * PLATFORM ADMIN vs HOTEL OWNER/STAFF (NO MEZCLAR)
    * ========================================================= */
   const email = String((user as any).email ?? "").toLowerCase();
-
-  // ✅ criterio mínimo y seguro (ajústalo a tu modelo real)
   const isPlatformAdmin = email === "admin@debacu.com";
-
-  // ✅ redirección segura sin useEffect (evita loops)
-  if (isPlatformAdmin) {
-    return <Navigate to="/app/admin/solicitudes-acceso" replace />;
-  }
+  if (isPlatformAdmin) return <Navigate to="/app/admin/solicitudes-acceso" replace />;
 
   /* ---------- plan ---------- */
   const planLike =
@@ -126,12 +120,19 @@ export default function AuthedApp() {
   const currentPlanCode = toPlanCode(currentPlan);
   const canAccessRevenue = currentPlan === PlanTier.MEDIUM || currentPlan === PlanTier.PREMIUM;
 
-  /* ---------- navegación ---------- */
+  /* ---------- navegación (ORDEN NUEVO) ---------- */
   const navItems: NavItem[] = React.useMemo(
     () => [
-      // Operativa
+      // Operativa (orden pedido)
       { view: "dashboard", label: "Dashboard", icon: LayoutDashboard, section: "OPERATIVA" },
-      { view: "search", label: "Consultar", icon: Search, section: "OPERATIVA" },
+
+      // ✅ 2) Consulta automática (Screening CSV)
+      { view: "aud_screening_csv", label: "Consulta automática (CSV)", icon: FileUp, section: "OPERATIVA" },
+
+      // ✅ 3) Consulta manual
+      { view: "search", label: "Consulta manual", icon: Search, section: "OPERATIVA" },
+
+      // ✅ 4) Registrar incidencia manual
       { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
 
       // Revenue Intelligence
@@ -144,9 +145,6 @@ export default function AuthedApp() {
       { view: "aud_history", label: "Histórico", icon: Clock, section: "AUDITORIA" },
       { view: "aud_exports", label: "Exportaciones", icon: Download, section: "AUDITORIA" },
 
-      // ✅ NUEVO: Screening CSV
-      { view: "aud_screening_csv", label: "Screening CSV", icon: FileUp, section: "AUDITORIA" },
-
       // Cuenta
       { view: "account", label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
     ],
@@ -155,17 +153,21 @@ export default function AuthedApp() {
 
   const title = React.useMemo(() => {
     switch (currentView) {
-      // Operativa
       case "dashboard":
         return "Dashboard";
+
+      case "aud_screening_csv":
+        return "Consulta automática (CSV)";
+
       case "search":
-        return "Consultar";
+        return "Consulta manual";
+
       case "add":
         return "Registrar incidencia";
+
       case "account":
         return "Mi cuenta";
 
-      // Revenue
       case "rev_channels":
         return "Análisis por Canal";
       case "rev_risk":
@@ -173,15 +175,12 @@ export default function AuthedApp() {
       case "rev_leakage":
         return "Fugas de Revenue";
 
-      // Auditoría
       case "aud_stats":
         return "Estadísticas operativas";
       case "aud_history":
         return "Histórico";
       case "aud_exports":
         return "Exportaciones";
-      case "aud_screening_csv":
-        return "Screening por CSV";
 
       default:
         return "Dashboard";
@@ -190,15 +189,18 @@ export default function AuthedApp() {
 
   const subtitle = React.useMemo(() => {
     switch (currentView) {
-      // Cuenta/Operativa
-      case "account":
-        return "Planes, perfil del hotel, catálogo, seguridad y datos bancarios.";
+      case "aud_screening_csv":
+        return "Importa CSV, valida (dry-run) y ejecuta screening (persona + fecha).";
+
       case "search":
         return "Consulta por documento, email, teléfono o nombre.";
+
       case "add":
         return "Registro estructurado de incidencias.";
 
-      // Revenue
+      case "account":
+        return "Planes, perfil del hotel, catálogo, seguridad y datos bancarios.";
+
       case "rev_channels":
         return "Comparativa por canal/plataforma y su impacto económico (net loss).";
       case "rev_risk":
@@ -206,27 +208,21 @@ export default function AuthedApp() {
       case "rev_leakage":
         return "Ranking de fugas de margen: net loss y cuota sobre el total.";
 
-      // Auditoría
       case "aud_stats":
         return "KPIs operativos y métricas agregadas.";
       case "aud_history":
         return "Trazabilidad y registro de acciones.";
       case "aud_exports":
         return "Exportación de informes y descargas.";
-      case "aud_screening_csv":
-        return "Importa CSV, valida (dry-run) y genera runs de screening (persona + fecha).";
 
       default:
-        return "";
+        return "Resumen ejecutivo del uso del plan y del impacto económico (mes actual).";
     }
   }, [currentView]);
 
-  /* ---------- navegación ---------- */
   const handleNavigate = React.useCallback((view: AuthedView) => {
     setCurrentView(view);
   }, []);
-
-  /* ---------------- render ---------------- */
 
   return (
     <AppShell
@@ -249,8 +245,13 @@ export default function AuthedApp() {
         />
       )}
 
+      {/* ✅ 2) Consulta automática */}
+      {currentView === "aud_screening_csv" && <ScreeningCsv />}
+
+      {/* ✅ 3) Consulta manual */}
       {currentView === "search" && <SearchRatings currentUser={user as any} />}
 
+      {/* ✅ 4) Registrar incidencia */}
       {currentView === "add" && (
         <RatingForm
           currentCustomerId={(user as any).id}
@@ -274,9 +275,6 @@ export default function AuthedApp() {
       {currentView === "aud_stats" && <StatsViewAuditor currentPlan={currentPlan} />}
       {currentView === "aud_history" && <HistoryViewAuditor />}
       {currentView === "aud_exports" && <ExportsViewAuditor currentPlan={currentPlan} />}
-
-      {/* ✅ Screening CSV */}
-      {currentView === "aud_screening_csv" && <ScreeningCsv />}
     </AppShell>
   );
 }
