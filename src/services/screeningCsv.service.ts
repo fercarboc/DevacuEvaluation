@@ -11,11 +11,17 @@ import type {
 
 /**
  * Bucket donde se suben CSVs.
- * - Puedes fijarlo en env VITE_DEBACU_IMPORT_BUCKET
- * - Default: customer-exports (según tu backend actual)
+ * Default: customer-exports
  */
-const IMPORT_BUCKET =
-  (import.meta as any).env?.VITE_DEBACU_IMPORT_BUCKET || "customer-exports";
+const IMPORT_BUCKET = import.meta.env.VITE_DEBACU_IMPORT_BUCKET || "customer-exports";
+
+/**
+ * ⚠️ IMPORTANTE:
+ * Si tu "Database" tipado no incluye estas tablas (import_profiles/screening_runs/...),
+ * TypeScript subraya .from("...") en rojo.
+ * Solución rápida: usar un client "any" solo en este servicio.
+ */
+const sb: any = supabase;
 
 function mustOrgId(orgId: string) {
   const v = String(orgId || "").trim();
@@ -24,13 +30,7 @@ function mustOrgId(orgId: string) {
 }
 
 function pickErrorMessage(e: any, fallback = "request_failed") {
-  return (
-    e?.message ||
-    e?.error_description ||
-    e?.error?.message ||
-    e?.error ||
-    fallback
-  );
+  return e?.message || e?.error_description || e?.error?.message || e?.error || fallback;
 }
 
 // -----------------------------
@@ -39,7 +39,7 @@ function pickErrorMessage(e: any, fallback = "request_failed") {
 export async function listImportProfiles(orgId: string): Promise<ImportProfile[]> {
   const org_id = mustOrgId(orgId);
 
-  const { data, error } = await supabase
+  const { data, error } = await sb
     .from("import_profiles")
     .select("*")
     .eq("org_id", org_id)
@@ -55,7 +55,7 @@ export async function listImportProfiles(orgId: string): Promise<ImportProfile[]
 export async function listScreeningRuns(orgId: string, limit = 50): Promise<ScreeningRun[]> {
   const org_id = mustOrgId(orgId);
 
-  const { data, error } = await supabase
+  const { data, error } = await sb
     .from("screening_runs")
     .select("*")
     .eq("org_id", org_id)
@@ -70,7 +70,7 @@ export async function getScreeningRun(runId: string): Promise<ScreeningRun | nul
   const id = String(runId || "").trim();
   if (!id) return null;
 
-  const { data, error } = await supabase
+  const { data, error } = await sb
     .from("screening_runs")
     .select("*")
     .eq("id", id)
@@ -96,11 +96,11 @@ export async function listRunResults(params: {
   const limit = Math.min(Math.max(Number(params.limit ?? 200), 1), 1000);
   const offset = Math.max(Number(params.offset ?? 0), 0);
 
-  let q = supabase
+  let q = sb
     .from("screening_results")
     .select("*")
     .eq("run_id", run_id)
-    .order("risk_band", { ascending: true }) // HIGH/MEDIUM/LOW no ordena perfecto, pero vale para empezar
+    .order("risk_band", { ascending: true })
     .order("delta_total_net_loss", { ascending: false })
     .order("delta_incidents_count", { ascending: false })
     .range(offset, offset + limit - 1);
@@ -125,7 +125,7 @@ export async function listRunAlerts(params: {
   const limit = Math.min(Math.max(Number(params.limit ?? 200), 1), 1000);
   const offset = Math.max(Number(params.offset ?? 0), 0);
 
-  let q = supabase
+  let q = sb
     .from("screening_alerts")
     .select("*")
     .eq("run_id", run_id)
@@ -148,12 +148,10 @@ export async function uploadScreeningCsvToStorage(orgId: string, file: File): Pr
   const safeName = file.name.replace(/[^\w.\-]+/g, "_");
   const path = `screening/${org_id}/${Date.now()}_${safeName}`;
 
-  const { error } = await supabase.storage
-    .from(IMPORT_BUCKET)
-    .upload(path, file, {
-      upsert: false,
-      contentType: file.type || "text/csv",
-    });
+  const { error } = await sb.storage.from(IMPORT_BUCKET).upload(path, file, {
+    upsert: false,
+    contentType: file.type || "text/csv",
+  });
 
   if (error) throw new Error(pickErrorMessage(error));
   return path;
@@ -180,7 +178,7 @@ export async function importValidateCommit(params: {
   if (params.filePath) payload.file_path = params.filePath;
   if (params.csvText) payload.csv_text = params.csvText;
 
-  const { data, error } = await supabase.functions.invoke("import_validate_commit", {
+  const { data, error } = await sb.functions.invoke("import_validate_commit", {
     body: payload,
   });
 

@@ -140,7 +140,7 @@ export default function AuthedApp() {
       { view: "search", label: "Consulta manual", icon: Search, section: "OPERATIVA" },
 
       // 👇 4) Registrar incidencia manual
-      { view: "add", label: "Registrar incidencia (manual)", icon: PlusCircle, section: "OPERATIVA" },
+      { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
 
       // Revenue Intelligence
       { view: "rev_channels", label: "Análisis por Canal", icon: BarChart3, section: "REVENUE" },
