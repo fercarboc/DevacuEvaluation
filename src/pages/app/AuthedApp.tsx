@@ -1,4 +1,3 @@
-// src/pages/app/AuthedApp.tsx
 import React from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 
@@ -23,7 +22,7 @@ import StatsViewAuditor from "@/views/StatsViewAuditor";
 import HistoryViewAuditor from "@/views/HistoryViewAuditor";
 import ExportsViewAuditor from "@/views/ExportsViewAuditor";
 
-// ✅ Screening CSV
+// ✅ Screening CSV (página wrapper)
 import ScreeningCsv from "@/pages/app/ScreeningCsv";
 
 import {
@@ -37,7 +36,7 @@ import {
   Clock,
   Download,
   CreditCard,
-  FileUp,
+  FileSpreadsheet,
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
@@ -107,7 +106,10 @@ export default function AuthedApp() {
    * ========================================================= */
   const email = String((user as any).email ?? "").toLowerCase();
   const isPlatformAdmin = email === "admin@debacu.com";
-  if (isPlatformAdmin) return <Navigate to="/app/admin/solicitudes-acceso" replace />;
+
+  if (isPlatformAdmin) {
+    return <Navigate to="/app/admin/solicitudes-acceso" replace />;
+  }
 
   /* ---------- plan ---------- */
   const planLike =
@@ -120,20 +122,25 @@ export default function AuthedApp() {
   const currentPlanCode = toPlanCode(currentPlan);
   const canAccessRevenue = currentPlan === PlanTier.MEDIUM || currentPlan === PlanTier.PREMIUM;
 
-  /* ---------- navegación (ORDEN NUEVO) ---------- */
+  /* ---------- navegación ---------- */
   const navItems: NavItem[] = React.useMemo(
     () => [
-      // Operativa (orden pedido)
+      // OPERATIVA (orden que quieres)
       { view: "dashboard", label: "Dashboard", icon: LayoutDashboard, section: "OPERATIVA" },
 
-      // ✅ 2) Consulta automática (Screening CSV)
-      { view: "aud_screening_csv", label: "Consulta automática (CSV)", icon: FileUp, section: "OPERATIVA" },
+      // 👇 2) Consulta automática CSV
+      {
+        view: "aud_screening_csv",
+        label: "Consulta automática (CSV)",
+        icon: FileSpreadsheet,
+        section: "OPERATIVA",
+      },
 
-      // ✅ 3) Consulta manual
+      // 👇 3) Consulta manual
       { view: "search", label: "Consulta manual", icon: Search, section: "OPERATIVA" },
 
-      // ✅ 4) Registrar incidencia manual
-      { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
+      // 👇 4) Registrar incidencia manual
+      { view: "add", label: "Registrar incidencia (manual)", icon: PlusCircle, section: "OPERATIVA" },
 
       // Revenue Intelligence
       { view: "rev_channels", label: "Análisis por Canal", icon: BarChart3, section: "REVENUE" },
@@ -153,21 +160,19 @@ export default function AuthedApp() {
 
   const title = React.useMemo(() => {
     switch (currentView) {
+      // Operativa
       case "dashboard":
         return "Dashboard";
-
       case "aud_screening_csv":
         return "Consulta automática (CSV)";
-
       case "search":
         return "Consulta manual";
-
       case "add":
         return "Registrar incidencia";
-
       case "account":
         return "Mi cuenta";
 
+      // Revenue
       case "rev_channels":
         return "Análisis por Canal";
       case "rev_risk":
@@ -175,6 +180,7 @@ export default function AuthedApp() {
       case "rev_leakage":
         return "Fugas de Revenue";
 
+      // Auditoría
       case "aud_stats":
         return "Estadísticas operativas";
       case "aud_history":
@@ -190,17 +196,15 @@ export default function AuthedApp() {
   const subtitle = React.useMemo(() => {
     switch (currentView) {
       case "aud_screening_csv":
-        return "Importa CSV, valida (dry-run) y ejecuta screening (persona + fecha).";
-
+        return "Importa un CSV, valida (dry-run) y ejecuta screening (persona + fecha).";
+      case "account":
+        return "Planes, perfil del hotel, catálogo, seguridad y datos bancarios.";
       case "search":
         return "Consulta por documento, email, teléfono o nombre.";
-
       case "add":
         return "Registro estructurado de incidencias.";
 
-      case "account":
-        return "Planes, perfil del hotel, catálogo, seguridad y datos bancarios.";
-
+      // Revenue
       case "rev_channels":
         return "Comparativa por canal/plataforma y su impacto económico (net loss).";
       case "rev_risk":
@@ -208,6 +212,7 @@ export default function AuthedApp() {
       case "rev_leakage":
         return "Ranking de fugas de margen: net loss y cuota sobre el total.";
 
+      // Auditoría
       case "aud_stats":
         return "KPIs operativos y métricas agregadas.";
       case "aud_history":
@@ -216,7 +221,7 @@ export default function AuthedApp() {
         return "Exportación de informes y descargas.";
 
       default:
-        return "Resumen ejecutivo del uso del plan y del impacto económico (mes actual).";
+        return "";
     }
   }, [currentView]);
 
@@ -236,7 +241,7 @@ export default function AuthedApp() {
       navItems={navItems}
       currentPlanCode={currentPlanCode}
     >
-      {/* Operativa */}
+      {/* 1) Dashboard */}
       {currentView === "dashboard" && (
         <DashboardHome
           onNavigate={(v) => {
@@ -245,13 +250,13 @@ export default function AuthedApp() {
         />
       )}
 
-      {/* ✅ 2) Consulta automática */}
+      {/* 2) Consulta automática (CSV) */}
       {currentView === "aud_screening_csv" && <ScreeningCsv />}
 
-      {/* ✅ 3) Consulta manual */}
+      {/* 3) Consulta manual */}
       {currentView === "search" && <SearchRatings currentUser={user as any} />}
 
-      {/* ✅ 4) Registrar incidencia */}
+      {/* 4) Registrar incidencia (manual) */}
       {currentView === "add" && (
         <RatingForm
           currentCustomerId={(user as any).id}
