@@ -143,21 +143,38 @@ export async function listRunAlerts(params: {
 // -----------------------------
 // Storage upload helper
 // -----------------------------
-export async function uploadScreeningCsvToStorage(orgId: string, file: File): Promise<string> {
-  const org_id = mustOrgId(orgId);
+ 
 
-  const safeName = file.name.replace(/[^\w.\-]+/g, "_");
-const path = `debacu_eval/org/${org_id}/screening/${Date.now()}_${safeName}`;
+export async function uploadScreeningCsvToStorage(orgId: string, file: File) {
+  const cleanOrgId = String(orgId || "").trim();
+  if (!cleanOrgId) throw new Error("missing_orgId");
 
-  const { error } = await sb.storage.from(IMPORT_BUCKET).upload(path, file, {
-    upsert: false,
-    contentType: file.type || "text/csv",
-  });
+  // 1) comprobar sesión REAL
+  const { data: s, error: sErr } = await supabase.auth.getSession();
+  if (sErr) throw sErr;
+  if (!s.session) throw new Error("no_session_before_upload");
 
-  if (error) throw new Error(pickErrorMessage(error));
-  return path;
+  // 2) path EXACTO
+  const ts = Date.now();
+  const safeName = String(file.name || "upload.csv").replace(/[^\w.\-]+/g, "_");
+  const path = `debacu_eval/org/${cleanOrgId}/screening/${ts}_${safeName}`;
+
+  // 3) upload
+  const { data, error } = await supabase.storage
+    .from("customer-imports")
+    .upload(path, file, {
+      upsert: false,
+      contentType: file.type || "text/csv",
+    });
+
+  if (error) {
+    // Esto es CLAVE: no pierdas el detalle
+    console.error("[uploadScreeningCsvToStorage] error", { path, error });
+    throw new Error(error.message);
+  }
+
+  return data.path; // esto es lo que luego mandas al edge function
 }
-
 // -----------------------------
 // Edge Function: import_validate_commit
 // -----------------------------
