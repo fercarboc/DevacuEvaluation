@@ -1,4 +1,4 @@
-// supabase/functions/debacu_eval_add/index.ts
+// supabase/functions/debacu-eval-add/index.ts
 // deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
@@ -15,6 +15,8 @@ function mustEnv(name: string) {
 
 const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+// ✅ mismo pepper que import_csv (para identity_key HMAC)
 const GLOBAL_PEPPER = mustEnv("DEBACU_GLOBAL_PEPPER");
 
 function sbService() {
@@ -27,24 +29,22 @@ function logLine(payload: Record<string, unknown>) {
   console.log(JSON.stringify(payload));
 }
 
-function err(
-  req: Request,
-  status: number,
-  detail:
-    | "UNAUTHENTICATED"
-    | "FORBIDDEN"
-    | "missing_org_id"
-    | "invalid_json_body"
-    | "missing_input"
-    | "must_accept_declaration"
-    | "ONBOARDING_REQUIRED"
-    | "missing_required_fields"
-    | "NO_IDENTIFIER"
-    | "INCIDENT_INVALID"
-    | "insert_failed"
-    | "request_failed"
-    | "METHOD_NOT_ALLOWED",
-) {
+type ErrDetail =
+  | "UNAUTHENTICATED"
+  | "FORBIDDEN"
+  | "missing_org_id"
+  | "invalid_json_body"
+  | "missing_input"
+  | "must_accept_declaration"
+  | "ONBOARDING_REQUIRED"
+  | "missing_required_fields"
+  | "NO_IDENTIFIER"
+  | "INCIDENT_INVALID"
+  | "insert_failed"
+  | "request_failed"
+  | "METHOD_NOT_ALLOWED";
+
+function err(req: Request, status: number, detail: ErrDetail) {
   return json(req, status, { ok: false, error: "request_failed", detail });
 }
 
@@ -56,6 +56,10 @@ function todayISO() {
 }
 function str(v: unknown) {
   return String(v ?? "").trim();
+}
+function upper(v: unknown) {
+  const t = str(v);
+  return t ? t.toUpperCase() : "";
 }
 function num(v: unknown): number | null {
   if (v === null || v === undefined || v === "") return null;
@@ -75,28 +79,36 @@ function seasonMultiplier(season: string | null, profile: any) {
   return 1;
 }
 
-// Normalizaciones (alineadas con tu schema)
-function normalizeDocument(v?: string) {
-  if (!v) return null;
-  return v.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+/* ======================================================
+ * Normalizaciones BASE (⚠️ NO usar para insertar *_norm, son GENERATED)
+ * ====================================================== */
+function normalizeDocumentBase(v?: string | null) {
+  const t = str(v);
+  if (!t) return null;
+  // debe ser compatible con generation_expression:
+  // upper(regexp_replace(trim(document), '[\s-]+', '', 'g'))
+  const out = t.trim().replace(/[\s-]+/g, "").toUpperCase();
+  return out || null;
 }
-function normalizeEmail(v?: string) {
-  if (!v) return null;
-  const email = v.trim().toLowerCase();
-  if (!email.includes("@")) return null;
-  return email;
+
+function normalizeEmailBase(v?: string | null) {
+  const t = str(v).trim().toLowerCase();
+  if (!t || !t.includes("@")) return null;
+  return t;
 }
-function normalizePhone(v?: string) {
-  if (!v) return null;
-  const digits = v.replace(/\D/g, "");
+
+function normalizePhoneDigitsBase(v?: string | null) {
+  const t = str(v);
+  if (!t) return null;
+  const digits = t.replace(/\D/g, "");
   if (digits.length < 7) return null;
   return digits;
 }
-function normalizeCountry(v?: string) {
-  if (!v) return "ESP";
-  return v.trim().toUpperCase().slice(0, 3);
-}
 
+/* ======================================================
+ * HMAC identity_key (NO es GENERATED en tu DB, así que se inserta)
+ * Jerarquía: DOC > EMAIL > PHONE
+ * ====================================================== */
 async function generateIdentityKey(identifier: string) {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -114,8 +126,36 @@ async function generateIdentityKey(identifier: string) {
     .join("");
 }
 
+async function computeIdentityFromInput(input: any) {
+  const document_norm = normalizeDocumentBase(input?.document);
+  const email_norm = normalizeEmailBase(input?.email);
+  const phone_digits = normalizePhoneDigitsBase(input?.phone);
+
+  if (!document_norm && !email_norm && !phone_digits) {
+    return {
+      document_norm,
+      email_norm,
+      phone_digits,
+      identity_key: null as string | null,
+      raw_identifier: null as string | null,
+    };
+  }
+
+  const raw_identifier =
+    document_norm
+      ? `DOC:${document_norm}`
+      : email_norm
+      ? `EMAIL:${email_norm}`
+      : `PHONE:${phone_digits}`;
+
+  const identity_key = await generateIdentityKey(raw_identifier);
+
+  return { document_norm, email_norm, phone_digits, identity_key, raw_identifier };
+}
+
 /* ======================================================
- * AuthZ tenant (STRICT)
+ * AuthZ tenant (STRICT: org_id requerido)
+ * - membership lookup soporta user_id OR auth_user_id
  * ====================================================== */
 async function requireOrgContext(
   admin: ReturnType<typeof sbService>,
@@ -134,6 +174,7 @@ async function requireOrgContext(
 
   if (memErr || !mem?.org_id) return null;
 
+  // primero intentamos entitlements view
   let customer_id: string | null = null;
 
   const { data: ent, error: entErr } = await admin
@@ -144,6 +185,7 @@ async function requireOrgContext(
 
   if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
 
+  // fallback: organizations.customer_id
   if (!customer_id) {
     const { data: org, error: orgErr } = await admin
       .from("debacu_eval_organizations")
@@ -234,11 +276,9 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return err(req, 405, "METHOD_NOT_ALLOWED");
 
   try {
-    // 1) JWT user (JWT-only)
     const user = await requireUser(req);
     if (!user?.id) return err(req, 401, "UNAUTHENTICATED");
 
-    // 2) body
     const body = await req.json().catch(() => null);
     if (!body) return err(req, 400, "invalid_json_body");
 
@@ -252,44 +292,38 @@ Deno.serve(async (req) => {
 
     const admin = sbService();
 
-    // 3) tenant context
     const ctx = await requireOrgContext(admin, user.id, org_id);
     if (!ctx) return err(req, 403, "FORBIDDEN");
 
-    logLine({ fn: FN, stage: "start", user_id: user.id, org_id: ctx.org_id, customer_id: ctx.customer_id, role: ctx.role });
+    logLine({
+      fn: FN,
+      stage: "start",
+      user_id: user.id,
+      org_id: ctx.org_id,
+      customer_id: ctx.customer_id,
+      app_id: ctx.app_id,
+      role: ctx.role,
+    });
 
-    // 4) perfil hotel (obligatorio)
     const profile = await getHotelProfile(admin, ctx.customer_id);
     const hotelCategoryOk = profile?.hotel_category !== null && profile?.hotel_category !== undefined;
     const profileCompletedOk = profile?.profile_completed === true;
-    if (!profile || !hotelCategoryOk || !profileCompletedOk) return err(req, 409, "ONBOARDING_REQUIRED");
+    if (!profile || !hotelCategoryOk || !profileCompletedOk) {
+      return err(req, 409, "ONBOARDING_REQUIRED");
+    }
 
-    // 5) normalizados + identity_key
+    // mínimos
     const document_raw = str(input.document);
-    const email_raw = str(input.email);
-    const phone_raw = str(input.phone);
-
-    const document_norm = normalizeDocument(document_raw);
-    const email_norm = normalizeEmail(email_raw);
-    const phone_digits = normalizePhone(phone_raw);
-
-    if (!document_norm && !email_norm && !phone_digits) return err(req, 400, "NO_IDENTIFIER");
-
-    const raw_identifier =
-      document_norm
-        ? `DOC:${document_norm}`
-        : email_norm
-        ? `EMAIL:${email_norm}`
-        : `PHONE:${phone_digits}`;
-
-    const identity_key = await generateIdentityKey(raw_identifier);
-
-    const full_name = str(input.full_name ?? input.fullName);
+    const full_name = upper(input.full_name ?? input.fullName);
     const rating = clampInt(input.rating, 1, 5);
 
-    if (!full_name) return err(req, 400, "missing_required_fields");
+    if (!document_raw || !full_name) return err(req, 400, "missing_required_fields");
 
-    // 6) incident/economy
+    // ✅ identidad HMAC (requisito: DOC/EMAIL/PHONE)
+    // OJO: document_norm/email_norm/phone_digits SON GENERATED en DB -> NO insertarlos
+    const ident = await computeIdentityFromInput(input);
+    if (!ident.identity_key) return err(req, 400, "NO_IDENTIFIER");
+
     const incident_type = str(input.incident_type ?? input.incidentType) || null;
     const season_applied = str(input.season_applied ?? input.seasonApplied) || null;
 
@@ -300,6 +334,7 @@ Deno.serve(async (req) => {
     const adr_reference = await getAdrReference(admin, hotel_category);
     const adr_real_snapshot = num(profile.adr_real);
 
+    // economía
     let economic_impact_gross: number | null = null;
     let economic_recovered: number | null = null;
     let economic_net_loss: number | null = null;
@@ -317,6 +352,7 @@ Deno.serve(async (req) => {
         const code = str(it?.code ?? it?.item_code ?? it?.itemCode);
         const qtyRaw = it?.qty ?? it?.quantity ?? 1;
         const qty = Math.max(1, Math.trunc(Number(qtyRaw)));
+
         if (!code) continue;
 
         const unit = await getHotelItemUnitPrice(admin, ctx.customer_id, code);
@@ -336,10 +372,7 @@ Deno.serve(async (req) => {
       if (recovered_input !== null) {
         economic_recovered = Math.round(Math.max(0, recovered_input) * 100) / 100;
       } else {
-        const pct =
-          num(ovr?.default_recovery_pct_override) ??
-          num(cat.default_recovery_pct) ??
-          0;
+        const pct = num(ovr?.default_recovery_pct_override) ?? num(cat.default_recovery_pct) ?? 0;
         economic_recovered = Math.round((economic_impact_gross * pct / 100) * 100) / 100;
       }
 
@@ -347,42 +380,41 @@ Deno.serve(async (req) => {
       if (economic_net_loss < 0) economic_net_loss = 0;
     }
 
-    const evaluation_date = str(input.evaluation_date ?? input.evaluationDate) || todayISO();
+    // creator_* (audit)
+    const creator_customer_uuid = user.id; // auth.users.id
+    const creator_customer_id = str(input.creator_customer_id ?? input.creatorCustomerId) || ctx.customer_id;
+    const creator_customer_name = str(input.creator_customer_name ?? input.creatorCustomerName) || null;
 
-    // 7) creator_customer_* (si los quieres rellenar)
-    // - creador = customer_id del org, nombre opcional desde organizations
-    let creator_customer_name: string | null = null;
-    const { data: orgRow } = await admin
-      .from("debacu_eval_organizations")
-      .select("name")
-      .eq("id", ctx.org_id)
-      .maybeSingle();
-    if (orgRow?.name) creator_customer_name = String(orgRow.name);
+    // BASE FIELDS (no *_norm)
+    const email = normalizeEmailBase(input.email) ?? null;
+    const phone = str(input.phone) || null;
 
+    // INSERT payload compatible con GENERATED columns
     const payload: Record<string, unknown> = {
-      // identidad
-      identity_key,
-      document: document_raw || null,
-      document_norm,
-      email: email_raw ? email_raw.trim() : null,
-      email_norm,
-      phone: phone_raw ? phone_raw.trim() : null,
-      phone_digits,
+      // base identifiers
+      document: document_raw.toUpperCase(),
+      email,
+      phone,
 
-      // básicos
+      // HMAC identity
+      identity_key: ident.identity_key,
+
+      // person
       full_name,
-      nationality: normalizeCountry(str(input.nationality)),
+      nationality: upper(input.nationality) || null,
+
+      // evaluation
       rating,
       comment: str(input.comment).slice(0, 240) || null,
       platform: str(input.platform) || APP_ID,
-      evaluation_date,
+      evaluation_date: str(input.evaluation_date ?? input.evaluationDate) || todayISO(),
 
-      // tenant
+      // tenant ownership
       customer_id: ctx.customer_id,
 
-      // creator
-      creator_customer_id: ctx.customer_id,
-      creator_customer_uuid: ctx.customer_id, // si en tu modelo "uuid" = customer_id; si no, bórralo
+      // creator (audit)
+      creator_customer_uuid,
+      creator_customer_id,
       creator_customer_name,
 
       // snapshots
@@ -405,26 +437,34 @@ Deno.serve(async (req) => {
       .from("debacu_evaluations")
       .insert(payload)
       .select(
-        "id, identity_key, document, document_norm, email, email_norm, phone, phone_digits, full_name, nationality, rating, comment, platform, evaluation_date," +
-          "customer_id, creator_customer_id, creator_customer_name," +
-          "hotel_category, incident_type, economic_impact_gross, economic_recovered, economic_net_loss," +
-          "impact_items, season_applied, adr_reference, adr_real_snapshot, created_at, updated_at",
+        "id, document, document_norm, email, email_norm, phone, phone_digits, identity_key, " +
+          "full_name, nationality, rating, comment, platform, evaluation_date, " +
+          "customer_id, creator_customer_uuid, creator_customer_id, creator_customer_name, " +
+          "hotel_category, incident_type, economic_impact_gross, economic_recovered, economic_net_loss, " +
+          "impact_items, season_applied, adr_reference, adr_real_snapshot, created_at",
       )
       .single();
 
     if (error) {
-      logLine({ fn: FN, stage: "insert_err", code: (error as any)?.code ?? null, msg: error.message });
+      logLine({
+        fn: FN,
+        stage: "insert_err",
+        code: (error as any)?.code ?? null,
+        msg: error.message ?? null,
+        details: (error as any)?.details ?? null,
+        hint: (error as any)?.hint ?? null,
+      });
       return err(req, 500, "insert_failed");
     }
 
-    // 8) actualizar índice global (mismo RPC que usas en import)
-    await admin.rpc("debacu_eval_upsert_guest_index_from_stay", {
-      p_identity_key: identity_key,
-      p_activity_date: evaluation_date,
-      p_is_completed: true,
+    logLine({
+      fn: FN,
+      stage: "ok",
+      user_id: user.id,
+      org_id: ctx.org_id,
+      customer_id: ctx.customer_id,
+      evaluation_id: data?.id ?? null,
     });
-
-    logLine({ fn: FN, stage: "ok", user_id: user.id, org_id: ctx.org_id, customer_id: ctx.customer_id, evaluation_id: data?.id ?? null });
 
     return json(req, 200, { ok: true, row: data });
   } catch (e) {

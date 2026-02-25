@@ -1,3 +1,4 @@
+// src/components/layout/AppShell.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import {
   LayoutDashboard,
@@ -22,7 +23,7 @@ import {
  * ✅ Views de la app.
  * - Operativa: dashboard/search/add/account/admin
  * - Revenue Intelligence: rev_channels/rev_risk/rev_leakage
- * - Auditoría: aud_summary/aud_risk/aud_stats/aud_history/aud_exports/aud_config
+ * - Auditoría: aud_summary/aud_risk/aud_stats/aud_history/aud_exports/aud_config/aud_screening_csv
  */
 export type AuthedView =
   | "dashboard"
@@ -38,7 +39,8 @@ export type AuthedView =
   | "aud_stats"
   | "aud_history"
   | "aud_exports"
-  | "aud_config";
+  | "aud_config"
+  | "aud_screening_csv"; // ✅ NUEVA
 
 export type NavItem = {
   view: AuthedView;
@@ -152,39 +154,37 @@ export default function AppShell({
   const canAccessRevenue = plan === "MEDIUM" || plan === "PREMIUM";
 
   const nav = useMemo<NavItem[]>(() => {
-    const base: NavItem[] =
-      navItems ?? [
-        // Operativa
-        { view: "dashboard", label: "Dashboard", icon: LayoutDashboard, section: "OPERATIVA" },
-        { view: "search", label: "Consultar", icon: Search, section: "OPERATIVA" },
-        { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
+    const base: NavItem[] = [
+      // Operativa
+      { view: "dashboard", label: "Dashboard", icon: LayoutDashboard, section: "OPERATIVA" },
+      { view: "search", label: "Consultar", icon: Search, section: "OPERATIVA" },
+      { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
 
-        // Revenue Intelligence (✅ locked si no hay acceso)
-        { view: "rev_channels", label: "Análisis por Canal", icon: BarChart3, section: "REVENUE", locked: !canAccessRevenue },
-        { view: "rev_risk", label: "Nivel de Riesgo", icon: ShieldAlert, section: "REVENUE", locked: !canAccessRevenue },
-        { view: "rev_leakage", label: "Fugas de Revenue", icon: TrendingDown, section: "REVENUE", locked: !canAccessRevenue },
+      // Revenue Intelligence (✅ locked si no hay acceso)
+      { view: "rev_channels", label: "Análisis por Canal", icon: BarChart3, section: "REVENUE", locked: !canAccessRevenue },
+      { view: "rev_risk", label: "Nivel de Riesgo", icon: ShieldAlert, section: "REVENUE", locked: !canAccessRevenue },
+      { view: "rev_leakage", label: "Fugas de Revenue", icon: TrendingDown, section: "REVENUE", locked: !canAccessRevenue },
 
-        // Auditoría
-        { view: "aud_summary", label: "Resumen", icon: FileText, section: "AUDITORIA" },
-        { view: "aud_risk", label: "Auditoría de riesgo", icon: Shield, section: "AUDITORIA" },
-        { view: "aud_stats", label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
-        { view: "aud_history", label: "Histórico", icon: Clock, section: "AUDITORIA" },
-        { view: "aud_exports", label: "Exportaciones", icon: Download, section: "AUDITORIA" },
-        { view: "aud_config", label: "Configuración-Avisos", icon: Settings, section: "AUDITORIA" },
+      // Auditoría
+      { view: "aud_screening_csv", label: "Screening CSV", icon: FileText, section: "AUDITORIA" },
+      { view: "aud_summary", label: "Resumen", icon: FileText, section: "AUDITORIA" },
+      { view: "aud_risk", label: "Auditoría de riesgo", icon: Shield, section: "AUDITORIA" },
+      { view: "aud_stats", label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
+      { view: "aud_history", label: "Histórico", icon: Clock, section: "AUDITORIA" },
+      { view: "aud_exports", label: "Exportaciones", icon: Download, section: "AUDITORIA" },
+      { view: "aud_config", label: "Configuración-Avisos", icon: Settings, section: "AUDITORIA" },
 
-        // Cuenta
-        { view: "account", label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
-      ];
+      // Cuenta
+      { view: "account", label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
+    ];
 
-    // Si el consumer pasa navItems, respetamos, pero aplicamos lock a revenue igualmente
-    if (navItems) {
-      return navItems.map((i) => {
-        if (i.section === "REVENUE") return { ...i, locked: !canAccessRevenue };
-        return i;
-      });
-    }
+    const src = navItems ?? base;
 
-    return base;
+    // Siempre aplicamos lock a revenue en función del plan
+    return src.map((i) => {
+      if (i.section === "REVENUE") return { ...i, locked: !canAccessRevenue };
+      return i;
+    });
   }, [navItems, canAccessRevenue]);
 
   const sections = useMemo(() => {
@@ -223,10 +223,7 @@ export default function AppShell({
         locked={i.locked}
         active={activeView === i.view}
         onClick={() => {
-          // disabled real => no navegar
           if (i.disabled) return;
-
-          // locked => sí navegamos (para que se vea demo/paywall)
           handleNavigate(i.view);
         }}
       />
@@ -248,14 +245,11 @@ export default function AppShell({
           </div>
         </div>
 
-        {/* ✅ padding-bottom para que el footer no tape el último bloque */}
         <div className="flex-1 overflow-y-auto p-4 pb-6 space-y-8">
           <SectionBlock title="Operativa">{renderItems(sections.operativa)}</SectionBlock>
 
           {sections.revenue.length > 0 && (
-            <SectionBlock title="Revenue Intelligence">
-              {renderItems(sections.revenue)}
-            </SectionBlock>
+            <SectionBlock title="Revenue Intelligence">{renderItems(sections.revenue)}</SectionBlock>
           )}
 
           {sections.auditoria.length > 0 && (
@@ -273,9 +267,7 @@ export default function AppShell({
               {(userName?.[0] || userEmail?.[0] || "U").toUpperCase()}
             </div>
             <div className="overflow-hidden">
-              <p className="text-sm font-semibold text-slate-900 truncate">
-                {userName || "Usuario"}
-              </p>
+              <p className="text-sm font-semibold text-slate-900 truncate">{userName || "Usuario"}</p>
               <p className="text-xs text-slate-500 truncate">{userEmail || ""}</p>
             </div>
           </div>
@@ -337,9 +329,7 @@ export default function AppShell({
                 <SectionBlock title="Operativa">{renderItems(sections.operativa)}</SectionBlock>
 
                 {sections.revenue.length > 0 && (
-                  <SectionBlock title="Revenue Intelligence">
-                    {renderItems(sections.revenue)}
-                  </SectionBlock>
+                  <SectionBlock title="Revenue Intelligence">{renderItems(sections.revenue)}</SectionBlock>
                 )}
 
                 {sections.auditoria.length > 0 && (

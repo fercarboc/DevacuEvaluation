@@ -1,3 +1,4 @@
+// src/pages/app/AuthedApp.tsx
 import React from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 
@@ -22,6 +23,9 @@ import StatsViewAuditor from "@/views/StatsViewAuditor";
 import HistoryViewAuditor from "@/views/HistoryViewAuditor";
 import ExportsViewAuditor from "@/views/ExportsViewAuditor";
 
+// ✅ Screening CSV (nuevo)
+import ScreeningCsv from "@/pages/app/ScreeningCsv";
+
 import {
   LayoutDashboard,
   Search,
@@ -33,6 +37,7 @@ import {
   Clock,
   Download,
   CreditCard,
+  FileUp,
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
@@ -99,13 +104,7 @@ export default function AuthedApp() {
 
   /* =========================================================
    * PLATFORM ADMIN vs HOTEL OWNER/STAFF (NO MEZCLAR)
-   * =========================================================
-   * - Platform Admin => /app/admin/*
-   * - Owner/Staff del hotel => /app/*
-   *
-   * No uses user.isAdmin aquí, porque puede venir como string
-   * o confundirse con role OWNER (org), provocando bucles.
-   */
+   * ========================================================= */
   const email = String((user as any).email ?? "").toLowerCase();
 
   // ✅ criterio mínimo y seguro (ajústalo a tu modelo real)
@@ -145,6 +144,9 @@ export default function AuthedApp() {
       { view: "aud_history", label: "Histórico", icon: Clock, section: "AUDITORIA" },
       { view: "aud_exports", label: "Exportaciones", icon: Download, section: "AUDITORIA" },
 
+      // ✅ NUEVO: Screening CSV
+      { view: "aud_screening_csv", label: "Screening CSV", icon: FileUp, section: "AUDITORIA" },
+
       // Cuenta
       { view: "account", label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
     ],
@@ -178,6 +180,8 @@ export default function AuthedApp() {
         return "Histórico";
       case "aud_exports":
         return "Exportaciones";
+      case "aud_screening_csv":
+        return "Screening por CSV";
 
       default:
         return "Dashboard";
@@ -209,6 +213,8 @@ export default function AuthedApp() {
         return "Trazabilidad y registro de acciones.";
       case "aud_exports":
         return "Exportación de informes y descargas.";
+      case "aud_screening_csv":
+        return "Importa CSV, valida (dry-run) y genera runs de screening (persona + fecha).";
 
       default:
         return "";
@@ -268,6 +274,9 @@ export default function AuthedApp() {
       {currentView === "aud_stats" && <StatsViewAuditor currentPlan={currentPlan} />}
       {currentView === "aud_history" && <HistoryViewAuditor />}
       {currentView === "aud_exports" && <ExportsViewAuditor currentPlan={currentPlan} />}
+
+      {/* ✅ Screening CSV */}
+      {currentView === "aud_screening_csv" && <ScreeningCsv />}
     </AppShell>
   );
 }
