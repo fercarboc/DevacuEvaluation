@@ -15,11 +15,12 @@ const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
 const GLOBAL_PEPPER = mustEnv("DEBACU_GLOBAL_PEPPER");
 
-// Storage bucket donde guardas los CSV (ajústalo)
-const IMPORT_BUCKET = Deno.env.get("DEBACU_IMPORT_BUCKET") || "customer-exports";
+// ✅ Storage bucket donde guardas los CSV
+//    Por defecto: customer-imports (NO customer-exports)
+const IMPORT_BUCKET = Deno.env.get("DEBACU_IMPORT_BUCKET") || "customer-imports";
 
 // ------------------------------------------------------------
-// Supabase admin client
+// Supabase admin client (Service Role)
 // ------------------------------------------------------------
 function sbAdmin() {
   return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
@@ -47,7 +48,6 @@ function num(v: unknown): number | null {
 function toISODate(v: unknown): string | null {
   const t = str(v);
   if (!t) return null;
-  // Acepta YYYY-MM-DD o YYYY-MM-DD HH:mm:ss
   const m = t.match(/^(\d{4}-\d{2}-\d{2})/);
   return m ? m[1] : null;
 }
@@ -87,6 +87,24 @@ function daysBetweenFromToday(dateISO: string) {
 }
 
 // ------------------------------------------------------------
+// ✅ Guard: membership check (ACTIVE) para org_id
+// ------------------------------------------------------------
+async function requireOrgMemberActive(admin: ReturnType<typeof sbAdmin>, org_id: string, user_id: string) {
+  const { data, error } = await admin
+    .from("debacu_eval_org_members")
+    .select("id, status, role")
+    .eq("org_id", org_id)
+    .eq("user_id", user_id)
+    .maybeSingle();
+
+  if (error) throw new Error(`org_member_check_failed:${error.message}`);
+  if (!data?.id) return { ok: false as const, reason: "NOT_MEMBER" as const };
+  if (String(data.status || "").toUpperCase() !== "ACTIVE") return { ok: false as const, reason: "NOT_ACTIVE" as const };
+
+  return { ok: true as const, member: data };
+}
+
+// ------------------------------------------------------------
 // CSV parser (simple, soporta comillas y comas)
 // ------------------------------------------------------------
 function parseCsv(csvText: string, delimiter = ",") {
@@ -116,11 +134,9 @@ function parseCsv(csvText: string, delimiter = ",") {
     }
 
     if (!inQuotes && (ch === "\n" || ch === "\r")) {
-      // manejar CRLF
       if (ch === "\r" && csvText[i + 1] === "\n") i++;
       row.push(cur);
       cur = "";
-      // ignora línea vacía
       const allEmpty = row.every((c) => str(c) === "");
       if (!allEmpty) rows.push(row);
       row = [];
@@ -130,7 +146,6 @@ function parseCsv(csvText: string, delimiter = ",") {
     cur += ch;
   }
 
-  // último campo
   if (cur.length || row.length) {
     row.push(cur);
     const allEmpty = row.every((c) => str(c) === "");
@@ -218,7 +233,6 @@ async function computeIdentity(row: any, strategy: string): Promise<IdentityInfo
     }
   }
 
-  // Fallback jerárquico
   if (!raw) {
     if (doc) {
       raw = `DOC:${doc}`;
@@ -267,18 +281,10 @@ async function computeIdentity(row: any, strategy: string): Promise<IdentityInfo
 function requiredFieldsFor(runType: string) {
   const rt = String(runType || "").toUpperCase();
 
-  if (rt === "INHOUSE_TODAY") {
-    return ["checkin_date", "first_name", "last_name"];
-  }
-  if (rt === "FUTURE_BOOKINGS") {
-    return ["checkin_date", "checkout_date", "first_name", "last_name"];
-  }
-  if (rt === "HISTORICAL_STAYS") {
-    return ["checkin_date", "checkout_date", "status", "channel", "first_name", "last_name"];
-  }
-  if (rt === "HISTORICAL_BOOKINGS") {
-    return ["booking_created_at", "checkin_date", "checkout_date", "status", "channel", "first_name", "last_name"];
-  }
+  if (rt === "INHOUSE_TODAY") return ["checkin_date", "first_name", "last_name"];
+  if (rt === "FUTURE_BOOKINGS") return ["checkin_date", "checkout_date", "first_name", "last_name"];
+  if (rt === "HISTORICAL_STAYS") return ["checkin_date", "checkout_date", "status", "channel", "first_name", "last_name"];
+  if (rt === "HISTORICAL_BOOKINGS") return ["booking_created_at", "checkin_date", "checkout_date", "status", "channel", "first_name", "last_name"];
   return ["checkin_date", "first_name", "last_name"];
 }
 
@@ -364,7 +370,8 @@ Deno.serve(async (req) => {
 
   try {
     const user = await requireUser(req);
-    if (!user?.id) return json(req, 401, { ok: false, error: "UNAUTHENTICATED" });
+    const userId = String(user?.id || "");
+    if (!userId) return json(req, 401, { ok: false, error: "UNAUTHENTICATED" });
 
     const body = await req.json().catch(() => null);
     if (!body) return json(req, 400, { ok: false, error: "invalid_json_body" });
@@ -381,6 +388,16 @@ Deno.serve(async (req) => {
     if (!org_id) return json(req, 400, { ok: false, error: "missing_org_id" });
     if (!profile_id) return json(req, 400, { ok: false, error: "missing_profile_id" });
     if (!file_path && !csv_text) return json(req, 400, { ok: false, error: "missing_file_or_csv_text" });
+
+    // ✅ Security gate: membership ACTIVE en org
+    const mem = await requireOrgMemberActive(admin, org_id, userId);
+    if (!mem.ok) {
+      return json(req, 403, {
+        ok: false,
+        error: "FORBIDDEN",
+        detail: mem.reason === "NOT_ACTIVE" ? "org_membership_not_active" : "org_membership_missing",
+      });
+    }
 
     // 1) Load profile
     const { data: profile, error: pErr } = await admin
@@ -421,7 +438,7 @@ Deno.serve(async (req) => {
       .from("import_jobs")
       .insert({
         org_id,
-        user_id: user.id,
+        user_id: userId,
         profile_id,
         file_path: file_path || "(inline)",
         file_hash,
@@ -455,15 +472,11 @@ Deno.serve(async (req) => {
 
       for (const f of required) {
         const v = obj[f];
-        if (!str(v)) {
-          errors.push({ row: rowNum, field: f, error: "missing_required_field" });
-        }
+        if (!str(v)) errors.push({ row: rowNum, field: f, error: "missing_required_field" });
       }
 
       const ident = await computeIdentity(obj, identity_strategy);
-      if (!ident.identity_key) {
-        errors.push({ row: rowNum, field: "identity", error: "NO_IDENTIFIER" });
-      }
+      if (!ident.identity_key) errors.push({ row: rowNum, field: "identity", error: "NO_IDENTIFIER" });
 
       obj.total_amount = num(obj.total_amount);
       obj.room_amount = num(obj.room_amount);
@@ -539,9 +552,7 @@ Deno.serve(async (req) => {
     // Previous run for delta (persona+fecha)
     const prevRunId = await getPreviousRunId(admin, org_id, effectiveRunType, runId);
 
-    // ------------------------------------------------------------
     // ✅ Prev snapshot: key(identity_key|checkin_date) -> {incidents, loss, band}
-    // ------------------------------------------------------------
     const prevMap = new Map<string, { incidents: number; loss: number; band: string }>();
     if (prevRunId) {
       const { data: prevRows, error: prevErr } = await admin
@@ -564,12 +575,8 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ------------------------------------------------------------
     // ✅ Preload guest_index rows for ALL identity_keys (chunked)
-    // ------------------------------------------------------------
-    const uniqueIdentityKeys = Array.from(
-      new Set(validRows.map((r) => String(r.identity_key || "")).filter(Boolean)),
-    );
+    const uniqueIdentityKeys = Array.from(new Set(validRows.map((r) => String(r.identity_key || "")).filter(Boolean)));
 
     const indexMap = new Map<
       string,
@@ -597,14 +604,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ------------------------------------------------------------
     // Persona + Fecha aggregation for screening_results & alerts
-    // Key = identity_key|checkin_date
-    // ------------------------------------------------------------
     type Agg = {
       identity_key: string;
       checkin_date: string;
-      row_number: number; // (csv line)
+      row_number: number;
       checkout_date: string | null;
 
       match_confidence: string;
@@ -621,13 +625,11 @@ Deno.serve(async (req) => {
       delta_incidents_count: number;
       delta_total_net_loss: number;
 
-      // optional rollups from CSV
       total_amount_max: number;
     };
 
     const agg = new Map<string, Agg>();
 
-    // 7) Bulk upsert watchlist + build consolidated results
     let high = 0, med = 0, lowc = 0;
 
     const watchWithRef: any[] = [];
@@ -645,12 +647,10 @@ Deno.serve(async (req) => {
       const checkin_date = (r.checkin_date as string | null) || null;
       const checkout_date = (r.checkout_date as string | null) || null;
 
-      // Safety: if for some reason checkin missing, skip commit row (but it should be required)
       if (!checkin_date) continue;
 
-      const row_number = i + 2; // header=1
+      const row_number = i + 2;
 
-      // ---- watchlist payload (por fila/reserva)
       const reservation_ref = str(r.reservation_ref);
       const watchPayload: any = {
         org_id,
@@ -668,17 +668,14 @@ Deno.serve(async (req) => {
       if (reservation_ref) watchWithRef.push(watchPayload);
       else watchNoRef.push(watchPayload);
 
-      // ---- metrics from preloaded index (por identity)
       const idxRow = indexMap.get(identity_key);
       const incidents_count = Number(idxRow?.incidents_count ?? 0);
       const total_net_loss = Number(idxRow?.total_net_loss ?? 0);
       const base_band = String(idxRow?.risk_band ?? "LOW");
       const last_incident_date = idxRow?.last_incident_date ?? null;
 
-      const days_since_last =
-        last_incident_date ? daysBetweenFromToday(last_incident_date) : null;
+      const days_since_last = last_incident_date ? daysBetweenFromToday(last_incident_date) : null;
 
-      // ---- decay: band calculada con loss ajustada (no tocamos el total original)
       const df = decayFactor(days_since_last);
       const adjusted_loss = total_net_loss * df;
 
@@ -687,7 +684,6 @@ Deno.serve(async (req) => {
       else if (incidents_count >= 2 || adjusted_loss >= 200) risk_band = "HIGH";
       else risk_band = "MEDIUM";
 
-      // ---- delta vs prev run (persona+fecha)
       const prevKey = `${identity_key}|${checkin_date}`;
       let prev_band: string | null = null;
       let risk_band_changed = false;
@@ -699,7 +695,6 @@ Deno.serve(async (req) => {
         const prev = prevMap.get(prevKey)!;
         prev_band = prev.band;
         risk_band_changed = prev.band !== risk_band;
-
         delta_incidents = incidents_count - prev.incidents;
         delta_loss = total_net_loss - prev.loss;
       }
@@ -707,7 +702,6 @@ Deno.serve(async (req) => {
       if (!Number.isFinite(delta_incidents)) delta_incidents = 0;
       if (!Number.isFinite(delta_loss)) delta_loss = 0;
 
-      // ---- consolidate screening_results by (identity_key, checkin_date)
       const k = prevKey;
       const existing = agg.get(k);
 
@@ -735,38 +729,31 @@ Deno.serve(async (req) => {
           total_amount_max: Number(r.total_amount ?? 0),
         });
       } else {
-        // row_number: keep smallest (best traceability)
         if (row_number < existing.row_number) existing.row_number = row_number;
 
-        // checkout_date: keep max (ampliación)
         if (checkout_date && (!existing.checkout_date || checkout_date > existing.checkout_date)) {
           existing.checkout_date = checkout_date;
         }
 
-        // total_amount: keep max
         const ta = Number(r.total_amount ?? 0);
         if (Number.isFinite(ta) && ta > existing.total_amount_max) existing.total_amount_max = ta;
 
-        // match_confidence: keep best
         const mc = String(r.match_confidence || "LOW");
         if (confRank(mc) > confRank(existing.match_confidence)) {
           existing.match_confidence = mc;
           existing.match_basis = r.match_basis || null;
         }
 
-        // risk_band: keep worst (HIGH > MEDIUM > LOW)
         if (bandRank(risk_band) > bandRank(existing.risk_band)) {
           existing.risk_band = risk_band;
           existing.risk_band_changed = prev_band ? prev_band !== risk_band : false;
           existing.prev_risk_band = prev_band;
         }
 
-        // delta: keep worst direction (if you want). Here: keep max positive deltas
         if (delta_incidents > existing.delta_incidents_count) existing.delta_incidents_count = delta_incidents;
         if (delta_loss > existing.delta_total_net_loss) existing.delta_total_net_loss = delta_loss;
       }
 
-      // ---- flush watchlist upserts
       if (watchWithRef.length >= WATCH_CHUNK) {
         const batch = watchWithRef.splice(0, watchWithRef.length);
         const { error: wErr } = await admin
@@ -790,7 +777,6 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ---- final flush watchlist
     if (watchWithRef.length) {
       const { error: wErr } = await admin
         .from("watchlist_reservations")
@@ -811,12 +797,8 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ------------------------------------------------------------
-    // Insert consolidated screening_results & screening_alerts
-    // ------------------------------------------------------------
     const consolidated = Array.from(agg.values());
 
-    // Counters on consolidated
     high = 0; med = 0; lowc = 0;
     for (const a of consolidated) {
       if (a.risk_band === "HIGH") high++;
@@ -824,7 +806,6 @@ Deno.serve(async (req) => {
       else lowc++;
     }
 
-    // Insert screening_results in chunks
     for (const part of chunk(consolidated, RESULTS_CHUNK)) {
       const batch = part.map((a) => ({
         run_id: runId,
@@ -832,8 +813,6 @@ Deno.serve(async (req) => {
         identity_key: a.identity_key,
         row_number: a.row_number,
         checkin_date: a.checkin_date,
-        // NOTE: screening_results table in your schema doesn't have checkout_date column (only checkin_date)
-        // If you later add it, you can include it here.
         risk_band: a.risk_band,
         prev_risk_band: a.prev_risk_band,
         risk_band_changed: a.risk_band_changed,
@@ -855,7 +834,6 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Build alerts (1 per persona+fecha)
     const alertsAll = consolidated
       .filter((a) => a.delta_incidents_count > 0 || a.delta_total_net_loss > 0 || a.risk_band_changed || a.risk_band === "HIGH")
       .map((a) => {
@@ -886,11 +864,10 @@ Deno.serve(async (req) => {
       }
     }
 
-    // 8) Update screening_run counts + import_job status COMMITTED
     await admin
       .from("screening_runs")
       .update({
-        total_analyzed: consolidated.length, // persona+fecha
+        total_analyzed: consolidated.length,
         high_count: high,
         medium_count: med,
         low_count: lowc,
@@ -907,7 +884,7 @@ Deno.serve(async (req) => {
           total_rows: dataRows.length,
           valid_rows: validRows.length,
           invalid_rows: dataRows.length - validRows.length,
-          consolidated_rows: consolidated.length, // persona+fecha
+          consolidated_rows: consolidated.length,
           high,
           medium: med,
           low: lowc,
@@ -930,8 +907,13 @@ Deno.serve(async (req) => {
       low: lowc,
       errors: errors.slice(0, 300),
     });
-  } catch (e) {
+  } catch (e: any) {
     console.error("import_validate_commit error:", e);
-    return json(req, 500, { ok: false, error: "request_failed", detail: String((e as any)?.message || e) });
+    const msg = String(e?.message || e);
+
+    if (msg.startsWith("MISSING_ENV:")) return json(req, 500, { ok: false, error: "missing_env", detail: msg });
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return json(req, 401, { ok: false, error: "UNAUTHENTICATED" });
+
+    return json(req, 500, { ok: false, error: "request_failed", detail: msg });
   }
 });

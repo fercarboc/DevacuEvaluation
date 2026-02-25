@@ -13,7 +13,8 @@ import type {
  * Bucket donde se suben CSVs.
  * Default: customer-exports
  */
-const IMPORT_BUCKET = import.meta.env.VITE_DEBACU_IMPORT_BUCKET || "customer-exports";
+ 
+const IMPORT_BUCKET = import.meta.env.VITE_DEBACU_IMPORT_BUCKET || "customer-imports";
 
 /**
  * ⚠️ IMPORTANTE:
@@ -146,7 +147,7 @@ export async function uploadScreeningCsvToStorage(orgId: string, file: File): Pr
   const org_id = mustOrgId(orgId);
 
   const safeName = file.name.replace(/[^\w.\-]+/g, "_");
-  const path = `screening/${org_id}/${Date.now()}_${safeName}`;
+const path = `debacu_eval/org/${org_id}/screening/${Date.now()}_${safeName}`;
 
   const { error } = await sb.storage.from(IMPORT_BUCKET).upload(path, file, {
     upsert: false,

@@ -70,7 +70,6 @@ function resolveSiteUrl(body: any) {
 function forceCanonicalBase(base: string) {
   try {
     const u = new URL(base);
-
     // fuerza www si viene sin
     if (u.hostname === "debacu.com") u.hostname = "www.debacu.com";
     return u.toString().replace(/\/+$/, "");
@@ -134,7 +133,6 @@ async function sendRecoveryEmailViaApi(email: string, redirectTo: string) {
 
   const text = await res.text();
   if (!res.ok) {
-    // Supabase suele devolver JSON con error / msg; aquí lo dejamos visible
     throw new Error(`recovery_failed:${res.status}:${text || "unknown"}`);
   }
   return { ok: true };
@@ -182,7 +180,6 @@ async function sendInviteOrRecovery(params: {
     // Caso clave: ya existe -> RECOVERY
     if (isAlreadyRegisteredInviteError(raw)) {
       await sendRecoveryEmailViaApi(email, activateRedirectTo);
-      // en recovery no siempre podemos saber el user_id sin listar
       return {
         mode: "RECOVERY" as const,
         user_id: null,
@@ -328,6 +325,74 @@ async function ensureOrganization(
   }
 
   return { org_id: org_id as string };
+}
+
+/** ======================================================
+ *  Import Profile (default)  ✅ PUNTO 5
+ *  - Crea un perfil por defecto para CSV si no existe
+ *  - Idempotente (no crea duplicados)
+ *  - Adaptado a tu schema real import_profiles
+ * ====================================================== */
+async function ensureDefaultImportProfile(
+  sbAdmin: ReturnType<typeof supabaseServiceClient>,
+  params: {
+    org_id: string;
+  },
+) {
+  const org_id = safeStr(params.org_id);
+  if (!org_id) throw new Error("missing_org_id_for_import_profile");
+
+  // Clave de perfil por defecto (puedes cambiar el name si quieres)
+  const DEFAULT_NAME = "CSV_STANDARD_TEST";
+  const DEFAULT_SOURCE = "FUTURE_BOOKINGS";
+
+  // ¿Ya existe este perfil para esta org?
+  const { data: existing, error: findErr } = await sbAdmin
+    .from("import_profiles")
+    .select("id, name, source_type")
+    .eq("org_id", org_id)
+    .eq("name", DEFAULT_NAME)
+    .eq("source_type", DEFAULT_SOURCE)
+    .order("created_at", { ascending: true })
+    .limit(1);
+
+  if (findErr) throw new Error("db_import_profiles_find_failed");
+  if (existing && existing.length > 0) {
+    return { created: false, id: existing[0].id as string, name: existing[0].name as string, source_type: existing[0].source_type as string };
+  }
+
+  // Insert compatible con: delimiter/date_format/decimal_separator/encoding (nullable),
+  // identity_strategy (NOT NULL), mapping (NOT NULL), disabled_fields (nullable)
+  const payload: any = {
+    org_id,
+    name: DEFAULT_NAME,
+    source_type: DEFAULT_SOURCE,
+    delimiter: ",",
+    date_format: "YYYY-MM-DD",
+    decimal_separator: ".",
+    encoding: "UTF-8",
+    identity_strategy: "DOCUMENT_STRONG",
+    mapping: {
+      // Ajusta estos nombres a tu CSV real / tu parser
+      document: "document_number",
+      full_name: "full_name",
+      email: "email",
+      phone: "phone",
+      country: "country",
+      checkin_date: "checkin_date",
+      checkout_date: "checkout_date",
+    },
+    disabled_fields: [],
+  };
+
+  const { data: inserted, error: insErr } = await sbAdmin
+    .from("import_profiles")
+    .insert(payload)
+    .select("id, name, source_type")
+    .single();
+
+  if (insErr) throw new Error(`db_import_profiles_insert_failed:${insErr.message}`);
+  return { created: true, id: inserted.id as string, name: inserted.name as string, source_type: inserted.source_type as string };
 }
 
 /** ======================================================
@@ -566,14 +631,15 @@ Deno.serve(async (req) => {
         website,
       });
 
+      // ✅ (PUNTO 5) Crear import_profile default al aprobar
+      const importProfileRes = await ensureDefaultImportProfile(sbAdmin, {
+        org_id: orgRes.org_id,
+      });
+
       const subRes = await ensureFreeTrialSubscription(sbAdmin, customer_id);
 
       const activateRedirectTo = resolveActivateRedirect(body, orgRes.org_id);
-
-      console.log("ACTIVATE_REDIRECT_DEBUG", {
-        org_id: orgRes.org_id,
-        activateRedirectTo,
-      });
+      console.log("ACTIVATE_REDIRECT_DEBUG", { org_id: orgRes.org_id, activateRedirectTo });
 
       const recoveryRedirectTo = resolveRecoveryRedirect(body);
 
@@ -643,6 +709,12 @@ Deno.serve(async (req) => {
         ok: true,
         customer_id,
         org_id: orgRes.org_id,
+        import_profile: {
+          created: importProfileRes.created,
+          id: importProfileRes.id,
+          name: importProfileRes.name,
+          source_type: importProfileRes.source_type,
+        },
         subscription: {
           created: subRes.created,
           id: subRes.subscription?.id ?? null,
@@ -681,7 +753,7 @@ Deno.serve(async (req) => {
     /** RESEND */
     if (action === "RESEND") {
       const request_id = body?.requestId as string;
-     const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user_id ?? null;
+      const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user_id ?? null;
 
       const sendEmail = body?.sendEmail !== false;
 
@@ -719,11 +791,7 @@ Deno.serve(async (req) => {
       }
 
       const activateRedirectTo = resolveActivateRedirect(body, org_id);
-
-      console.log("ACTIVATE_REDIRECT_DEBUG", {
-        org_id,
-        activateRedirectTo,
-      });
+      console.log("ACTIVATE_REDIRECT_DEBUG", { org_id, activateRedirectTo });
 
       const recoveryRedirectTo = resolveRecoveryRedirect(body);
 
