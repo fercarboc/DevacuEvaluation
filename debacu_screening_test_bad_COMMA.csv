@@ -1,0 +1,11 @@
+checkin_date,checkout_date,first_name,last_name,document,email,phone,country
+2026/02/26,2026-02-28,Fecha,mala formato,12345678A,baddate@example.com,600000000,ESP
+,2026-03-01,Sin,checkin_date,12345678B,nocheckin@example.com,600000001,ESP
+2026-03-02,,Sin,identificador,,,,ESP
+2026-03-03,,Email,inválido,,no-at-symbol.com,600000003,ESP
+2026-03-04,,Phone,corto,,phoneok@example.com,123,ESP
+2026-03-05,,Doc,corto,A1,,600000005,ESP
+2026-03-06,,Country,no alpha3,12345678C,c@example.com,600000006,ES
+2026-03-07,,Cabeceras,OK pero todo espacios,     ,     ,     ,ESP
+not-a-date,,Texto,,12345678D,d@example.com,600000008,ESP
+2026-03-09,,Nombre,"con coma, y comillas",12345678E,"quote""test@example.com",600000009,ESP
