@@ -1,10 +1,11 @@
 // src/components/ScreeningCsvPage.tsx
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Box, Button, Divider, Drawer, Stack, Typography } from "@mui/material";
 import RunsList from "@/components/RunsList";
 import ImportWizard from "@/components/ImportWizard";
 import RunDetail from "@/components/RunDetail";
 import ImportJobsDialog from "@/components/ImportJobsDialog";
+import { useScreeningRuns } from "@/hooks/useScreeningRuns";
 
 type Props = { orgId: string };
 
@@ -16,6 +17,20 @@ export default function ScreeningCsvPage({ orgId }: Props) {
   const [openImports, setOpenImports] = useState(false);
 
   const canUse = useMemo(() => String(orgId || "").trim().length > 0, [orgId]);
+
+  // ✅ Cargar runs aquí solo para auto-seleccionar el último
+  const { runs } = useScreeningRuns(orgId, 1);
+
+  useEffect(() => {
+    if (!canUse) {
+      setSelectedRunId(null);
+      return;
+    }
+    // si aún no hay selección, pon el último run automáticamente
+    if (!selectedRunId && runs && runs.length > 0) {
+      setSelectedRunId(runs[0].id);
+    }
+  }, [canUse, runs, selectedRunId]);
 
   return (
     <Box sx={{ p: 2 }}>
@@ -47,7 +62,7 @@ export default function ScreeningCsvPage({ orgId }: Props) {
       {/* ✅ A ancho completo: aquí va la tabla + alertas */}
       <RunDetail orgId={orgId} runId={selectedRunId} />
 
-      {/* Drawer de Runs (NO ocupa espacio si no lo abres) */}
+      {/* Drawer de Runs */}
       <Drawer
         anchor="left"
         open={openRuns}
@@ -69,11 +84,7 @@ export default function ScreeningCsvPage({ orgId }: Props) {
       </Drawer>
 
       {/* Dialog de Importaciones */}
-      <ImportJobsDialog
-        open={openImports}
-        orgId={orgId}
-        onClose={() => setOpenImports(false)}
-      />
+      <ImportJobsDialog open={openImports} orgId={orgId} onClose={() => setOpenImports(false)} />
 
       <ImportWizard
         open={openWizard}
