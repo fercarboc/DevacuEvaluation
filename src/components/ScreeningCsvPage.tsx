@@ -4,6 +4,7 @@ import { Box, Button, Divider, Stack, Typography } from "@mui/material";
 import RunsList from "@/components/RunsList";
 import ImportWizard from "@/components/ImportWizard";
 import RunDetail from "@/components/RunDetail";
+import ImportJobsDialog from "@/components/ImportJobsDialog";
 
 type Props = {
   orgId: string;
@@ -12,6 +13,7 @@ type Props = {
 export default function ScreeningCsvPage({ orgId }: Props) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [openWizard, setOpenWizard] = useState(false);
+  const [openJobs, setOpenJobs] = useState(false);
 
   const canUse = useMemo(() => String(orgId || "").trim().length > 0, [orgId]);
 
@@ -25,13 +27,23 @@ export default function ScreeningCsvPage({ orgId }: Props) {
           </Typography>
         </Box>
 
-        <Button
-          variant="contained"
-          onClick={() => setOpenWizard(true)}
-          disabled={!canUse}
-        >
-          Nuevo Screening (CSV)
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <Button
+            variant="outlined"
+            onClick={() => setOpenJobs(true)}
+            disabled={!canUse}
+          >
+            Ver importaciones
+          </Button>
+
+          <Button
+            variant="contained"
+            onClick={() => setOpenWizard(true)}
+            disabled={!canUse}
+          >
+            Nuevo Screening (CSV)
+          </Button>
+        </Stack>
       </Stack>
 
       <Divider sx={{ my: 2 }} />
@@ -59,6 +71,12 @@ export default function ScreeningCsvPage({ orgId }: Props) {
           setOpenWizard(false);
           setSelectedRunId(runId);
         }}
+      />
+
+      <ImportJobsDialog
+        open={openJobs}
+        orgId={orgId}
+        onClose={() => setOpenJobs(false)}
       />
     </Box>
   );

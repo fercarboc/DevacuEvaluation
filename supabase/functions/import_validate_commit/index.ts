@@ -291,17 +291,74 @@ function requiredFieldsFor(runType: string) {
 // ------------------------------------------------------------
 // Mapping: hotel_column -> debacu_field
 // ------------------------------------------------------------
-function applyMapping(headers: string[], values: string[], mapping: Record<string, string>) {
+ function applyMapping(headers: string[], values: string[], mapping: Record<string, string>) {
   const obj: Record<string, any> = {};
+
+  // Campos “debacu” que aceptamos directamente si vienen como header
+  const DIRECT_FIELDS = new Set([
+    "checkin_date",
+    "checkout_date",
+    "booking_created_at",
+    "status",
+    "channel",
+    "currency",
+    "first_name",
+    "last_name",
+    "full_name",
+    "email",
+    "phone",
+    "document_number",
+    "document_country",
+    "reservation_ref",
+    "total_amount",
+    "room_amount",
+    "extras_amount",
+    "commission_amount",
+    "net_amount",
+    "deposit_amount",
+    "date_of_birth",
+  ]);
+
+  // Alias típicos de CSV “humanos”
+  const ALIASES: Record<string, string> = {
+    document: "document_number",
+    doc: "document_number",
+    dni: "document_number",
+    passport: "document_number",
+    telefono: "phone",
+    movil: "phone",
+    mail: "email",
+    e_mail: "email",
+    checkin: "checkin_date",
+    checkout: "checkout_date",
+    arrival_date: "checkin_date",
+    departure_date: "checkout_date",
+  };
+
   for (let i = 0; i < headers.length; i++) {
-    const h = headers[i];
+    const rawH = String(headers[i] ?? "").trim();
     const v = values[i] ?? "";
-    const debacuField = mapping?.[h];
-    if (debacuField) obj[debacuField] = v;
+    if (!rawH) continue;
+
+    // 1) Si hay mapping explícito, manda
+    const mapped = mapping?.[rawH];
+    if (mapped) {
+      obj[mapped] = v;
+      continue;
+    }
+
+    // 2) Si no hay mapping, aceptamos header directo o por alias
+    const h = rawH.toLowerCase();
+    const normalized = (ALIASES[h] ?? rawH).trim(); // mantiene case original si ya venía correcto
+
+    const normalizedLower = normalized.toLowerCase();
+    if (DIRECT_FIELDS.has(normalizedLower)) {
+      obj[normalizedLower] = v;
+    }
   }
+
   return obj;
 }
-
 // ------------------------------------------------------------
 // Storage read
 // ------------------------------------------------------------
@@ -462,6 +519,16 @@ Deno.serve(async (req) => {
       const rowNum = i + 2; // header=1
       const values = dataRows[i];
       const obj = applyMapping(headers, values, mapping);
+
+      // Si viene full_name pero faltan first/last, lo partimos
+if (!str(obj.first_name) || !str(obj.last_name)) {
+  const fn = str(obj.full_name);
+  if (fn) {
+    const parts = fn.split(/\s+/).filter(Boolean);
+    if (!str(obj.first_name) && parts.length >= 1) obj.first_name = parts[0];
+    if (!str(obj.last_name) && parts.length >= 2) obj.last_name = parts.slice(1).join(" ");
+  }
+}
 
       obj.checkin_date = toISODate(obj.checkin_date);
       obj.checkout_date = toISODate(obj.checkout_date);
