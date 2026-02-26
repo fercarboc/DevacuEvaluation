@@ -1,19 +1,19 @@
 // src/components/ScreeningCsvPage.tsx
 import React, { useMemo, useState } from "react";
-import { Box, Button, Divider, Stack, Typography } from "@mui/material";
+import { Box, Button, Divider, Drawer, Stack, Typography } from "@mui/material";
 import RunsList from "@/components/RunsList";
 import ImportWizard from "@/components/ImportWizard";
 import RunDetail from "@/components/RunDetail";
 import ImportJobsDialog from "@/components/ImportJobsDialog";
 
-type Props = {
-  orgId: string;
-};
+type Props = { orgId: string };
 
 export default function ScreeningCsvPage({ orgId }: Props) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+
   const [openWizard, setOpenWizard] = useState(false);
-  const [openJobs, setOpenJobs] = useState(false);
+  const [openRuns, setOpenRuns] = useState(false);
+  const [openImports, setOpenImports] = useState(false);
 
   const canUse = useMemo(() => String(orgId || "").trim().length > 0, [orgId]);
 
@@ -23,45 +23,57 @@ export default function ScreeningCsvPage({ orgId }: Props) {
         <Box>
           <Typography variant="h6">Screening por CSV</Typography>
           <Typography variant="body2" color="text.secondary">
-            Importa un CSV, valida (dry-run) y genera un run de screening (persona + fecha).
+            Importa un CSV, valida (dry-run) y genera un run (persona + fecha).
           </Typography>
         </Box>
 
         <Stack direction="row" spacing={1}>
-          <Button
-            variant="outlined"
-            onClick={() => setOpenJobs(true)}
-            disabled={!canUse}
-          >
+          <Button variant="outlined" onClick={() => setOpenRuns(true)} disabled={!canUse}>
+            Ver runs
+          </Button>
+
+          <Button variant="outlined" onClick={() => setOpenImports(true)} disabled={!canUse}>
             Ver importaciones
           </Button>
 
-          <Button
-            variant="contained"
-            onClick={() => setOpenWizard(true)}
-            disabled={!canUse}
-          >
-            Nuevo Screening (CSV)
+          <Button variant="contained" onClick={() => setOpenWizard(true)} disabled={!canUse}>
+            Nuevo screening (CSV)
           </Button>
         </Stack>
       </Stack>
 
       <Divider sx={{ my: 2 }} />
 
-      <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems="flex-start">
-        <Box sx={{ width: { xs: "100%", md: 420 }, flexShrink: 0 }}>
-          <RunsList
-            orgId={orgId}
-            selectedRunId={selectedRunId}
-            onSelectRun={(id) => setSelectedRunId(id)}
-            onCreateNew={() => setOpenWizard(true)}
-          />
-        </Box>
+      {/* ✅ A ancho completo: aquí va la tabla + alertas */}
+      <RunDetail orgId={orgId} runId={selectedRunId} />
 
-        <Box sx={{ width: "100%" }}>
-          <RunDetail orgId={orgId} runId={selectedRunId} />
-        </Box>
-      </Stack>
+      {/* Drawer de Runs (NO ocupa espacio si no lo abres) */}
+      <Drawer
+        anchor="left"
+        open={openRuns}
+        onClose={() => setOpenRuns(false)}
+        PaperProps={{ sx: { width: 460, p: 2 } }}
+      >
+        <RunsList
+          orgId={orgId}
+          selectedRunId={selectedRunId}
+          onSelectRun={(id) => {
+            setSelectedRunId(id);
+            setOpenRuns(false);
+          }}
+          onCreateNew={() => {
+            setOpenRuns(false);
+            setOpenWizard(true);
+          }}
+        />
+      </Drawer>
+
+      {/* Dialog de Importaciones */}
+      <ImportJobsDialog
+        open={openImports}
+        orgId={orgId}
+        onClose={() => setOpenImports(false)}
+      />
 
       <ImportWizard
         open={openWizard}
@@ -71,12 +83,6 @@ export default function ScreeningCsvPage({ orgId }: Props) {
           setOpenWizard(false);
           setSelectedRunId(runId);
         }}
-      />
-
-      <ImportJobsDialog
-        open={openJobs}
-        orgId={orgId}
-        onClose={() => setOpenJobs(false)}
       />
     </Box>
   );

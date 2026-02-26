@@ -28,7 +28,10 @@ function fmtTs(ts?: string | null) {
   return d.toLocaleString();
 }
 
-export default function RunDetail({ runId }: Props) {
+export default function RunDetail({ orgId, runId }: Props) {
+  // orgId se mantiene por consistencia/posibles usos futuros (por ahora no hace falta aquí)
+  void orgId;
+
   const [riskBand, setRiskBand] = useState<string>("");
   const [onlyChanged, setOnlyChanged] = useState<boolean>(false);
   const [unresolvedAlertsOnly, setUnresolvedAlertsOnly] = useState<boolean>(false);
@@ -52,7 +55,7 @@ export default function RunDetail({ runId }: Props) {
       <Card variant="outlined">
         <CardContent>
           <Typography variant="body2" color="text.secondary">
-            Selecciona un run a la izquierda.
+            Selecciona un run.
           </Typography>
         </CardContent>
       </Card>
@@ -75,7 +78,7 @@ export default function RunDetail({ runId }: Props) {
 
             <Chip
               label={loading ? "Cargando…" : "Refrescar"}
-              onClick={() => reload()}
+              onClick={() => !loading && reload()}
               color={loading ? "default" : "primary"}
               variant={loading ? "outlined" : "filled"}
               clickable={!loading}
@@ -100,7 +103,11 @@ export default function RunDetail({ runId }: Props) {
 
           <Divider sx={{ my: 2 }} />
 
-          <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+          <Stack
+            direction={{ xs: "column", md: "row" }}
+            spacing={2}
+            sx={{ alignItems: { xs: "stretch", md: "center" } }}
+          >
             <TextField
               select
               size="small"
@@ -142,9 +149,22 @@ export default function RunDetail({ runId }: Props) {
         </CardContent>
       </Card>
 
-      <Stack direction={{ xs: "column", lg: "row" }} spacing={2} alignItems="flex-start">
-        <Box sx={{ width: "100%", flex: 1 }}>
-          <ResultsTable loading={loading} results={results} />
+      {/* ✅ Layout pro: resultados a ancho flexible + alertas ancho fijo */}
+      <Stack
+        direction={{ xs: "column", lg: "row" }}
+        spacing={2}
+        alignItems="flex-start"
+        sx={{ width: "100%" }}
+      >
+        {/* IMPORTANTÍSIMO: minWidth: 0 para que el overflowX funcione en flex */}
+        <Box sx={{ flex: 1, width: "100%", minWidth: 0 }}>
+          {/* Scroll horizontal SOLO dentro de resultados */}
+          <Box sx={{ width: "100%", overflowX: "auto" }}>
+            {/* Si tu tabla es muy ancha, fuerza que tenga “mínimo contenido” */}
+            <Box sx={{ minWidth: 900 }}>
+              <ResultsTable loading={loading} results={results} />
+            </Box>
+          </Box>
         </Box>
 
         <Box sx={{ width: { xs: "100%", lg: 380 }, flexShrink: 0 }}>
