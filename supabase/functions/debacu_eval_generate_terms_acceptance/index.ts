@@ -49,6 +49,11 @@ type PdfData = {
 
   accepted_ip?: string | null;
   accepted_user_agent?: string | null;
+
+  // ✅ Anexos de seguridad/RGPD (texto controlado server-side)
+  // (No son datos personales del solicitante; son cláusulas del documento)
+  rgpd_retention_years?: number | null;
+  rgpd_log_retention_days?: number | null;
 };
 
 function toHex(buffer: ArrayBuffer) {
@@ -263,6 +268,12 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     privacy_email: "privacidad@debacu.com",
   };
 
+  // ✅ Parámetros server-side recomendados (ajustables)
+  const retentionYears = Number.isFinite(Number(data.rgpd_retention_years)) ? Number(data.rgpd_retention_years) : 3; // tu criterio: 3 años
+  const logRetentionDays = Number.isFinite(Number(data.rgpd_log_retention_days))
+    ? Number(data.rgpd_log_retention_days)
+    : 180;
+
   drawH1("Justificante de aceptación · Debacu Evaluation360");
   drawP(
     "Este documento reúne en un único PDF la evidencia de aceptación electrónica y el contenido legal aplicable al acceso y uso profesional de la plataforma (Aviso Legal, Términos y Condiciones, Política de Acceso y Uso Profesional y Encargo de Tratamiento – RGPD).",
@@ -280,7 +291,9 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     drawKV("IP (x-forwarded-for):", data.accepted_ip ?? "-");
     drawKV("User-Agent:", data.accepted_user_agent ?? "-");
   } else {
-    drawP("Nota técnica: la IP y el User-Agent se registran a nivel de servidor y quedan asociados a esta solicitud (ID) en los registros internos.");
+    drawP(
+      "Nota técnica: la IP y el User-Agent se registran a nivel de servidor y quedan asociados a esta solicitud (ID) en los registros internos.",
+    );
   }
 
   hr();
@@ -308,13 +321,19 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
 
   hr();
   drawH2("Declaración de aceptación electrónica");
-  drawP("El solicitante declara haber leído y aceptado expresamente los documentos incluidos en este PDF y consiente su incorporación como evidencia de aceptación vinculada a la solicitud indicada.");
-  drawP("Este documento ha sido aceptado electrónicamente, sin necesidad de firma manuscrita, conforme a la Ley 34/2002 (LSSI-CE) y el Reglamento (UE) 910/2014 (eIDAS).");
+  drawP(
+    "El solicitante declara haber leído y aceptado expresamente los documentos incluidos en este PDF y consiente su incorporación como evidencia de aceptación vinculada a la solicitud indicada.",
+  );
+  drawP(
+    "Este documento ha sido aceptado electrónicamente, sin necesidad de firma manuscrita, conforme a la Ley 34/2002 (LSSI-CE) y el Reglamento (UE) 910/2014 (eIDAS).",
+  );
 
   newPage();
 
   drawH1("Documento 1 · Aviso Legal");
-  drawP("En cumplimiento de la normativa aplicable, se informa que el sitio y la plataforma Debacu Evaluation360 (en adelante, la “Plataforma”) es titularidad del proveedor indicado a continuación.");
+  drawP(
+    "En cumplimiento de la normativa aplicable, se informa que el sitio y la plataforma Debacu Evaluation360 (en adelante, la “Plataforma”) es titularidad del proveedor indicado a continuación.",
+  );
   drawH2("1. Titularidad");
   drawList([
     `Titular / Razón social: ${org.provider_name}`,
@@ -323,24 +342,38 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     `Email de contacto: ${org.provider_email}`,
   ]);
   drawH2("2. Objeto y naturaleza del servicio");
-  drawP("La Plataforma proporciona un entorno privado de uso profesional para alojamientos y equipos operativos, orientado a la gestión interna de incidencias y trazabilidad (consultas, registros y auditoría). No se trata de un servicio público ni de un registro accesible al público general.");
+  drawP(
+    "La Plataforma proporciona un entorno privado de uso profesional para alojamientos y equipos operativos, orientado a la gestión interna de incidencias y trazabilidad (consultas, registros y auditoría). No se trata de un servicio público ni de un registro accesible al público general.",
+  );
   drawH2("3. Acceso y registro");
-  drawP("El acceso puede requerir alta controlada, creación de cuenta y autenticación. El usuario se compromete a facilitar información veraz, mantenerla actualizada y custodiar sus credenciales, evitando el uso compartido no autorizado.");
+  drawP(
+    "El acceso puede requerir alta controlada, creación de cuenta y autenticación. El usuario se compromete a facilitar información veraz, mantenerla actualizada y custodiar sus credenciales, evitando el uso compartido no autorizado.",
+  );
   drawH2("4. Normas de uso");
-  drawP("El usuario se compromete a utilizar la Plataforma de forma diligente, lícita y conforme a la finalidad profesional descrita. Queda prohibida la difusión pública de información obtenida en la Plataforma, la recolección automatizada no autorizada, así como cualquier uso difamatorio, discriminatorio o contrario a la buena fe.");
+  drawP(
+    "El usuario se compromete a utilizar la Plataforma de forma diligente, lícita y conforme a la finalidad profesional descrita. Queda prohibida la difusión pública de información obtenida en la Plataforma, la recolección automatizada no autorizada, así como cualquier uso difamatorio, discriminatorio o contrario a la buena fe.",
+  );
   drawH2("5. Propiedad intelectual e industrial");
-  drawP("Los contenidos, marcas, diseños, software y elementos de la Plataforma están protegidos por derechos de propiedad intelectual e industrial. Queda prohibida su reproducción, distribución o explotación no autorizada.");
+  drawP(
+    "Los contenidos, marcas, diseños, software y elementos de la Plataforma están protegidos por derechos de propiedad intelectual e industrial. Queda prohibida su reproducción, distribución o explotación no autorizada.",
+  );
   drawH2("6. Responsabilidad");
-  drawP("La Plataforma se ofrece “tal cual”, con esfuerzos razonables de disponibilidad y seguridad. El titular no garantiza la inexistencia absoluta de interrupciones o errores, aunque adoptará medidas para su corrección. El usuario es responsable del uso que haga de la información en su propia operativa.");
+  drawP(
+    "La Plataforma se ofrece “tal cual”, con esfuerzos razonables de disponibilidad y seguridad. El usuario es responsable del uso que haga de la información en su propia operativa.",
+  );
   drawH2("7. Enlaces y terceros");
   drawP("Pueden existir enlaces a sitios de terceros. El titular no se responsabiliza de sus contenidos, disponibilidad o políticas.");
   drawH2("8. Legislación y jurisdicción");
-  drawP("Este Aviso Legal se rige por la legislación española. Para cualquier controversia, las partes se someterán a los juzgados y tribunales competentes conforme a la normativa aplicable.");
+  drawP(
+    "Este Aviso Legal se rige por la legislación española. Para cualquier controversia, las partes se someterán a los juzgados y tribunales competentes conforme a la normativa aplicable.",
+  );
 
   newPage();
 
   drawH1("Documento 2 · Términos y Condiciones");
-  drawP("Estos términos regulan el acceso y uso de la Plataforma Debacu Evaluation360. Al registrarte, solicitar acceso o utilizar la Plataforma, aceptas estas condiciones en la versión indicada.");
+  drawP(
+    "Estos términos regulan el acceso y uso de la Plataforma Debacu Evaluation360. Al registrarte, solicitar acceso o utilizar la Plataforma, aceptas estas condiciones en la versión indicada.",
+  );
   drawH2("1. Definiciones");
   drawList([
     "Plataforma: software y servicios Debacu Evaluation360, de acceso privado y uso profesional.",
@@ -354,7 +387,9 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     "Podemos suspender accesos ante indicios razonables de abuso, fraude, incidentes de seguridad o incumplimiento.",
   ]);
   drawH2("3. Uso profesional y limitaciones");
-  drawP("La Plataforma es privada y de uso profesional. Queda prohibida la difusión pública de información, la extracción masiva o automatizada no autorizada y cualquier uso contrario a la finalidad operativa interna.");
+  drawP(
+    "La Plataforma es privada y de uso profesional. Queda prohibida la difusión pública de información, la extracción masiva o automatizada no autorizada y cualquier uso contrario a la finalidad operativa interna.",
+  );
   drawH2("4. Planes, suscripción y facturación (si aplica)");
   drawList([
     "La Plataforma puede ofrecer planes (incluyendo un plan inicial gratuito limitado) y planes de pago.",
@@ -369,20 +404,32 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     "La cancelación puede realizarse desde el área de cuenta o el portal del proveedor de pagos si está habilitado.",
   ]);
   drawH2("6. Contenidos y responsabilidad del Cliente");
-  drawP("El Cliente es responsable de los datos y contenidos que registra en la Plataforma, incluyendo su exactitud, pertinencia y adecuación legal. Se recomienda evitar datos excesivos o no pertinentes, así como expresiones ofensivas o valoraciones discriminatorias.");
+  drawP(
+    "El Cliente es responsable de los datos y contenidos que registra en la Plataforma, incluyendo su exactitud, pertinencia y adecuación legal. Se recomienda evitar datos excesivos o no pertinentes, así como expresiones ofensivas o valoraciones discriminatorias.",
+  );
   drawH2("7. Limitación de responsabilidad");
-  drawP("La Plataforma ofrece herramientas de apoyo a procesos internos. Las decisiones que el Cliente adopte basadas en la información o en su uso operativo son responsabilidad del Cliente. No se garantiza ausencia total de errores, interrupciones o indisponibilidades, sin perjuicio de los esfuerzos razonables de continuidad y seguridad.");
+  drawP(
+    "La Plataforma ofrece herramientas de apoyo a procesos internos. Las decisiones que el Cliente adopte basadas en la información o en su uso operativo son responsabilidad del Cliente. No se garantiza ausencia total de errores, interrupciones o indisponibilidades, sin perjuicio de los esfuerzos razonables de continuidad y seguridad.",
+  );
   drawH2("8. Soporte");
-  drawP("El soporte puede variar según el plan. El alcance y tiempos de respuesta podrán definirse en el plan contratado o en acuerdos de nivel de servicio (SLA) cuando existan.");
+  drawP(
+    "El soporte puede variar según el plan. El alcance y tiempos de respuesta podrán definirse en el plan contratado o en acuerdos de nivel de servicio (SLA) cuando existan.",
+  );
   drawH2("9. Modificaciones");
-  drawP("Podemos actualizar estas condiciones por cambios legales o del servicio. La versión vigente estará publicada y se identificará por su versión/fecha.");
+  drawP(
+    "Podemos actualizar estas condiciones por cambios legales o del servicio. La versión vigente estará publicada y se identificará por su versión/fecha.",
+  );
 
   newPage();
 
   drawH1("Documento 3 · Política de Acceso y Uso Profesional");
-  drawP("Esta política concreta el carácter restringido, interno y profesional de la Plataforma y establece reglas de uso para garantizar trazabilidad, seguridad y calidad de la información.");
+  drawP(
+    "Esta política concreta el carácter restringido, interno y profesional de la Plataforma y establece reglas de uso para garantizar trazabilidad, seguridad y calidad de la información.",
+  );
   drawH2("1. Acceso restringido");
-  drawP("Debacu Evaluation360 es una plataforma privada destinada a profesionales del sector alojamiento. El acceso se concede de forma controlada a organizaciones verificadas y usuarios autorizados.");
+  drawP(
+    "Debacu Evaluation360 es una plataforma privada destinada a profesionales del sector alojamiento. El acceso se concede de forma controlada a organizaciones verificadas y usuarios autorizados.",
+  );
   drawH2("2. Uso interno y no público");
   drawList([
     "No es un registro público, no es indexable y no está pensado para difusión externa.",
@@ -390,9 +437,13 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     "Se prohíbe publicar, compartir o redistribuir contenidos fuera de la organización o sin base legal.",
   ]);
   drawH2("3. Criterios estructurados y minimización");
-  drawP("El sistema fomenta el registro estructurado (motivos, tipologías, severidad, fechas y evidencias internas), minimizando opiniones y evitando datos excesivos. El Cliente se compromete a registrar solo información pertinente, verificable y relacionada con su operativa.");
+  drawP(
+    "El sistema fomenta el registro estructurado (motivos, tipologías, severidad, fechas y evidencias internas), minimizando opiniones y evitando datos excesivos. El Cliente se compromete a registrar solo información pertinente, verificable y relacionada con su operativa.",
+  );
   drawH2("4. Auditoría y trazabilidad");
-  drawP("Para control interno y seguridad, se registran acciones relevantes (consultas, altas, modificaciones, cambios de permisos, exportaciones cuando existan) asociadas a la cuenta. Estos registros se usan para prevenir abuso, investigar incidencias y reforzar la trazabilidad.");
+  drawP(
+    "Para control interno y seguridad, se registran acciones relevantes (consultas, altas, modificaciones, cambios de permisos, exportaciones cuando existan) asociadas a la cuenta. Estos registros se usan para prevenir abuso, investigar incidencias y reforzar la trazabilidad.",
+  );
   drawH2("5. Prohibiciones específicas");
   drawList([
     "Uso discriminatorio o contrario a derechos fundamentales.",
@@ -401,30 +452,57 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     "Introducir datos sensibles innecesarios o no pertinentes (salvo estricta necesidad y base legal).",
   ]);
   drawH2("6. Medidas ante abuso");
-  drawP("En caso de uso indebido, el titular podrá suspender o cancelar accesos y/o limitar funcionalidades para proteger la Plataforma, sin perjuicio de las acciones legales que procedan.");
+  drawP(
+    "En caso de uso indebido, el titular podrá suspender o cancelar accesos y/o limitar funcionalidades para proteger la Plataforma, sin perjuicio de las acciones legales que procedan.",
+  );
 
   newPage();
 
   drawH1("Documento 4 · Encargo de Tratamiento (DPA) · RGPD");
-  drawP("Este documento regula el encargo de tratamiento cuando el Cliente incorpora datos personales a la Plataforma. En un entorno B2B, normalmente el Cliente (hotel/alojamiento) actúa como Responsable del tratamiento y el proveedor de la Plataforma como Encargado del tratamiento, en los términos del art. 28 RGPD.");
+  drawP(
+    "Este documento regula el encargo de tratamiento cuando el Cliente incorpora datos personales a la Plataforma. En un entorno B2B, normalmente el Cliente (hotel/alojamiento) actúa como Responsable del tratamiento y el proveedor de la Plataforma como Encargado del tratamiento, en los términos del art. 28 RGPD.",
+  );
   drawH2("1. Partes");
   drawList([
-    `Responsable (Cliente): ${data.legal_name ?? data.company_name} · CIF ${data.cif} · ${data.address ?? "-"} · ${data.city ?? "-"} · ${data.country ?? "-"}`,
+    `Responsable (Cliente): ${data.legal_name ?? data.company_name} · CIF ${data.cif} · ${data.address ?? "-"} · ${data.city ?? "-"} · ${
+      data.country ?? "-"
+    }`,
     `Encargado (Proveedor): DEBACU HOTELS SL · CIF B-55381214 · C/CANTALEJO,13-1º A · informacion@debacu.com`,
   ]);
   drawH2("2. Objeto del encargo");
-  drawP("Prestación del servicio de plataforma privada para gestión operativa con trazabilidad, conforme a instrucciones documentadas del Responsable, incluyendo: almacenamiento, consulta, registro, modificación, auditoría y soporte.");
-  drawH2("3. Duración");
-  drawP("Durante la vigencia de la relación contractual o de acceso autorizado al servicio, y mientras sea necesario para la prestación del mismo, sin perjuicio de obligaciones legales de conservación.");
-  drawH2("4. Naturaleza, finalidad y categorías de interesados");
+  drawP(
+    "Prestación del servicio de plataforma privada para gestión operativa con trazabilidad, conforme a instrucciones documentadas del Responsable, incluyendo: almacenamiento, consulta, registro, modificación, auditoría y soporte.",
+  );
+
+  // ✅ Añadido: finalidad + prevención de fraude contractual (interés legítimo)
+  drawH2("3. Finalidad y base jurídica (Responsable)");
+  drawP(
+    "La finalidad del tratamiento por parte del Responsable incluye la gestión operativa y la prevención de fraude contractual, impagos, daños, no-shows y otras incidencias vinculadas a la relación de hospedaje. La base jurídica aplicable será la que determine el Responsable (p. ej., ejecución de contrato o interés legítimo del art. 6.1.f RGPD), cumpliendo el deber de información y, cuando proceda, realizando la ponderación del interés legítimo.",
+  );
+
+  drawH2("4. Duración");
+  drawP(
+    "Durante la vigencia de la relación contractual o de acceso autorizado al servicio, y mientras sea necesario para la prestación del mismo, sin perjuicio de obligaciones legales de conservación.",
+  );
+
+  drawH2("5. Naturaleza, categorías de interesados y tipos de datos");
   drawList([
-    "Finalidad: apoyo a la gestión interna y trazabilidad operativa del Responsable.",
     "Naturaleza del tratamiento: recogida por el Responsable, almacenamiento, estructuración, consulta y auditoría.",
     "Interesados: clientes/huéspedes u otras personas relacionadas con la operativa del Responsable, según el uso del Responsable.",
+    "Tipos de datos: según el uso del Responsable. Se recomienda minimización y estructuración (tipologías, fechas, importes, evidencias internas).",
   ]);
-  drawH2("5. Tipos de datos");
-  drawP("Según el uso del Responsable. Se recomienda minimización. El Responsable se compromete a evitar el registro de datos excesivos, especialmente categorías especiales (art. 9 RGPD) salvo estricta necesidad, base jurídica y garantías adecuadas.");
-  drawH2("6. Obligaciones del Encargado (art. 28 RGPD)");
+  drawP(
+    "El Responsable se compromete a evitar el registro de datos excesivos, especialmente categorías especiales (art. 9 RGPD) salvo estricta necesidad, base jurídica y garantías adecuadas.",
+  );
+
+  drawH2("6. Seudonimización y diseño seguro (recomendado)");
+  drawList([
+    "La Plataforma puede emplear identificadores técnicos seudonimizados (p. ej., claves derivadas tipo HMAC) para evitar el tratamiento innecesario de identificadores directos.",
+    "Las claves secretas/pepper necesarias para derivaciones se mantienen fuera del alcance del Cliente y no se exponen en interfaces públicas.",
+    "El Responsable seguirá siendo responsable de la licitud del tratamiento y de no introducir datos directos innecesarios.",
+  ]);
+
+  drawH2("7. Obligaciones del Encargado (art. 28 RGPD)");
   drawList([
     "Tratar los datos personales únicamente siguiendo instrucciones documentadas del Responsable, salvo obligación legal aplicable.",
     "Garantizar que el personal autorizado se compromete a confidencialidad.",
@@ -433,28 +511,44 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     "Asistir al Responsable en la gestión de violaciones de seguridad (arts. 33–34 RGPD), sin dilación indebida, una vez tenga conocimiento.",
     "Poner a disposición del Responsable la información necesaria para demostrar el cumplimiento del art. 28 RGPD, y permitir auditorías razonables (con preaviso y sin comprometer seguridad/terceros).",
   ]);
-  drawH2("7. Obligaciones del Responsable");
+
+  drawH2("8. Obligaciones del Responsable");
   drawList([
     "Garantizar base jurídica para el tratamiento y deber de información a los interesados cuando proceda.",
     "Configurar y usar la Plataforma conforme a minimización y finalidad operativa.",
     "Gestionar permisos/roles y accesos de sus usuarios autorizados.",
     "Atender solicitudes de derechos y reclamaciones, con apoyo del Encargado cuando aplique.",
   ]);
-  drawH2("8. Subencargados");
-  drawP("El Encargado podrá utilizar subencargados necesarios para la prestación del servicio (p. ej., infraestructura/hosting, correo transaccional, pasarela de pagos), garantizando obligaciones equivalentes mediante acuerdos adecuados.");
+
+  drawH2("9. Subencargados");
+  drawP(
+    "El Encargado podrá utilizar subencargados necesarios para la prestación del servicio (p. ej., infraestructura/hosting, correo transaccional, pasarela de pagos), garantizando obligaciones equivalentes mediante acuerdos adecuados.",
+  );
   drawList([
     "Infraestructura/hosting (p. ej., Supabase/Cloud, según configuración).",
     "Correo transaccional (p. ej., Brevo), si se utiliza.",
     "Pagos/suscripciones (p. ej., Stripe), si aplica.",
   ]);
-  drawH2("9. Transferencias internacionales");
-  drawP("Si algún proveedor tratase datos fuera del EEE, se aplicarán garantías adecuadas (p. ej., Cláusulas Contractuales Tipo) y/o decisiones de adecuación, según corresponda.");
-  drawH2("10. Finalización: devolución o supresión");
-  drawP("Al finalizar el servicio, el Encargado suprimirá o devolverá los datos personales, según instrucciones del Responsable, salvo obligación legal de conservación. Podrán mantenerse copias residuales en sistemas de respaldo por periodos limitados y bajo controles de seguridad.");
+
+  drawH2("10. Transferencias internacionales");
+  drawP(
+    "Si algún proveedor tratase datos fuera del EEE, se aplicarán garantías adecuadas (p. ej., Cláusulas Contractuales Tipo) y/o decisiones de adecuación, según corresponda.",
+  );
+
+  // ✅ Añadido: conservación / retención (la pieza que suele faltar)
+  drawH2("11. Conservación, supresión y limitación temporal");
+  drawList([
+    `El Responsable definirá y aplicará su política de conservación. A efectos orientativos, se recomienda una conservación máxima de ${retentionYears} años para incidencias operativas, salvo obligación legal o reclamaciones en curso.`,
+    `Los registros de auditoría y seguridad se conservan por periodos limitados, orientativamente ${logRetentionDays} días, salvo necesidad de investigación de incidentes o cumplimiento normativo.`,
+    "Al finalizar el servicio, el Encargado suprimirá o devolverá los datos personales, según instrucciones del Responsable, salvo obligación legal de conservación.",
+    "Podrán mantenerse copias residuales en sistemas de respaldo por periodos limitados y bajo controles de seguridad.",
+  ]);
 
   hr();
   drawH1("Anexo II · Medidas Técnicas y Organizativas (art. 32 RGPD)");
-  drawP("Este anexo describe medidas orientativas aplicadas por el Encargado para proteger los datos tratados en la Plataforma. El nivel de medidas podrá variar según configuración, plan y alcance contratado, manteniendo un enfoque de seguridad razonable y proporcional al riesgo.");
+  drawP(
+    "Este anexo describe medidas orientativas aplicadas por el Encargado para proteger los datos tratados en la Plataforma. El nivel de medidas podrá variar según configuración, plan y alcance contratado, manteniendo un enfoque de seguridad razonable y proporcional al riesgo.",
+  );
   drawH2("A. Control de acceso y autenticación");
   drawList([
     "Principio de mínimos privilegios: cada usuario accede a lo necesario según su rol.",
@@ -470,16 +564,25 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
   drawH2("C. Cifrado y comunicaciones");
   drawList(["Cifrado en tránsito mediante HTTPS/TLS.", "Uso de canales seguros para comunicaciones operativas y administrativas."]);
   drawH2("D. Segregación y aislamiento");
-  drawList(["Separación lógica por organización cuando aplica (controles de acceso y políticas).", "Limitaciones de acceso a datos entre organizaciones y roles."]);
+  drawList([
+    "Separación lógica por organización cuando aplica (controles de acceso y políticas).",
+    "Limitaciones de acceso a datos entre organizaciones y roles.",
+  ]);
   drawH2("E. Disponibilidad y resiliencia");
-  drawList(["Uso de infraestructura en la nube con capacidades de redundancia y continuidad (según proveedor).", "Copias de seguridad y mecanismos de recuperación ante incidencias (según configuración)."]);
+  drawList([
+    "Uso de infraestructura en la nube con capacidades de redundancia y continuidad (según proveedor).",
+    "Copias de seguridad y mecanismos de recuperación ante incidencias (según configuración).",
+  ]);
   drawH2("F. Gestión de vulnerabilidades e incidentes");
   drawList([
     "Procedimientos para identificar, contener y corregir incidentes de seguridad.",
     "Notificación al Responsable sin dilación indebida cuando una brecha afecte a datos personales, conforme RGPD.",
   ]);
   drawH2("G. Confidencialidad y formación");
-  drawList(["Compromisos de confidencialidad del personal con acceso a sistemas.", "Buenas prácticas y controles organizativos razonables para limitar accesos."]);
+  drawList([
+    "Compromisos de confidencialidad del personal con acceso a sistemas.",
+    "Buenas prácticas y controles organizativos razonables para limitar accesos.",
+  ]);
   drawH2("H. Minimización y buenas prácticas del Cliente");
   drawList([
     "El Cliente debe evitar registrar datos excesivos o no pertinentes.",
@@ -487,9 +590,18 @@ async function buildPdf(data: PdfData, acceptedAtIso: string) {
     "Revisar periódicamente usuarios, roles y accesos.",
   ]);
 
+  // ✅ Añadido: “no lista pública / no decisiones automatizadas”
+  drawH2("I. Salvaguardas de uso profesional");
+  drawList([
+    "La Plataforma no es un registro público ni una lista de difusión; el Cliente no debe usarla como “lista negra” pública ni para decisiones discriminatorias.",
+    "Se recomienda que cualquier medida operativa relevante se base en revisión humana y evidencias internas del Cliente (cuando existan).",
+  ]);
+
   hr();
   drawH2("Contacto y ejercicio de derechos (cuando proceda)");
-  drawP(`Para cuestiones de privacidad y seguridad: privacidad@debacu.com. Para cuestiones contractuales o del servicio: informacion@debacu.com.`);
+  drawP(
+    `Para cuestiones de privacidad y seguridad: ${org.privacy_email}. Para cuestiones contractuales o del servicio: ${org.provider_email}.`,
+  );
 
   footer();
   return await pdfDoc.save();
@@ -624,11 +736,15 @@ Deno.serve(async (req) => {
 
       accepted_ip: ip,
       accepted_user_agent: userAgent,
+
+      // ✅ Políticas server-side que quedan reflejadas en el PDF (orientativas)
+      rgpd_retention_years: 3,
+      rgpd_log_retention_days: 180,
     };
 
     const pdfBytes = await buildPdf(pdfData, acceptedAt);
 
-    // 6) Hash SHA256
+    // 6) Hash SHA256 del PDF (integridad del fichero)
     const digest = await crypto.subtle.digest("SHA-256", pdfBytes);
     const sha256 = toHex(digest);
 
@@ -651,6 +767,27 @@ Deno.serve(async (req) => {
     }
 
     // 8) Persistir aceptación en BD
+    // ✅ además marcamos DPA + Anexo II como aceptados (van incluidos dentro del mismo PDF)
+    // ✅ guardamos hash canónico del “paquete legal” (estable, no depende del PDF final)
+    const acceptanceLocale =
+      (req.headers.get("accept-language") || "").split(",")[0]?.trim() || "es-ES";
+
+    const canonicalDocString = [
+      "DEBACU_EVAL_LEGAL_PACKAGE",
+      `TERMS_VERSION=${TERMS_VERSION}`,
+      `DPA_VERSION=${TERMS_VERSION}`,
+      `RGPD_ANNEX_II_VERSION=${TERMS_VERSION}`,
+      `RETENTION_YEARS=${String(pdfData.rgpd_retention_years ?? 3)}`,
+      `LOG_RETENTION_DAYS=${String(pdfData.rgpd_log_retention_days ?? 180)}`,
+      `LOCALE=${acceptanceLocale}`,
+    ].join("|");
+
+    const canonicalDigest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(canonicalDocString),
+    );
+    const canonicalHash = toHex(canonicalDigest);
+
     const { error: updateError } = await supabase
       .from("debacu_eval_access_requests")
       .update({
@@ -659,9 +796,31 @@ Deno.serve(async (req) => {
         accepted_terms_pdf_path: path,
         accepted_terms_pdf_sha256: sha256,
         accepted_terms_accepted_at: acceptedAt,
+        accepted_terms_at: acceptedAt, // ✅ lo estabas dejando null en tu tabla
         accepted_terms_ip: ip,
         accepted_terms_user_agent: userAgent,
         terms_version: TERMS_VERSION,
+
+        // ✅ DPA (Encargo de tratamiento) — reutilizamos el mismo PDF
+        dpa_accepted: true,
+        dpa_version: TERMS_VERSION,
+        dpa_accepted_at: acceptedAt,
+        dpa_ip: ip,
+        dpa_user_agent: userAgent,
+        dpa_pdf_bucket: LEGAL_BUCKET,
+        dpa_pdf_path: path,
+        dpa_pdf_sha256: sha256,
+
+        // ✅ RGPD Annex II — incluido en el mismo PDF
+        rgpd_annex_ii_version: TERMS_VERSION,
+        rgpd_annex_ii_accepted_at: acceptedAt,
+
+        // ✅ Metadatos útiles para RGPD / evidencia
+        acceptance_legal_basis: "ART_6_1_F_INTERES_LEGITIMO_PREVENCION_FRAUDE_Y_SEGURIDAD",
+        acceptance_locale: acceptanceLocale,
+
+        accepted_terms_doc_hash_algo: "SHA-256",
+        accepted_terms_doc_hash: canonicalHash,
       })
       .eq("id", (row as any).id);
 
@@ -695,6 +854,14 @@ Deno.serve(async (req) => {
         sha256,
         accepted_at: acceptedAt,
         terms_version: TERMS_VERSION,
+
+        // ✅ extra evidencia útil (no rompe compatibilidad)
+        dpa_accepted: true,
+        dpa_version: TERMS_VERSION,
+        rgpd_annex_ii_version: TERMS_VERSION,
+        accepted_terms_doc_hash: canonicalHash,
+        accepted_terms_doc_hash_algo: "SHA-256",
+        acceptance_locale: acceptanceLocale,
       },
     });
   } catch (e: any) {

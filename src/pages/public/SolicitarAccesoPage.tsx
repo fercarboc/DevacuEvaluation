@@ -171,8 +171,12 @@ export default function SolicitarAccesoPage() {
 
       const id = await ensureDraft();
 
-      const { proof } = await generateTermsAcceptancePdf({ request_id: id });
+              const { proof } = await generateTermsAcceptancePdf({
+            request_id: id,
+            email: form.email,
+          });
 
+          
       setAcceptanceProof(proof);
       setForm((p) => ({ ...p, accepted_terms: true }));
 

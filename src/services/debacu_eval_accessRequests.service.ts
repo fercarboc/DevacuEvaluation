@@ -3,6 +3,14 @@ import { supabase } from "@/services/supabaseClient";
 
 export type PropertyType = "HOTEL" | "RURAL" | "APARTMENTS" | "HOSTEL" | "OTHER";
 
+/**
+ * Draft input:
+ * - Recomendación: NO exigir accepted_professional_use aquí.
+ * - Se envía en finalize (flujo limpio).
+ *
+ * Nota: si tu Edge Function "create_draft" aún lo requiere, lo mandamos
+ * como false si no viene para mantener compatibilidad.
+ */
 export type DebacuEvalAccessRequestDraftInput = {
   company_name: string;
   legal_name?: string;
@@ -21,7 +29,7 @@ export type DebacuEvalAccessRequestDraftInput = {
   email: string;
   phone?: string;
 
-  accepted_professional_use: boolean;
+  accepted_professional_use?: boolean; // ✅ ahora opcional
   notes?: string;
 };
 
@@ -59,15 +67,26 @@ function assertOk<T>(data: any, fallbackMsg: string): T {
   return data as T;
 }
 
+function normalizeEmail(e: string) {
+  return String(e ?? "").trim().toLowerCase();
+}
+
 /**
  * Crea solicitud (legacy name "draft") pero realmente crea PENDING en BD
  */
 export async function createDebacuEvalAccessRequestDraft(
   input: DebacuEvalAccessRequestDraftInput
 ): Promise<{ id: string; duplicate?: boolean }> {
+  // ✅ compat: si backend aún exige accepted_professional_use, mandamos false por defecto
+  const body = {
+    ...input,
+    email: normalizeEmail(input.email),
+    accepted_professional_use: !!input.accepted_professional_use,
+  };
+
   const { data, error } = await supabase.functions.invoke(
     "debacu_eval_access_request_create_draft",
-    { body: input }
+    { body }
   );
 
   if (error) throw error;
@@ -83,13 +102,22 @@ export async function createDebacuEvalAccessRequestDraft(
 
 /**
  * Genera PDF justificante (lee de BD, sube a Storage privado y actualiza la fila)
+ *
+ * ✅ Importante: pasa email para que el server valide que quien acepta
+ * coincide con el email de la solicitud (evita modo PENDING<24h).
  */
 export async function generateTermsAcceptancePdf(input: {
   request_id: string;
+  email?: string;
 }): Promise<{ proof: AcceptanceProof }> {
+  const body = {
+    request_id: input.request_id,
+    email: input.email ? normalizeEmail(input.email) : undefined,
+  };
+
   const { data, error } = await supabase.functions.invoke(
     "debacu_eval_generate_terms_acceptance",
-    { body: input }
+    { body }
   );
 
   if (error) throw error;
@@ -111,18 +139,23 @@ export async function generateTermsAcceptancePdf(input: {
  * - existe request_id
  * - accepted_terms = true
  * - accepted_terms_pdf_path existe
- * y opcionalmente actualiza accepted_professional_use
+ * y actualiza accepted_professional_use
  *
- * ✅ IMPORTANTE: Tu Edge Function finalize espera:
+ * ✅ Tu Edge Function finalize espera:
  * { request_id: string; accepted_professional_use: boolean }
  */
 export async function finalizeDebacuEvalAccessRequest(input: {
   request_id: string;
   accepted_professional_use: boolean;
 }): Promise<{ ok: true }> {
+  const body = {
+    request_id: input.request_id,
+    accepted_professional_use: !!input.accepted_professional_use,
+  };
+
   const { data, error } = await supabase.functions.invoke(
     "debacu_eval_access_request_finalize",
-    { body: input }
+    { body }
   );
 
   if (error) throw error;
