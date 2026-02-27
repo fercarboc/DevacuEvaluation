@@ -36,7 +36,12 @@ const PLAN_METADATA: Record<
   PlanCode,
   { name: string; description: string; maxQueries: number; defaultPrice: number }
 > = {
-  BASIC: { name: "Básico", description: "Ideal para validar la plataforma con hasta 150 consultas/mes.", maxQueries: 150, defaultPrice: 30 },
+  BASIC: {
+    name: "Básico",
+    description: "Ideal para validar la plataforma con hasta 150 consultas/mes.",
+    maxQueries: 150,
+    defaultPrice: 30,
+  },
   MEDIUM: { name: "Medio", description: "Para equipos en crecimiento con soporte prioritario.", maxQueries: 500, defaultPrice: 50 },
   PREMIUM: { name: "Premium", description: "API completa y gestión avanzada con 2.000 consultas/mes.", maxQueries: 2000, defaultPrice: 75 },
   FREE: { name: "Free", description: "Portal de inicio sin facturación.", maxQueries: 25, defaultPrice: 0 },
@@ -53,6 +58,12 @@ function pickCheckoutUrl(resp: any): string | null {
   return typeof v === "string" && v.startsWith("http") ? v : null;
 }
 
+function normalizePlanCode(v: any): PlanCode {
+  const code = String(v ?? "").toUpperCase().trim();
+  if (code === "BASIC" || code === "MEDIUM" || code === "PREMIUM" || code === "FREE") return code;
+  return "FREE";
+}
+
 export const PlanesTab: React.FC<TabProps> = ({ user }) => {
   const [loading, setLoading] = useState(true);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -63,50 +74,82 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
   const [isChangingPlan, setIsChangingPlan] = useState(false);
   const [selectedPlanCode, setSelectedPlanCode] = useState<PlanCode | null>(null);
 
+  // ✅ Fuente 1: estado “subscription_state” (puede ir desfasado tras cambios)
   const { state: subscriptionState, refresh } = use_subscription_state();
-
   const activeSub = subscriptionState?.subscription ?? null;
   const activePlanRow = subscriptionState?.plan ?? null;
 
+  // ✅ Fuente 2: bundle del backend (source of truth para “Mi cuenta”)
+  //    Esto corrige el bug: backend devuelve MEDIUM pero la UI se quedaba en FREE por usar subscriptionState.
+  const [bundleSubscription, setBundleSubscription] = useState<any | null>(null);
+  const [bundlePlan, setBundlePlan] = useState<any | null>(null);
+  const [bundleMeta, setBundleMeta] = useState<any | null>(null);
+
+  // ✅ “Effective” = preferimos bundle si existe
+  const effectiveSub = bundleSubscription ?? activeSub ?? null;
+  const effectivePlanRow = bundlePlan ?? activePlanRow ?? null;
+
   const currentPlanCode: PlanCode = useMemo(() => {
+    // 1) preferimos plan.code del bundle
+    const fromBundle = normalizePlanCode((bundlePlan as any)?.code);
+    if (fromBundle !== "FREE" || String((bundlePlan as any)?.code ?? "").trim()) return fromBundle;
+
+    // 2) fallback a subscription_state
     const code = String(subscriptionState?.plan_code ?? "").toUpperCase();
     if (code === "BASIC" || code === "MEDIUM" || code === "PREMIUM") return code;
     return "FREE";
-  }, [subscriptionState?.plan_code]);
+  }, [bundlePlan, subscriptionState?.plan_code]);
 
   const currentRank = PLAN_RANK[currentPlanCode] ?? 0;
 
   const monthlyFee = useMemo(() => {
-    const fromDb = (activePlanRow as any)?.price_monthly;
+    const fromDb = (effectivePlanRow as any)?.price_monthly;
     if (typeof fromDb === "number") return fromDb;
+
+    // algunos bundles podrían venir con priceMonthly camelCase
+    const camel = (effectivePlanRow as any)?.priceMonthly;
+    if (typeof camel === "number") return camel;
+
     return PLAN_METADATA[currentPlanCode]?.defaultPrice ?? 0;
-  }, [activePlanRow, currentPlanCode]);
+  }, [effectivePlanRow, currentPlanCode]);
 
   const isFreePlan =
     currentPlanCode === "FREE" ||
-    (activeSub as any)?.billing_frequency === "FREE_TRIAL" ||
+    (effectiveSub as any)?.billing_frequency === "FREE_TRIAL" ||
     monthlyFee === 0;
 
   const planDisplayName =
-    (activePlanRow as any)?.name ??
+    (effectivePlanRow as any)?.name ??
     PLAN_METADATA[currentPlanCode]?.name ??
     subscriptionState?.plan_display_name ??
     "Plan";
 
+  const maxQueries = useMemo(() => {
+    // 1) preferimos plan.max_queries_per_month del bundle
+    const v1 = (bundlePlan as any)?.max_queries_per_month;
+    if (typeof v1 === "number") return v1;
+
+    // 2) fallback a subscription_state
+    const v2 = subscriptionState?.limits_max_queries_per_month;
+    if (typeof v2 === "number") return v2;
+
+    // 3) metadata
+    const v3 = PLAN_METADATA[currentPlanCode]?.maxQueries;
+    return typeof v3 === "number" ? v3 : null;
+  }, [bundlePlan, subscriptionState?.limits_max_queries_per_month, currentPlanCode]);
+
   const limitDescription =
     PLAN_METADATA[currentPlanCode]?.description ??
-    (subscriptionState?.limits_max_queries_per_month
-      ? `Hasta ${subscriptionState.limits_max_queries_per_month.toLocaleString("es-ES")} consultas/mes`
+    (typeof maxQueries === "number"
+      ? `Hasta ${maxQueries.toLocaleString("es-ES")} consultas/mes`
       : "Límites según plan");
-
-  const maxQueries = subscriptionState?.limits_max_queries_per_month ?? PLAN_METADATA[currentPlanCode]?.maxQueries ?? null;
 
   const planPriceLabel = isFreePlan ? "Gratis" : formatCurrency(monthlyFee);
 
-  const hasPendingChange = (activeSub?.status ?? subscriptionState?.status) === "PENDING_PAYMENT";
+  const hasPendingChange = (effectiveSub?.status ?? subscriptionState?.status) === "PENDING_PAYMENT";
 
-  const requiredPlan = String((activeSub as any)?.required_plan_code ?? "").trim();
-  const hasScheduledDowngrade = Boolean((activeSub as any)?.stripe_schedule_id || requiredPlan);
+  const requiredPlan = String((effectiveSub as any)?.required_plan_code ?? "").trim();
+  const hasScheduledDowngrade = Boolean((effectiveSub as any)?.stripe_schedule_id || requiredPlan);
 
   useEffect(() => {
     // ✅ si vuelves de Stripe con org_id, guárdalo para evitar “no puedo cargar dashboard”
@@ -128,6 +171,15 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         const bundle = await getAccountBundle(idToTry);
         if (cancelled) return;
 
+        // ✅ Persistimos meta / plan / subscription del bundle para pintar “Mi plan” correctamente
+        setBundleMeta(bundle?.meta ?? null);
+        setBundlePlan(bundle?.plan ?? null);
+        setBundleSubscription(bundle?.subscription ?? null);
+
+        // ✅ Si el backend nos devuelve org_id, lo guardamos para que acciones (cambio de plan) funcionen siempre
+        const orgFromBundle = String(bundle?.meta?.org_id ?? "").trim();
+        if (orgFromBundle) setEvalOrgId(orgFromBundle);
+
         const invoiceRows = (bundle?.invoices ?? []) as any[];
         setInvoices(
           invoiceRows.map((row) => {
@@ -139,8 +191,8 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
               row.plan_name
                 ? String(row.plan_name)
                 : row.plan_code
-                  ? `Plan Debacu ${String(row.plan_code)}`
-                  : `Plan Debacu ${planDisplayName}`;
+                ? `Plan Debacu ${String(row.plan_code)}`
+                : `Plan Debacu ${planDisplayName}`;
 
             return {
               id: String(row.stripe_invoice_id ?? row.id ?? ""),
@@ -204,6 +256,13 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
 
     try {
       if (!org_id) {
+        // ✅ fallback defensivo: intentar org_id del bundle si existe
+        const orgFromBundle = String(bundleMeta?.org_id ?? "").trim();
+        if (orgFromBundle) setEvalOrgId(orgFromBundle);
+      }
+
+      const finalOrgId = getEvalOrgId();
+      if (!finalOrgId) {
         setPlanError("No se pudo resolver el org_id actual (contexto de hotel).");
         return;
       }
@@ -222,7 +281,7 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
       // ✅ Downgrade: se programa para el siguiente ciclo
       if (isDowngrade && !isFreePlan) {
         const resp = await changeSubscriptionPlan({
-          org_id,
+          org_id: finalOrgId,
           action: "SCHEDULE_DOWNGRADE",
           plan_code: target,
           billing_frequency: "MONTHLY",
@@ -240,7 +299,7 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
 
       // ✅ Upgrade (y también FREE->pago): CHANGE => crea checkout
       const resp = await changeSubscriptionPlan({
-        org_id,
+        org_id: finalOrgId,
         action: "CHANGE",
         plan_code: target,
         billing_frequency: "MONTHLY",
@@ -277,12 +336,19 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
 
     try {
       if (!org_id) {
+        // ✅ fallback defensivo: intentar org_id del bundle si existe
+        const orgFromBundle = String(bundleMeta?.org_id ?? "").trim();
+        if (orgFromBundle) setEvalOrgId(orgFromBundle);
+      }
+
+      const finalOrgId = getEvalOrgId();
+      if (!finalOrgId) {
         setPlanError("No se pudo resolver el org_id actual (contexto de hotel).");
         return;
       }
 
       await changeSubscriptionPlan({
-        org_id,
+        org_id: finalOrgId,
         action: "CANCEL_DOWNGRADE",
         return_to,
       });
@@ -307,7 +373,7 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
             </div>
 
             <span className="text-[11px] uppercase tracking-wide px-3 py-1 rounded-full border border-slate-200 text-slate-600 bg-white">
-              {activeSub?.status ?? "ACTIVE"}
+              {effectiveSub?.status ?? "ACTIVE"}
             </span>
           </div>
 
@@ -344,8 +410,11 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
                 {!isFreePlan && <p className="text-xs text-slate-500">/mes</p>}
               </div>
               <div className="text-right text-sm text-slate-600">
-                <p>Inicio: {formatDate((activeSub as any)?.start_date)}</p>
-                <p>Próxima factura: {formatDate((activeSub as any)?.next_billing_date ?? subscriptionState?.next_billing_date)}</p>
+                <p>Inicio: {formatDate((effectiveSub as any)?.start_date)}</p>
+                <p>
+                  Próxima factura:{" "}
+                  {formatDate((effectiveSub as any)?.next_billing_date ?? subscriptionState?.next_billing_date)}
+                </p>
               </div>
             </div>
 
@@ -426,11 +495,7 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
 
                 const buttonDisabled = isChangingPlan || hasPendingChange || isActive || !canChange;
 
-                const buttonLabel = isActive
-                  ? "Plan actual"
-                  : optionRank > currentRank
-                    ? "Subir plan"
-                    : "Bajar plan";
+                const buttonLabel = isActive ? "Plan actual" : optionRank > currentRank ? "Subir plan" : "Bajar plan";
 
                 return (
                   <div
