@@ -115,10 +115,22 @@ export interface AccountBundleSubscription {
   stripe_subscription_id?: string | null;
   provider_subscription_id?: string | null;
 
-  // downgrade programado / cambios pendientes
+  // downgrade programado / cambios pendientes (guardado en la fila activa)
   required_plan_code?: string | null;
   required_billing_frequency?: string | null;
   stripe_schedule_id?: string | null;
+}
+
+/**
+ * ✅ NUEVO: info explícita de downgrade para pintar “bajada programada”
+ * (la UI lo usa si el backend lo devuelve; si no, no pasa nada porque es opcional)
+ */
+export interface AccountBundleDowngrade {
+  scheduled: boolean;
+  target_plan_code: string | null; // "BASIC" | "MEDIUM" | "PREMIUM" | "FREE"
+  billing_frequency: string | null; // "MONTHLY" | "YEARLY"
+  effective_date: string | null; // "YYYY-MM-DD"
+  schedule_id: string | null; // "sub_sched_..."
 }
 
 /**
@@ -130,6 +142,7 @@ export interface AccountBundleSubscription {
  * - subscription + plan (plan actual)
  * - plans (planes disponibles)
  * - invoices
+ * - downgrade (bajada programada / cancelación)
  */
 export interface AccountBundleResponse {
   ok?: boolean; // algunos endpoints devuelven ok arriba
@@ -143,6 +156,9 @@ export interface AccountBundleResponse {
 
   plans: AccountBundlePlan[];
   invoices: AccountBundleInvoice[];
+
+  // ✅ NUEVO
+  downgrade?: AccountBundleDowngrade | null;
 }
 
 // ----------------- EDGE CALLS -----------------
@@ -154,6 +170,7 @@ export interface AccountBundleResponse {
  * - plans (plans del app DEBACU_EVAL para BASIC/MEDIUM/PREMIUM)
  * - subscription + plan (plan actual)
  * - meta (org_id, customer_id, etc.)
+ * - downgrade (si hay bajada programada)
  */
 export async function getAccountBundle(customer_id: string) {
   return callEvalFn<AccountBundleResponse>("debacu_eval_account_bundle", { customer_id });
