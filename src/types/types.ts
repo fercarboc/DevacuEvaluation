@@ -121,7 +121,26 @@ type SignedUrlResponse = {
 
 
 
+// ✅ Añade esto (o intégralo) en el type/interface AccountBundleResponse
 
+export type AccountDowngradeInfo = {
+  scheduled: boolean;
+  target_plan_code?: "BASIC" | "MEDIUM" | "PREMIUM" | "FREE" | null;
+  effective_date?: string | null;  // "YYYY-MM-DD"
+  schedule_id?: string | null;     // "sub_sched_..."
+};
+
+export type AccountBundleResponse = {
+  // ... lo que ya tengas
+  meta?: any;
+  plan?: any;
+  subscription?: any;
+  invoices?: any[];
+  plans?: any[];
+
+  // ✅ NUEVO (opcional)
+  downgrade?: AccountDowngradeInfo | null;
+};
 
 
 

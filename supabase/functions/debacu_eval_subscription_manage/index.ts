@@ -330,6 +330,43 @@ function normalizeStripeSubId(row: any): string | null {
     : null;
 }
 
+/**
+ * ✅ Si ya hay downgrade programado pero en DB falta next_billing_date,
+ * calculamos la fecha desde Stripe y opcionalmente la persistimos en DB.
+ */
+async function ensureEffectiveDateForScheduledDowngrade(params: {
+  sb: ReturnType<typeof sbService>;
+  active_sub: any;
+  stripeSubId: string;
+}) {
+  const { sb, active_sub, stripeSubId } = params;
+
+  let effective_date: string | null = (active_sub as any)?.next_billing_date ?? null;
+
+  if (effective_date) return effective_date;
+
+  // 1) intentar sacar current_period_end de la suscripción
+  try {
+    const stripeSub = await stripe.subscriptions.retrieve(stripeSubId);
+    const periodEnd = (stripeSub as any)?.current_period_end as number | undefined;
+    const computed = isoDateFromUnix(periodEnd ?? null);
+    if (computed) effective_date = computed;
+  } catch {
+    // ignore
+  }
+
+  // 2) persistir si lo hemos calculado
+  if (effective_date) {
+    const nowIso = new Date().toISOString();
+    await sb
+      .from("subscriptions")
+      .update({ next_billing_date: effective_date, updated_at: nowIso } as any)
+      .eq("id", active_sub.id);
+  }
+
+  return effective_date;
+}
+
 /** ======================================================
  * Handlers
  * ====================================================== */
@@ -338,6 +375,9 @@ async function handleGet(sb: ReturnType<typeof sbService>, customer_id: string, 
   const pending = await getPendingSubscription(sb, customer_id, app_id);
   const plan = active?.plan_id ? await getPlanById(sb, active.plan_id) : null;
 
+  // Nota: no llamo a Stripe aquí para no encarecer cada GET.
+  // Lo importante es que SCHEDULE_DOWNGRADE devuelva effective_date no null,
+  // y que next_billing_date se persista si falta.
   return {
     active,
     pending,
@@ -501,13 +541,22 @@ async function handleScheduleDowngrade(sb: ReturnType<typeof sbService>, custome
   const active_sub = await getActiveSubscription(sb, customer_id, app_id);
   if (!active_sub) return { status: 409, detail: "NO_ACTIVE_SUBSCRIPTION" as const };
 
+  // ✅ YA ESTABA PROGRAMADO: antes devolvía effective_date = null si next_billing_date era null.
+  // Ahora lo calculamos desde Stripe y lo persistimos si falta.
   if ((active_sub as any)?.required_plan_code && (active_sub as any)?.stripe_schedule_id) {
+    const stripeSubId = normalizeStripeSubId(active_sub);
+    let effective_date: string | null = (active_sub as any)?.next_billing_date ?? null;
+
+    if (stripeSubId) {
+      effective_date = await ensureEffectiveDateForScheduledDowngrade({ sb, active_sub, stripeSubId });
+    }
+
     return {
       status: 200,
       body: {
         ok: true,
         scheduled: true,
-        effective_date: (active_sub as any)?.next_billing_date ?? null,
+        effective_date,
         target_plan_code: (active_sub as any)?.required_plan_code,
         schedule_id: (active_sub as any)?.stripe_schedule_id ?? null,
       },
@@ -586,7 +635,14 @@ async function handleScheduleDowngrade(sb: ReturnType<typeof sbService>, custome
 
   return {
     status: 200,
-    body: { ok: true, scheduled: true, effective_date, current_plan_code: current_code || null, target_plan_code, schedule_id: schedule.id },
+    body: {
+      ok: true,
+      scheduled: true,
+      effective_date,
+      current_plan_code: current_code || null,
+      target_plan_code,
+      schedule_id: schedule.id,
+    },
   };
 }
 

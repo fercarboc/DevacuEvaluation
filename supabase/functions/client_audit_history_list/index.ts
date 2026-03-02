@@ -5,7 +5,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4
 
 import { json, preflight } from "../_shared/cors.ts";
 import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
-import { getOrgEntitlementsOrThrow, assertOrgEnabledOrThrow } from "../_shared/plans.ts";
+import { getOrgEntitlementsOrThrow, assertOrgEnabledOrThrow } from "../_shared/plan.ts";
 
 const APP_ID = "DEBACU_EVAL";
 
@@ -16,12 +16,21 @@ const APP_ID = "DEBACU_EVAL";
 const MEMBERSHIP_STATUS_COLUMN = "status";
 const MEMBERSHIP_ACTIVE_VALUE = "ACTIVE";
 
+// UI está mandando page_size, date_from, date_to. Aceptamos ambos formatos.
 type ReqBody = {
   org_id?: string; // recomendado: UI siempre manda org_id
   page?: number; // 1..n
+
+  // camelCase (nuevo) / snake_case (UI actual)
   pageSize?: number; // 5..100
+  page_size?: number; // 5..100
+
   q?: string; // search
   event_type?: string; // default CHECK_SIGNALS
+
+  // opcional (si tu UI lo manda)
+  date_from?: string;
+  date_to?: string;
 };
 
 type OrgResolvedBy = "requested" | "first_active" | "first_any";
@@ -45,6 +54,14 @@ function clamp(n: number, min: number, max: number) {
 
 function safeStr(v: unknown) {
   return typeof v === "string" ? v : "";
+}
+
+function safeDate(v: unknown) {
+  const s = safeStr(v).trim();
+  // formateo simple: yyyy-mm-dd
+  if (!s) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  return s;
 }
 
 /** ======================================================
@@ -140,14 +157,29 @@ export default Deno.serve(async (req: Request) => {
 
     // ✅ Entitlements unificados + TRIAL_ACTIVE permitido
     const ent = (await getOrgEntitlementsOrThrow(admin as any, org_id)) as unknown as EntitlementsRow;
+
+    // Logs útiles (temporales)
+    console.log("AUDIT_HISTORY org_id", org_id);
+    console.log("AUDIT_HISTORY ent.subscription_status", (ent as any)?.subscription_status);
+    console.log("AUDIT_HISTORY ent.plan_code", (ent as any)?.plan_code);
+
+    // Validación plan
     assertOrgEnabledOrThrow(ent as any); // ACTIVE o TRIAL_ACTIVE
-    const customer_id = String(ent.customer_id);
+
+    const customer_id = String(ent.customer_id ?? "");
     if (!customer_id) throw new Error("FORBIDDEN");
 
     const page = clamp(Number(body.page ?? 1) || 1, 1, 10_000);
-    const pageSize = clamp(Number(body.pageSize ?? 10) || 10, 5, 100);
+
+    // ✅ Soporta pageSize y page_size
+    const pageSizeRaw = Number((body as any).pageSize ?? (body as any).page_size ?? 10) || 10;
+    const pageSize = clamp(pageSizeRaw, 5, 100);
+
     const q = safeStr(body.q).trim();
     const eventType = safeStr(body.event_type).trim() || "CHECK_SIGNALS";
+
+    const dateFrom = safeDate((body as any).date_from);
+    const dateTo = safeDate((body as any).date_to);
 
     const from = (page - 1) * pageSize;
     const to = from + pageSize - 1;
@@ -175,8 +207,15 @@ export default Deno.serve(async (req: Request) => {
       .eq("customer_id", customer_id)
       .eq("app_id", APP_ID)
       .eq("event_type", eventType)
-      .order("created_at", { ascending: false })
-      .range(from, to);
+      .order("created_at", { ascending: false });
+
+    // ✅ Filtro por rango de fechas si viene desde UI (optional)
+    // Interpretación: date_from <= created_at < date_to+1
+    if (dateFrom) query = query.gte("created_at", `${dateFrom}T00:00:00.000Z`);
+    if (dateTo) query = query.lt("created_at", `${dateTo}T23:59:59.999Z`);
+
+    // Paginación
+    query = query.range(from, to);
 
     if (q) {
       const like = `%${q}%`;
@@ -267,6 +306,7 @@ export default Deno.serve(async (req: Request) => {
     });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
+    console.error("AUDIT_HISTORY ERROR msg", msg);
 
     // 401
     if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
@@ -287,7 +327,7 @@ export default Deno.serve(async (req: Request) => {
     }
 
     // 403
-    if (msg === "FORBIDDEN" || msg.startsWith("forbidden_")) {
+    if (msg === "FORBIDDEN" || msg.startsWith("forbidden_") || msg.startsWith("FORBIDDEN_")) {
       return json(req, 403, { ok: false, error: "FORBIDDEN" });
     }
 

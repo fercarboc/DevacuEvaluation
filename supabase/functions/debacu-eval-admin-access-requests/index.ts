@@ -1,871 +1,830 @@
-// supabase/functions/debacu-eval-admin-access-requests/index.ts
+// supabase/functions/debacu_eval_subscription_manage/index.ts
 // deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import Stripe from "https://esm.sh/stripe@16.12.0?target=deno";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-
 import { json, preflight } from "../_shared/cors.ts";
-import { requireAdmin } from "../_shared/auth.ts";
+import { requireUser } from "../_shared/auth.ts";
 
-/** ======================================================
- *  Env
- * ====================================================== */
+/**
+ * OBJETIVO:
+ * - 1 Stripe Customer por customer_id interno
+ * - 1 Stripe Subscription activa por customer_id/app_id
+ * - Upgrade: SIEMPRE Checkout (cobro inmediato, pierde lo pendiente) => NUEVA subscription, luego webhook cancela la anterior
+ * - Downgrade: stripe.subscriptionSchedules (programado)
+ * - Cancel downgrade: release(schedule) + limpiar flags DB
+ *
+ * DB:
+ * - customers: id, email, stripe_customer_id
+ * - subscriptions: id, customer_id, app_id, status, plan_id,
+ *                  stripe_subscription_id, provider_subscription_id,
+ *                  stripe_customer_id, stripe_price_id,
+ *                  required_plan_code, required_billing_frequency, stripe_schedule_id,
+ *                  replaces_subscription_id,
+ *                  start_date, next_billing_date, end_date, updated_at...
+ * - plans: id, app_id, code
+ */
+
+type PlanCode = "BASIC" | "MEDIUM" | "PREMIUM";
+type BillingFrequency = "MONTHLY" | "YEARLY";
+
+const DEFAULT_APP_ID = "DEBACU_EVAL";
+const DEFAULT_RETURN_TO = "/app/perfil";
+
 function mustEnv(name: string) {
   const v = Deno.env.get(name);
-  if (!v) throw new Error(`missing_env:${name}`);
+  if (!v) throw new Error(`MISSING_ENV:${name}`);
   return v;
 }
 
+// Env
 const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-const ANON_KEY = mustEnv("SUPABASE_ANON_KEY");
 
-// Base URL pública de tu frontend (fallback)
-const SITE_URL_FALLBACK = Deno.env.get("SITE_URL") ?? "https://www.debacu.com";
+const STRIPE_SECRET_KEY = mustEnv("STRIPE_SECRET_KEY");
 
-const APP_ID = "DEBACU_EVAL";
+/**
+ * ✅ CANÓNICO para construir redirects de Stripe.
+ * En PROD: https://www.debacu.com
+ * En DEV:  http://localhost:3000  (si lo quieres)
+ */
+const PUBLIC_SITE_URL = mustEnv("PUBLIC_SITE_URL").replace(/\/+$/, "");
 
-/** ======================================================
- *  Small utils
- * ====================================================== */
-function safeLowerEmail(v: any) {
-  return typeof v === "string" ? v.trim().toLowerCase() : "";
-}
-function safeStr(v: any) {
-  return typeof v === "string" ? v.trim() : "";
-}
-function safeUpper(v: any) {
-  return typeof v === "string" ? v.trim().toUpperCase() : "";
-}
-const toDate = (d: Date) => d.toISOString().slice(0, 10);
+// Precios
+const PRICE_MAP: Record<PlanCode, Record<BillingFrequency, string>> = {
+  BASIC: {
+    MONTHLY: mustEnv("STRIPE_PRICE_ID_DEBACU_EVAL_BASIC_MONTHLY"),
+    YEARLY: mustEnv("STRIPE_PRICE_ID_DEBACU_EVAL_BASIC_YEARLY"),
+  },
+  MEDIUM: {
+    MONTHLY: mustEnv("STRIPE_PRICE_ID_DEBACU_EVAL_MEDIUM_MONTHLY"),
+    YEARLY: mustEnv("STRIPE_PRICE_ID_DEBACU_EVAL_MEDIUM_YEARLY"),
+  },
+  PREMIUM: {
+    MONTHLY: mustEnv("STRIPE_PRICE_ID_DEBACU_EVAL_PREMIUM_MONTHLY"),
+    YEARLY: mustEnv("STRIPE_PRICE_ID_DEBACU_EVAL_PREMIUM_YEARLY"),
+  },
+};
 
-async function readJson(req: Request) {
-  try {
-    const t = await req.text();
-    if (!t) return {};
-    return JSON.parse(t);
-  } catch {
-    return {};
-  }
-}
+const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-function supabaseServiceClient() {
+function sbService() {
   return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 }
 
-/** ======================================================
- *  Redirect helpers (dinámicos: local/prod/vercel)
- * ====================================================== */
-function normalizeBaseUrl(u: string) {
-  return u.replace(/\/+$/, "");
+function safeUpper(v?: string | null) {
+  return String(v ?? "").toUpperCase();
+}
+function safeStr(v: any) {
+  return typeof v === "string" ? v.trim() : "";
+}
+function pickString(body: any, snake: string, camel?: string): string | undefined {
+  const v = body?.[snake] ?? (camel ? body?.[camel] : undefined);
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+function pickPlanCode(body: any): PlanCode | undefined {
+  const v = body?.target_plan_code ?? body?.targetPlanCode;
+  if (typeof v !== "string") return undefined;
+  const up = v.toUpperCase().trim();
+  if (up === "BASIC" || up === "MEDIUM" || up === "PREMIUM") return up;
+  return undefined;
+}
+function pickBillingFrequency(body: any): BillingFrequency {
+  const v = body?.billing_frequency ?? body?.billingFrequency;
+  if (typeof v !== "string") return "MONTHLY";
+  const up = v.toUpperCase().trim();
+  if (up === "MONTHLY" || up === "YEARLY") return up;
+  return "MONTHLY";
+}
+function planRank(code: string) {
+  const c = safeUpper(code);
+  if (c === "BASIC") return 1;
+  if (c === "MEDIUM") return 2;
+  if (c === "PREMIUM") return 3;
+  return 0;
+}
+function isoDateFromUnix(sec?: number | null) {
+  if (!sec) return null;
+  return new Date(sec * 1000).toISOString().slice(0, 10);
 }
 
-function resolveSiteUrl(body: any) {
-  const siteUrl = safeStr(body?.siteUrl || body?.site_url || "");
-  if (siteUrl.startsWith("http://") || siteUrl.startsWith("https://")) return normalizeBaseUrl(siteUrl);
-  return normalizeBaseUrl(SITE_URL_FALLBACK);
-}
-
-function forceCanonicalBase(base: string) {
-  try {
-    const u = new URL(base);
-    // fuerza www si viene sin
-    if (u.hostname === "debacu.com") u.hostname = "www.debacu.com";
-    return u.toString().replace(/\/+$/, "");
-  } catch {
-    return "https://www.debacu.com";
+function buildUrl(base: string, params: Record<string, string>) {
+  const u = new URL(base);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && String(v).length) u.searchParams.set(k, String(v));
   }
-}
-
-function resolveActivateRedirect(body: any, org_id: string) {
-  const baseRaw = resolveSiteUrl(body);
-  const base = forceCanonicalBase(baseRaw);
-
-  // Siempre construimos un URL limpio
-  const u = new URL(`${base}/auth/activate`);
-  u.searchParams.set("org_id", org_id);
-  u.hash = "";
   return u.toString();
 }
 
-function resolveRecoveryRedirect(body: any) {
-  const base = resolveSiteUrl(body);
-  return `${base}/auth/reset`;
+/**
+ * ✅ Redirects Stripe (hosted Checkout)
+ * Siempre construimos desde PUBLIC_SITE_URL.
+ */
+function buildStripeSuccessUrl(org_id: string, return_to: string) {
+  return buildUrl(`${PUBLIC_SITE_URL}/app/cuenta`, {
+    stripe: "success",
+    session_id: "{CHECKOUT_SESSION_ID}",
+    org_id,
+    return_to,
+  });
+}
+function buildStripeCancelUrl(org_id: string, return_to: string) {
+  return buildUrl(`${PUBLIC_SITE_URL}/app/cuenta`, {
+    stripe: "cancel",
+    org_id,
+    return_to,
+  });
+}
+
+function err(
+  req: Request,
+  status: number,
+  detail:
+    | "UNAUTHENTICATED"
+    | "FORBIDDEN"
+    | "missing_org_id"
+    | "missing_action"
+    | "invalid_action"
+    | "invalid_app_id"
+    | "missing_target_plan_code"
+    | "invalid_billing_frequency"
+    | "PENDING_CHANGE"
+    | "USE_SCHEDULE_DOWNGRADE"
+    | "PLAN_NOT_ACTIVE"
+    | "SEATS_EXCEEDED"
+    | "NO_ACTIVE_SUBSCRIPTION"
+    | "NO_DOWNGRADE_SCHEDULED"
+    | "request_failed",
+  extra?: Record<string, unknown>,
+) {
+  return json(req, status, { ok: false, error: "request_failed", detail, ...(extra ?? {}) });
 }
 
 /** ======================================================
- *  Auth: find user by email (admin list users)
+ * Org context (org_id obligatorio) + role OWNER/ADMIN
  * ====================================================== */
-async function getAuthUserIdByEmail(sbAdmin: ReturnType<typeof supabaseServiceClient>, email: string) {
-  const e = safeLowerEmail(email);
-  if (!e) return null;
+async function requireOrgContext(sb: ReturnType<typeof sbService>, auth_user_id: string, org_id: string) {
+  const { data: mem, error: memErr } = await sb
+    .from("debacu_eval_org_members")
+    .select("org_id, role, status")
+    .eq("auth_user_id", auth_user_id)
+    .eq("org_id", org_id)
+    .eq("status", "ACTIVE")
+    .maybeSingle();
 
-  const perPage = 1000;
-  for (let page = 1; page <= 10; page++) {
-    const { data, error } = await sbAdmin.auth.admin.listUsers({ page, perPage });
-    if (error) return null;
-    const found = data.users.find((u) => safeLowerEmail(u.email) === e);
-    if (found?.id) return found.id;
-    if (data.users.length < perPage) break;
+  if (memErr || !mem) return null;
+
+  const role = safeUpper(mem.role);
+  if (!(role === "OWNER" || role === "ADMIN")) return null;
+
+  let customer_id: string | null = null;
+
+  const { data: ent, error: entErr } = await sb
+    .from("debacu_eval_org_entitlements_v")
+    .select("customer_id")
+    .eq("org_id", org_id)
+    .maybeSingle();
+
+  if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
+
+  if (!customer_id) {
+    const { data: org, error: orgErr } = await sb
+      .from("debacu_eval_organizations")
+      .select("customer_id")
+      .eq("id", org_id)
+      .maybeSingle();
+
+    if (orgErr || !org?.customer_id) return null;
+    customer_id = String(org.customer_id);
   }
-  return null;
+
+  return { org_id, role, customer_id };
 }
 
 /** ======================================================
- *  Email helpers (NO mailer externo)
- *  - INVITE: auth.admin.inviteUserByEmail (manda email Supabase)
- *  - RECOVERY: /auth/v1/recover (manda email Supabase aunque el user ya exista)
+ * DB helpers
  * ====================================================== */
-async function sendRecoveryEmailViaApi(email: string, redirectTo: string) {
-  const res = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      apikey: ANON_KEY,
-      authorization: `Bearer ${ANON_KEY}`,
-    },
-    body: JSON.stringify({
-      email,
-      redirect_to: redirectTo,
-    }),
+async function getPendingSubscription(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string) {
+  const { data, error } = await sb
+    .from("subscriptions")
+    .select("*")
+    .eq("customer_id", customer_id)
+    .eq("app_id", app_id)
+    .eq("status", "PENDING_PAYMENT")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data as any;
+}
+
+const ACTIVE_STATUSES = ["ACTIVE", "TRIAL_ACTIVE", "PAST_DUE"] as const;
+
+async function getActiveSubscription(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string) {
+  const { data, error } = await sb
+    .from("subscriptions")
+    .select("*")
+    .eq("customer_id", customer_id)
+    .eq("app_id", app_id)
+    .in("status", [...ACTIVE_STATUSES])
+    .order("start_date", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data as any;
+}
+
+async function getPlanByCode(sb: ReturnType<typeof sbService>, app_id: string, code: string) {
+  const { data, error } = await sb.from("plans").select("*").eq("app_id", app_id).eq("code", code).maybeSingle();
+  if (error) throw error;
+  return data as any;
+}
+async function getPlanById(sb: ReturnType<typeof sbService>, plan_id: string) {
+  const { data, error } = await sb.from("plans").select("*").eq("id", plan_id).maybeSingle();
+  if (error) throw error;
+  return data as any;
+}
+
+async function getCustomerRow(sb: ReturnType<typeof sbService>, customer_id: string) {
+  const { data, error } = await sb
+    .from("customers")
+    .select("id, email, name, stripe_customer_id, is_active")
+    .eq("id", customer_id)
+    .maybeSingle();
+  if (error) throw error;
+  return data as any;
+}
+
+async function insertEvent(sb: ReturnType<typeof sbService>, params: {
+  app_id: string;
+  customer_id: string;
+  type: string;
+  payload?: Record<string, unknown>;
+  stripe_customer_id?: string | null;
+  stripe_subscription_id?: string | null;
+  stripe_event_id?: string | null;
+}) {
+  const stripe_event_id = params.stripe_event_id ?? `manage_${crypto.randomUUID()}`;
+  const { error } = await sb.from("subscription_events").insert({
+    stripe_event_id,
+    type: params.type,
+    payload: params.payload ?? {},
+    created_at: new Date().toISOString(),
+    customer_id: params.customer_id,
+    app_id: params.app_id,
+    stripe_customer_id: params.stripe_customer_id ?? null,
+    stripe_subscription_id: params.stripe_subscription_id ?? null,
   });
 
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`recovery_failed:${res.status}:${text || "unknown"}`);
+  if (error) {
+    const msg = String((error as any)?.message ?? "").toLowerCase();
+    if (!(msg.includes("duplicate") || msg.includes("unique"))) throw error;
   }
-  return { ok: true };
 }
 
-function isAlreadyRegisteredInviteError(msg: string) {
-  const m = (msg || "").toLowerCase();
-  return (
-    m.includes("already been registered") ||
-    m.includes("already registered") ||
-    m.includes("user already registered") ||
-    m.includes("email address has already been registered")
-  );
+/** ======================================================
+ * Stripe helpers
+ * ====================================================== */
+async function ensureStripeCustomer(
+  sb: ReturnType<typeof sbService>,
+  customer_id: string,
+  org_id: string,
+  app_id: string,
+  auth_user_id: string,
+) {
+  const c = await getCustomerRow(sb, customer_id);
+  if (!c?.id) throw new Error("FORBIDDEN");
+  if (c.is_active === false) throw new Error("FORBIDDEN");
+
+  let stripe_customer_id: string | null = (c.stripe_customer_id as string | null) ?? null;
+
+  if (stripe_customer_id) return { stripe_customer_id, email: String(c.email ?? "").trim().toLowerCase() };
+
+  const email = String(c.email ?? "").trim().toLowerCase();
+  if (!email || !email.includes("@")) throw new Error("customer_no_email");
+
+  const sc = await stripe.customers.create({
+    email,
+    name: c.name ?? email,
+    metadata: { customer_id, org_id, app_id, auth_user_id },
+  });
+
+  stripe_customer_id = sc.id;
+
+  const { error: upErr } = await sb
+    .from("customers")
+    .update({ stripe_customer_id, updated_at: new Date().toISOString() })
+    .eq("id", customer_id);
+
+  if (upErr) throw upErr;
+
+  return { stripe_customer_id, email };
+}
+
+function normalizeStripeSubId(row: any): string | null {
+  return (row?.stripe_subscription_id ?? row?.provider_subscription_id ?? null)
+    ? String(row.stripe_subscription_id ?? row.provider_subscription_id)
+    : null;
 }
 
 /**
- * ✅ ONBOARDING robusto:
- * - Intenta INVITE (si no existe user → OK)
- * - Si el user ya existe → manda RECOVERY email (Supabase), que SIEMPRE funciona para reenviar
+ * ✅ Si ya hay downgrade programado pero en DB falta next_billing_date,
+ * calculamos la fecha desde Stripe y opcionalmente la persistimos en DB.
  */
-async function sendInviteOrRecovery(params: {
-  sbAdmin: ReturnType<typeof supabaseServiceClient>;
-  email: string;
-  customer_id: string;
-  org_id: string;
-  activateRedirectTo: string; // /auth/activate?org_id=...
+async function ensureEffectiveDateForScheduledDowngrade(params: {
+  sb: ReturnType<typeof sbService>;
+  active_sub: any;
+  stripeSubId: string;
 }) {
-  const { sbAdmin, email, customer_id, org_id, activateRedirectTo } = params;
+  const { sb, active_sub, stripeSubId } = params;
 
+  let effective_date: string | null = (active_sub as any)?.next_billing_date ?? null;
+
+  if (effective_date) return effective_date;
+
+  // 1) intentar sacar current_period_end de la suscripción
   try {
-    const { data, error } = await sbAdmin.auth.admin.inviteUserByEmail(email, {
-      redirectTo: activateRedirectTo,
-      data: { customer_id, org_id, app: APP_ID },
-    });
+    const stripeSub = await stripe.subscriptions.retrieve(stripeSubId);
+    const periodEnd = (stripeSub as any)?.current_period_end as number | undefined;
+    const computed = isoDateFromUnix(periodEnd ?? null);
+    if (computed) effective_date = computed;
+  } catch {
+    // ignore
+  }
 
-    if (error) throw error;
+  // 2) persistir si lo hemos calculado
+  if (effective_date) {
+    const nowIso = new Date().toISOString();
+    await sb
+      .from("subscriptions")
+      .update({ next_billing_date: effective_date, updated_at: nowIso } as any)
+      .eq("id", active_sub.id);
+  }
 
-    return {
-      mode: "INVITE" as const,
-      user_id: data?.user?.id ?? null,
-    };
-  } catch (e: any) {
-    const raw = e?.message ? String(e.message) : String(e);
+  return effective_date;
+}
 
-    // Caso clave: ya existe -> RECOVERY
-    if (isAlreadyRegisteredInviteError(raw)) {
-      await sendRecoveryEmailViaApi(email, activateRedirectTo);
-      return {
-        mode: "RECOVERY" as const,
-        user_id: null,
-      };
+/** ======================================================
+ * Handlers
+ * ====================================================== */
+
+/**
+ * GET:
+ * Devuelve:
+ * - active, pending, plan
+ * - downgrade: { scheduled, target_plan_code, effective_date, schedule_id, required_billing_frequency }
+ *
+ * ✅ IMPORTANTE:
+ * Si hay downgrade programado y next_billing_date es null,
+ * se calcula desde Stripe (current_period_end) y se persiste en DB.
+ */
+async function handleGet(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string) {
+  const active = await getActiveSubscription(sb, customer_id, app_id);
+  const pending = await getPendingSubscription(sb, customer_id, app_id);
+  const plan = active?.plan_id ? await getPlanById(sb, active.plan_id) : null;
+
+  let downgrade: any = null;
+
+  if (active?.stripe_schedule_id && active?.required_plan_code) {
+    const stripeSubId = normalizeStripeSubId(active);
+    let effective_date: string | null = (active as any)?.next_billing_date ?? null;
+
+    if (!effective_date && stripeSubId) {
+      effective_date = await ensureEffectiveDateForScheduledDowngrade({
+        sb,
+        active_sub: active,
+        stripeSubId,
+      });
     }
 
-    throw new Error(`invite_failed:${raw}`);
+    downgrade = {
+      scheduled: true,
+      target_plan_code: (active as any)?.required_plan_code ?? null,
+      required_billing_frequency: (active as any)?.required_billing_frequency ?? null,
+      effective_date,
+      schedule_id: (active as any)?.stripe_schedule_id ?? null,
+    };
   }
-}
 
-/** ======================================================
- *  Customers + Profile
- * ====================================================== */
-async function getOrCreateCustomerByEmail(
-  sbAdmin: ReturnType<typeof supabaseServiceClient>,
-  email: string,
-  company_name: string | null,
-) {
-  const { data: existing, error: findErr } = await sbAdmin
-    .from("customers")
-    .select("id")
-    .eq("email", email)
-    .maybeSingle();
-
-  if (findErr) throw new Error("db_customers_find_failed");
-  if (existing?.id) return existing.id as string;
-
-  const customer_id = crypto.randomUUID();
-
-  const { error: insErr } = await sbAdmin.from("customers").insert({
-    id: customer_id,
-    name: company_name,
-    email,
-    is_active: true,
-    app_id: APP_ID,
-  });
-
-  if (insErr) throw new Error("db_customers_insert_failed");
-  return customer_id;
-}
-
-async function upsertDebacuEvalCustomerProfile(
-  sbAdmin: ReturnType<typeof supabaseServiceClient>,
-  input: {
-    customer_id: string;
-    legal_name?: string | null;
-    property_type?: string | null;
-    rooms_count?: number | null;
-    website?: string | null;
-    contact_name?: string | null;
-    contact_role?: string | null;
-    notes?: string | null;
-  },
-) {
-  const payload = {
-    customer_id: input.customer_id,
-    legal_name: input.legal_name ?? null,
-    property_type: input.property_type ?? null,
-    rooms_count: typeof input.rooms_count === "number" ? input.rooms_count : null,
-    website: input.website ?? null,
-    contact_name: input.contact_name ?? null,
-    contact_role: input.contact_role ?? null,
-    notes: input.notes ?? null,
+  return {
+    active,
+    pending,
+    plan,
+    downgrade,
   };
-
-  const { error } = await sbAdmin.from("debacu_eval_customer_profile").upsert(payload, {
-    onConflict: "customer_id",
-  });
-
-  if (error) throw new Error("db_profile_upsert_failed");
 }
 
-/** ======================================================
- *  Organization
- * ====================================================== */
-async function ensureOrganization(
-  sbAdmin: ReturnType<typeof supabaseServiceClient>,
-  params: {
-    customer_id: string;
-    org_name: string;
-    legal_name?: string | null;
-    cif?: string | null;
-    address?: string | null;
-    city?: string | null;
-    country?: string | null;
-    property_type?: string | null;
-    rooms_count?: number | null;
-    website?: string | null;
-  },
+/**
+ * CHANGE (NUEVA POLÍTICA):
+ * - Si NO hay suscripción activa -> Checkout para crear primera.
+ * - Si HAY suscripción activa:
+ *    - Downgrade -> forzar SCHEDULE_DOWNGRADE
+ *    - Upgrade -> Checkout SIEMPRE (cobro inmediato). El webhook debe:
+ *        - activar la nueva
+ *        - cancelar la anterior
+ *        - marcar anterior como REPLACED y nueva como ACTIVE
+ */
+async function handleChange(
+  sb: ReturnType<typeof sbService>,
+  customer_id: string,
+  app_id: string,
+  org_id: string,
+  auth_user_id: string,
+  body: any,
 ) {
-  const { customer_id, org_name, legal_name, cif, address, city, country, property_type, rooms_count, website } =
-    params;
+  const target_plan_code = pickPlanCode(body);
+  if (!target_plan_code) return { status: 400, detail: "missing_target_plan_code" as const };
 
-  const { data: orgExisting, error: orgFindErr } = await sbAdmin
-    .from("debacu_eval_organizations")
-    .select("id")
-    .eq("customer_id", customer_id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+  const billing_frequency = pickBillingFrequency(body);
+  const price_id = PRICE_MAP[target_plan_code][billing_frequency];
+  if (!price_id) return { status: 400, detail: "request_failed" as const };
 
-  if (orgFindErr) throw new Error("db_org_find_failed");
+  const pending = await getPendingSubscription(sb, customer_id, app_id);
+  if (pending) return { status: 409, detail: "PENDING_CHANGE" as const, extra: { pendingSubscriptionId: pending.id } };
 
-  let org_id = orgExisting?.id as string | undefined;
+  const plan_row = await getPlanByCode(sb, app_id, target_plan_code);
+  if (!plan_row?.id) return { status: 400, detail: "request_failed" as const };
 
-  if (!org_id) {
-    const { data: inserted, error: orgInsErr } = await sbAdmin
-      .from("debacu_eval_organizations")
-      .insert({
-        name: org_name,
-        legal_name: legal_name ?? null,
-        cif: cif ?? null,
-        address: address ?? null,
-        city: city ?? null,
-        country: (country ?? "ESP").toUpperCase(),
-        property_type: property_type ?? null,
-        rooms_count: typeof rooms_count === "number" ? rooms_count : null,
-        website: website ?? null,
+  const return_to = pickString(body, "return_to", "returnTo") ?? DEFAULT_RETURN_TO;
+
+  const { stripe_customer_id } = await ensureStripeCustomer(sb, customer_id, org_id, app_id, auth_user_id);
+
+  const active_sub = await getActiveSubscription(sb, customer_id, app_id);
+  const activeStripeSubId = active_sub ? normalizeStripeSubId(active_sub) : null;
+
+  // Si hay activa: decidir downgrade vs upgrade
+  if (active_sub) {
+    const currentPlanRow = active_sub.plan_id ? await getPlanById(sb, active_sub.plan_id) : null;
+    const current_code = safeUpper(currentPlanRow?.code ?? "");
+
+    const isDowngrade = planRank(target_plan_code) < planRank(current_code);
+    if (isDowngrade) {
+      // obligamos a usar SCHEDULE_DOWNGRADE
+      return { status: 400, detail: "USE_SCHEDULE_DOWNGRADE" as const };
+    }
+  }
+
+  // CHECKOUT SIEMPRE (primera suscripción o upgrade inmediato)
+  const now_iso = new Date().toISOString();
+  const start_date = now_iso.slice(0, 10);
+  const pending_subscription_id = crypto.randomUUID();
+
+  // ✅ Redirects correctos
+  const success_url = buildStripeSuccessUrl(org_id, return_to);
+  const cancel_url = buildStripeCancelUrl(org_id, return_to);
+
+  const checkoutSession = await stripe.checkout.sessions.create({
+    mode: "subscription",
+    customer: stripe_customer_id,
+    line_items: [{ price: price_id, quantity: 1 }],
+    success_url,
+    cancel_url,
+    allow_promotion_codes: true,
+    subscription_data: {
+      metadata: {
+        app_id,
         customer_id,
-      })
-      .select("id")
-      .single();
-
-    if (orgInsErr) throw new Error("db_org_insert_failed");
-    org_id = inserted.id as string;
-  } else {
-    const { error: orgUpdErr } = await sbAdmin
-      .from("debacu_eval_organizations")
-      .update({
-        name: org_name,
-        legal_name: legal_name ?? null,
-        cif: cif ?? null,
-        address: address ?? null,
-        city: city ?? null,
-        country: (country ?? "ESP").toUpperCase(),
-        property_type: property_type ?? null,
-        rooms_count: typeof rooms_count === "number" ? rooms_count : null,
-        website: website ?? null,
-      })
-      .eq("id", org_id);
-
-    if (orgUpdErr) throw new Error("db_org_update_failed");
-  }
-
-  return { org_id: org_id as string };
-}
-
-/** ======================================================
- *  Import Profile (default)  ✅ PUNTO 5
- *  - Crea un perfil por defecto para CSV si no existe
- *  - Idempotente (no crea duplicados)
- *  - Adaptado a tu schema real import_profiles
- * ====================================================== */
-async function ensureDefaultImportProfile(
-  sbAdmin: ReturnType<typeof supabaseServiceClient>,
-  params: {
-    org_id: string;
-  },
-) {
-  const org_id = safeStr(params.org_id);
-  if (!org_id) throw new Error("missing_org_id_for_import_profile");
-
-  // Clave de perfil por defecto (puedes cambiar el name si quieres)
-  const DEFAULT_NAME = "CSV_STANDARD_TEST";
-  const DEFAULT_SOURCE = "FUTURE_BOOKINGS";
-
-  // ¿Ya existe este perfil para esta org?
-  const { data: existing, error: findErr } = await sbAdmin
-    .from("import_profiles")
-    .select("id, name, source_type")
-    .eq("org_id", org_id)
-    .eq("name", DEFAULT_NAME)
-    .eq("source_type", DEFAULT_SOURCE)
-    .order("created_at", { ascending: true })
-    .limit(1);
-
-  if (findErr) throw new Error("db_import_profiles_find_failed");
-  if (existing && existing.length > 0) {
-    return { created: false, id: existing[0].id as string, name: existing[0].name as string, source_type: existing[0].source_type as string };
-  }
-
-  // Insert compatible con: delimiter/date_format/decimal_separator/encoding (nullable),
-  // identity_strategy (NOT NULL), mapping (NOT NULL), disabled_fields (nullable)
-  const payload: any = {
-    org_id,
-    name: DEFAULT_NAME,
-    source_type: DEFAULT_SOURCE,
-    delimiter: ",",
-    date_format: "YYYY-MM-DD",
-    decimal_separator: ".",
-    encoding: "UTF-8",
-    identity_strategy: "DOCUMENT_STRONG",
-    mapping: {
-      // Ajusta estos nombres a tu CSV real / tu parser
-      document: "document_number",
-      full_name: "full_name",
-      email: "email",
-      phone: "phone",
-      country: "country",
-      checkin_date: "checkin_date",
-      checkout_date: "checkout_date",
+        org_id,
+        pending_subscription_id,
+        target_plan_code,
+        billing_frequency,
+        replaces_subscription_id: active_sub?.id ?? "",
+        replaces_stripe_subscription_id: activeStripeSubId ?? "",
+        return_to,
+      },
     },
-    disabled_fields: [],
-  };
-
-  const { data: inserted, error: insErr } = await sbAdmin
-    .from("import_profiles")
-    .insert(payload)
-    .select("id, name, source_type")
-    .single();
-
-  if (insErr) throw new Error(`db_import_profiles_insert_failed:${insErr.message}`);
-  return { created: true, id: inserted.id as string, name: inserted.name as string, source_type: inserted.source_type as string };
-}
-
-/** ======================================================
- *  Membership: asegura OWNER INVITED (NO ACTIVE aquí)
- *  - ACTIVE debe ponerse en orgInviteFinalize (cuando el usuario ya tiene sesión)
- * ====================================================== */
-async function ensureOwnerInvitedMembership(
-  sbAdmin: ReturnType<typeof supabaseServiceClient>,
-  params: {
-    org_id: string;
-    invited_email: string;
-    auth_user_id: string | null;
-    created_by_user_id: string | null;
-  },
-) {
-  const org_id = safeStr(params.org_id);
-  const invited_email = safeLowerEmail(params.invited_email);
-  const auth_user_id = safeStr(params.auth_user_id ?? "");
-  if (!org_id || !invited_email) throw new Error("missing_member_inputs");
-
-  const { data: byEmail, error: byEmailErr } = await sbAdmin
-    .from("debacu_eval_org_members")
-    .select("id, role, status, invited_email, auth_user_id, user_id")
-    .eq("org_id", org_id)
-    .ilike("invited_email", invited_email)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (byEmailErr) throw new Error("db_member_find_by_email_failed");
-
-  if (byEmail?.id) {
-    const { error: updErr } = await sbAdmin
-      .from("debacu_eval_org_members")
-      .update({
-        role: "OWNER",
-        status: "INVITED",
-        invited_email,
-        ...(auth_user_id ? { auth_user_id, user_id: auth_user_id } : {}),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", byEmail.id);
-
-    if (updErr) throw new Error("db_member_update_failed");
-    return { member_id: byEmail.id as string, mode: "UPDATED_BY_EMAIL" as const };
-  }
-
-  const insPayload: any = {
-    org_id,
-    role: "OWNER",
-    status: "INVITED",
-    invited_email,
-    created_by_user_id: params.created_by_user_id,
-    updated_at: new Date().toISOString(),
-  };
-  if (auth_user_id) {
-    insPayload.auth_user_id = auth_user_id;
-    insPayload.user_id = auth_user_id;
-  }
-
-  const { data: inserted, error: insErr } = await sbAdmin
-    .from("debacu_eval_org_members")
-    .insert(insPayload)
-    .select("id")
-    .single();
-
-  if (insErr) throw new Error("db_member_insert_failed");
-  return { member_id: inserted.id as string, mode: "CREATED_INVITED" as const };
-}
-
-/** ======================================================
- *  Subscriptions FREE_TRIAL helper (30 días)
- * ====================================================== */
-async function ensureFreeTrialSubscription(sbAdmin: ReturnType<typeof supabaseServiceClient>, customer_id: string) {
-  const { data: existing, error: existErr } = await sbAdmin
-    .from("subscriptions")
-    .select("id, status")
-    .eq("customer_id", customer_id)
-    .eq("app_id", APP_ID)
-    .in("status", ["ACTIVE", "TRIAL_ACTIVE"])
-    .order("created_at", { ascending: false })
-    .limit(1);
-
-  if (existErr) throw new Error("db_subscriptions_check_failed");
-  if (existing && existing.length > 0) return { created: false, subscription: existing[0] };
-
-  const { data: plan, error: planErr } = await sbAdmin
-    .from("plans")
-    .select("id, code")
-    .eq("app_id", APP_ID)
-    .eq("code", "FREE")
-    .single();
-
-  if (planErr || !plan) throw new Error("plan_free_not_found");
-
-  const today = new Date();
-  const end = new Date(today);
-  end.setDate(end.getDate() + 30);
-
-  const { data: inserted, error: insErr } = await sbAdmin
-    .from("subscriptions")
-    .insert({
+    metadata: {
+      app_id,
       customer_id,
-      app_id: APP_ID,
-      plan_id: plan.id as string,
-      billing_frequency: "FREE_TRIAL",
-      start_date: toDate(today),
-      end_date: toDate(end),
-      next_billing_date: toDate(end),
-      status: "TRIAL_ACTIVE",
-      provider: "manual",
-    })
-    .select("*")
-    .single();
+      org_id,
+      pending_subscription_id,
+      target_plan_code,
+      billing_frequency,
+      return_to,
+      replaces_subscription_id: active_sub?.id ?? "",
+      replaces_stripe_subscription_id: activeStripeSubId ?? "",
+    },
+  });
 
-  if (insErr) throw new Error("db_subscriptions_insert_failed");
-  return { created: true, subscription: inserted };
+  const { error: insErr } = await sb.from("subscriptions").insert({
+    id: pending_subscription_id,
+    customer_id,
+    app_id,
+    plan_id: plan_row.id,
+    status: "PENDING_PAYMENT",
+    billing_frequency,
+    start_date,
+    provider: "stripe",
+    stripe_customer_id,
+    stripe_price_id: price_id,
+    provider_checkout_id: checkoutSession.id,
+    stripe_checkout_session_id: checkoutSession.id,
+    replaces_subscription_id: active_sub?.id ?? null,
+    created_at: now_iso,
+    updated_at: now_iso,
+  } as any);
+
+  if (insErr) throw insErr;
+
+  await insertEvent(sb, {
+    app_id,
+    customer_id,
+    type: active_sub ? "CHECKOUT_CREATED_UPGRADE_REPLACE" : "CHECKOUT_CREATED_FIRST_SUBSCRIPTION",
+    stripe_customer_id,
+    stripe_subscription_id: activeStripeSubId ?? null,
+    payload: {
+      pending_subscription_id,
+      checkout_session_id: checkoutSession.id,
+      target_plan_code,
+      billing_frequency,
+      success_url,
+      cancel_url,
+      replaces_subscription_id: active_sub?.id ?? null,
+      replaces_stripe_subscription_id: activeStripeSubId ?? null,
+    },
+  });
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      mode: active_sub ? "CHECKOUT_UPGRADE_REPLACE" : "CHECKOUT_CREATE_FIRST_SUBSCRIPTION",
+      checkoutUrl: checkoutSession.url,
+      pendingSubscriptionId: pending_subscription_id,
+      return_to,
+    },
+  };
+}
+
+async function handleScheduleDowngrade(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string, body: any) {
+  const target_plan_code = pickPlanCode(body);
+  if (!target_plan_code) return { status: 400, detail: "missing_target_plan_code" as const };
+
+  const billing_frequency = pickBillingFrequency(body);
+  const price_id = PRICE_MAP[target_plan_code][billing_frequency];
+  if (!price_id) return { status: 400, detail: "request_failed" as const };
+
+  const pending = await getPendingSubscription(sb, customer_id, app_id);
+  if (pending) return { status: 409, detail: "PENDING_CHANGE" as const, extra: { pendingSubscriptionId: pending.id } };
+
+  const active_sub = await getActiveSubscription(sb, customer_id, app_id);
+  if (!active_sub) return { status: 409, detail: "NO_ACTIVE_SUBSCRIPTION" as const };
+
+  // ✅ YA ESTABA PROGRAMADO: antes devolvía effective_date = null si next_billing_date era null.
+  // Ahora lo calculamos desde Stripe y lo persistimos si falta.
+  if ((active_sub as any)?.required_plan_code && (active_sub as any)?.stripe_schedule_id) {
+    const stripeSubId = normalizeStripeSubId(active_sub);
+    let effective_date: string | null = (active_sub as any)?.next_billing_date ?? null;
+
+    if (stripeSubId) {
+      effective_date = await ensureEffectiveDateForScheduledDowngrade({ sb, active_sub, stripeSubId });
+    }
+
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        scheduled: true,
+        effective_date,
+        target_plan_code: (active_sub as any)?.required_plan_code,
+        schedule_id: (active_sub as any)?.stripe_schedule_id ?? null,
+      },
+    };
+  }
+
+  const currentPlanRow = active_sub.plan_id ? await getPlanById(sb, active_sub.plan_id) : null;
+  const current_code = safeUpper(currentPlanRow?.code ?? "");
+
+  if (!(planRank(target_plan_code) < planRank(current_code))) {
+    return { status: 400, detail: "invalid_action" as const };
+  }
+
+  const stripeSubId = normalizeStripeSubId(active_sub);
+  if (!stripeSubId) return { status: 409, detail: "request_failed" as const };
+
+  const stripeSub = await stripe.subscriptions.retrieve(stripeSubId, { expand: ["items.data.price", "customer"] });
+  const currentPriceId = stripeSub.items.data?.[0]?.price?.id;
+  const periodStart = (stripeSub as any).current_period_start as number | undefined;
+  const periodEnd = (stripeSub as any).current_period_end as number | undefined;
+
+  if (!currentPriceId || !periodStart || !periodEnd) return { status: 500, detail: "request_failed" as const };
+
+  const schedule = await stripe.subscriptionSchedules.create({ from_subscription: stripeSubId });
+
+  await stripe.subscriptionSchedules.update(schedule.id, {
+    end_behavior: "release",
+    phases: [
+      {
+        start_date: periodStart,
+        end_date: periodEnd,
+        items: [{ price: currentPriceId, quantity: 1 }],
+        proration_behavior: "none",
+      },
+      {
+        start_date: periodEnd,
+        items: [{ price: price_id, quantity: 1 }],
+        proration_behavior: "none",
+      },
+    ],
+  });
+
+  const nowIso = new Date().toISOString();
+  const effective_date = isoDateFromUnix(periodEnd);
+
+  const { error: upErr } = await sb
+    .from("subscriptions")
+    .update({
+      required_plan_code: target_plan_code,
+      required_billing_frequency: billing_frequency,
+      stripe_schedule_id: schedule.id,
+      next_billing_date: effective_date,
+      updated_at: nowIso,
+    } as any)
+    .eq("id", active_sub.id);
+
+  if (upErr) throw upErr;
+
+  await insertEvent(sb, {
+    app_id,
+    customer_id,
+    type: "DOWNGRADE_SCHEDULED",
+    stripe_subscription_id: stripeSubId,
+    stripe_customer_id: typeof stripeSub.customer === "string" ? stripeSub.customer : stripeSub.customer?.id ?? null,
+    payload: {
+      target_plan_code,
+      billing_frequency,
+      stripe_schedule_id: schedule.id,
+      effective_unix: periodEnd,
+      effective_date,
+      current_plan_code: current_code || null,
+      current_price_id: currentPriceId,
+      target_price_id: price_id,
+    },
+  });
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      scheduled: true,
+      effective_date,
+      current_plan_code: current_code || null,
+      target_plan_code,
+      schedule_id: schedule.id,
+    },
+  };
+}
+
+async function handleCancelDowngrade(sb: ReturnType<typeof sbService>, customer_id: string, app_id: string) {
+  const active_sub = await getActiveSubscription(sb, customer_id, app_id);
+  if (!active_sub) return { status: 409, detail: "NO_ACTIVE_SUBSCRIPTION" as const };
+
+  const scheduleId = (active_sub as any)?.stripe_schedule_id ?? null;
+  const required_plan_code = (active_sub as any)?.required_plan_code ?? null;
+
+  if (!scheduleId || !required_plan_code) return { status: 400, detail: "NO_DOWNGRADE_SCHEDULED" as const };
+
+  const stripeSubId = normalizeStripeSubId(active_sub);
+  if (!stripeSubId) return { status: 409, detail: "request_failed" as const };
+
+  try {
+    await stripe.subscriptionSchedules.release(scheduleId);
+  } catch (e: any) {
+    const msg = String(e?.message ?? e).toLowerCase();
+    const code = String(e?.code ?? "");
+    const isNotFound = code === "resource_missing" || msg.includes("no such subscription schedule");
+    if (!isNotFound) throw e;
+  }
+
+  let next_billing_date: string | null = null;
+  try {
+    const stripeSub = await stripe.subscriptions.retrieve(stripeSubId);
+    next_billing_date = isoDateFromUnix((stripeSub as any)?.current_period_end ?? null);
+  } catch {
+    next_billing_date = (active_sub as any)?.next_billing_date ?? null;
+  }
+
+  const nowIso = new Date().toISOString();
+
+  const { error: upErr } = await sb
+    .from("subscriptions")
+    .update({
+      required_plan_code: null,
+      required_billing_frequency: null,
+      stripe_schedule_id: null,
+      next_billing_date,
+      updated_at: nowIso,
+    } as any)
+    .eq("id", active_sub.id);
+
+  if (upErr) throw upErr;
+
+  await insertEvent(sb, {
+    app_id,
+    customer_id,
+    type: "DOWNGRADE_CANCELLED",
+    stripe_subscription_id: stripeSubId,
+    stripe_customer_id: (active_sub as any)?.stripe_customer_id ?? null,
+    payload: { stripe_schedule_id: scheduleId, action: "CANCEL_DOWNGRADE", next_billing_date },
+  });
+
+  return { status: 200, body: { ok: true, cancelled: true, next_billing_date } };
 }
 
 /** ======================================================
- *  Errors
- * ====================================================== */
-function errResp(req: Request, status: number, detail: string) {
-  return json(req, status, { ok: false, error: "request_failed", detail });
-}
-
-/** ======================================================
- *  Handler
+ * Server
  * ====================================================== */
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return preflight(req);
 
   try {
-    const adminUser = await requireAdmin(req);
-    const sbAdmin = supabaseServiceClient();
-    const body = await readJson(req);
+    const user = await requireUser(req);
+    if (!user?.id) return err(req, 401, "UNAUTHENTICATED");
 
-    let action = body?.action as string | undefined;
-    if (!action && (body?.status || body?.limit)) action = "LIST";
+    const url = new URL(req.url);
+    const org_id_q = safeStr(url.searchParams.get("org_id"));
 
-    /** LIST */
-    if (action === "LIST") {
-      const status = (body?.status ?? "PENDING") as "PENDING" | "APPROVED" | "REJECTED" | "ALL";
-      const limit = Number(body?.limit ?? 100);
+    let body: any = {};
+    if (req.method === "POST") body = await req.json().catch(() => ({}));
 
-      let q = sbAdmin
-        .from("debacu_eval_access_requests")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(limit);
+    if (req.method !== "POST" && req.method !== "GET") {
+      return json(req, 405, { ok: false, error: "request_failed", detail: "METHOD_NOT_ALLOWED" });
+    }
 
-      if (status !== "ALL") q = q.eq("status", status);
+    const org_id = pickString(body, "org_id", "orgId") ?? org_id_q;
+    if (!org_id) return err(req, 400, "missing_org_id");
 
-      const { data, error } = await q;
-      if (error) return errResp(req, 500, "db_list_failed");
+    const app_id = pickString(body, "app_id", "appId") ?? DEFAULT_APP_ID;
+    if (app_id !== DEFAULT_APP_ID) return err(req, 400, "invalid_app_id");
+
+    const sb = sbService();
+    const ctx = await requireOrgContext(sb, user.id, org_id);
+    if (!ctx) return err(req, 403, "FORBIDDEN");
+
+    const customer_id_in = pickString(body, "customer_id", "customerId");
+    if (customer_id_in && customer_id_in !== ctx.customer_id) return err(req, 403, "FORBIDDEN");
+
+    // ✅ GET HTTP
+    if (req.method === "GET") {
+      const data = await handleGet(sb, ctx.customer_id, app_id);
       return json(req, 200, { ok: true, data });
     }
 
-    /** APPROVE */
-    if (action === "APPROVE") {
-      const request_id = body?.requestId as string;
-      const decision_notes = safeStr(body?.decisionNotes ?? "");
-      const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user_id ?? null;
+    const action = safeUpper(body?.action ?? "");
+    if (!action) return err(req, 400, "missing_action");
 
-      const sendEmail = body?.sendEmail !== false;
-
-      if (!request_id) return errResp(req, 400, "missing_requestId");
-
-      const { data: request, error: requestError } = await sbAdmin
-        .from("debacu_eval_access_requests")
-        .select("*")
-        .eq("id", request_id)
-        .single();
-
-      if (requestError || !request) return errResp(req, 404, "request_not_found");
-      if (!request.accepted_terms) return errResp(req, 400, "invalid_accepted_terms");
-
-      const email = safeLowerEmail(request.email);
-      if (!email) return errResp(req, 400, "missing_request_email");
-
-      const company_name = (request.company_name ?? null) as string | null;
-      const legal_name = (request.legal_name ?? null) as string | null;
-      const cif = safeStr(request.cif);
-      const address = (request.address ?? null) as string | null;
-      const city = (request.city ?? null) as string | null;
-      const country = safeUpper(request.country || "ESP") || "ESP";
-      const property_type = (request.property_type ?? null) as string | null;
-      const rooms_count = (request.rooms_count ?? null) as number | null;
-      const website = (request.website ?? null) as string | null;
-      const contact_name = (request.contact_name ?? null) as string | null;
-      const contact_role = (request.contact_role ?? null) as string | null;
-      const phone = (request.phone ?? null) as string | null;
-      const notes = (request.notes ?? null) as string | null;
-
-      const customer_id = await getOrCreateCustomerByEmail(sbAdmin, email, company_name);
-
-      const { error: custUpdErr } = await sbAdmin
-        .from("customers")
-        .update({
-          name: company_name,
-          nif: cif || null,
-          address,
-          city,
-          country,
-          phone,
-          email,
-          is_active: true,
-          app_id: APP_ID,
-          service_username: email,
-        })
-        .eq("id", customer_id);
-
-      if (custUpdErr) return errResp(req, 500, "db_customers_update_failed");
-
-      await upsertDebacuEvalCustomerProfile(sbAdmin, {
-        customer_id,
-        legal_name,
-        property_type,
-        rooms_count,
-        website,
-        contact_name,
-        contact_role,
-        notes,
-      });
-
-      const orgRes = await ensureOrganization(sbAdmin, {
-        customer_id,
-        org_name: company_name || `Org ${email}`,
-        legal_name,
-        cif: cif || null,
-        address,
-        city,
-        country,
-        property_type,
-        rooms_count,
-        website,
-      });
-
-      // ✅ (PUNTO 5) Crear import_profile default al aprobar
-      const importProfileRes = await ensureDefaultImportProfile(sbAdmin, {
-        org_id: orgRes.org_id,
-      });
-
-      const subRes = await ensureFreeTrialSubscription(sbAdmin, customer_id);
-
-      const activateRedirectTo = resolveActivateRedirect(body, orgRes.org_id);
-      console.log("ACTIVATE_REDIRECT_DEBUG", { org_id: orgRes.org_id, activateRedirectTo });
-
-      const recoveryRedirectTo = resolveRecoveryRedirect(body);
-
-      let email_sent = false;
-      let email_detail: string | null = null;
-      let last_email_status: string | null = null;
-      const last_email_at: string | null = sendEmail ? new Date().toISOString() : null;
-
-      let resolved_auth_user_id: string | null = null;
-
-      if (sendEmail) {
-        try {
-          const r = await sendInviteOrRecovery({
-            sbAdmin,
-            email,
-            customer_id,
-            org_id: orgRes.org_id,
-            activateRedirectTo,
-          });
-
-          email_sent = true;
-          email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
-          last_email_status = "SENT";
-
-          resolved_auth_user_id = r.user_id ?? (await getAuthUserIdByEmail(sbAdmin, email));
-        } catch (e: any) {
-          email_sent = false;
-          email_detail = e?.message ? String(e.message) : "email_send_failed";
-          last_email_status = "FAILED";
-
-          resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
-        }
-      } else {
-        resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
-      }
-
-      await ensureOwnerInvitedMembership(sbAdmin, {
-        org_id: orgRes.org_id,
-        invited_email: email,
-        auth_user_id: resolved_auth_user_id,
-        created_by_user_id: reviewed_by,
-      });
-
-      const updatePayload: any = {
-        status: "APPROVED",
-        decision_notes: decision_notes || null,
-        reviewed_by,
-        reviewed_at: new Date().toISOString(),
-        customer_id,
-        org_id: orgRes.org_id,
-      };
-
-      if (sendEmail) {
-        updatePayload.last_email_status = last_email_status;
-        updatePayload.last_email_at = last_email_at;
-        updatePayload.last_email_detail = email_detail;
-      }
-
-      const { error: updateError } = await sbAdmin
-        .from("debacu_eval_access_requests")
-        .update(updatePayload)
-        .eq("id", request_id);
-
-      if (updateError) return errResp(req, 500, "db_request_update_failed");
-
-      return json(req, 200, {
-        ok: true,
-        customer_id,
-        org_id: orgRes.org_id,
-        import_profile: {
-          created: importProfileRes.created,
-          id: importProfileRes.id,
-          name: importProfileRes.name,
-          source_type: importProfileRes.source_type,
-        },
-        subscription: {
-          created: subRes.created,
-          id: subRes.subscription?.id ?? null,
-          status: subRes.subscription?.status ?? null,
-        },
-        send_email: sendEmail,
-        email_sent,
-        email_detail,
-        invite_redirect_to: activateRedirectTo,
-        recovery_redirect_to: recoveryRedirectTo,
-      });
+    // ✅ GET via POST (compat)
+    if (action === "GET") {
+      const data = await handleGet(sb, ctx.customer_id, app_id);
+      return json(req, 200, { ok: true, data });
     }
 
-    /** REJECT */
-    if (action === "REJECT") {
-      const request_id = body?.requestId as string;
-      const decision_notes = safeStr(body?.decisionNotes ?? "");
-      const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user_id ?? null;
-
-      if (!request_id) return errResp(req, 400, "missing_requestId");
-
-      const { error } = await sbAdmin
-        .from("debacu_eval_access_requests")
-        .update({
-          status: "REJECTED",
-          decision_notes: decision_notes || null,
-          reviewed_by,
-          reviewed_at: new Date().toISOString(),
-        })
-        .eq("id", request_id);
-
-      if (error) return errResp(req, 500, "db_reject_failed");
-      return json(req, 200, { ok: true });
+    // ✅ CHANGE (subir plan o primera compra) — downgrade devuelve USE_SCHEDULE_DOWNGRADE
+    if (action === "CHANGE") {
+      const result = await handleChange(sb, ctx.customer_id, app_id, org_id, user.id, body);
+      if ((result as any).detail) {
+        const d = (result as any).detail as any;
+        if (d === "missing_target_plan_code") return err(req, 400, "missing_target_plan_code");
+        if (d === "USE_SCHEDULE_DOWNGRADE") return err(req, 400, "USE_SCHEDULE_DOWNGRADE");
+        if (d === "PENDING_CHANGE") return err(req, 409, "PENDING_CHANGE", (result as any).extra ?? {});
+        return err(req, 500, "request_failed");
+      }
+      return json(req, 200, (result as any).body);
     }
 
-    /** RESEND */
-    if (action === "RESEND") {
-      const request_id = body?.requestId as string;
-      const reviewed_by = body?.reviewed_by ?? body?.reviewedBy ?? adminUser.user_id ?? null;
-
-      const sendEmail = body?.sendEmail !== false;
-
-      if (!request_id) return errResp(req, 400, "missing_requestId");
-
-      const { data: request, error: requestError } = await sbAdmin
-        .from("debacu_eval_access_requests")
-        .select("*")
-        .eq("id", request_id)
-        .single();
-
-      if (requestError || !request) return errResp(req, 404, "request_not_found");
-
-      const email = safeLowerEmail(request.email);
-      if (!email) return errResp(req, 400, "missing_request_email");
-
-      const customer_id = request.customer_id ?? null;
-      if (!customer_id) return errResp(req, 400, "missing_customer_id");
-
-      // asegurar org_id en request
-      let org_id = request.org_id ?? null;
-      if (!org_id) {
-        const { data: org, error: orgErr } = await sbAdmin
-          .from("debacu_eval_organizations")
-          .select("id")
-          .eq("customer_id", customer_id)
-          .order("created_at", { ascending: true })
-          .limit(1)
-          .maybeSingle();
-
-        if (orgErr || !org?.id) return errResp(req, 500, "org_not_found_for_customer");
-
-        org_id = org.id;
-        await sbAdmin.from("debacu_eval_access_requests").update({ org_id }).eq("id", request_id);
+    // ✅ SCHEDULE_DOWNGRADE (bajar plan programado)
+    if (action === "SCHEDULE_DOWNGRADE") {
+      const result = await handleScheduleDowngrade(sb, ctx.customer_id, app_id, body);
+      if ((result as any).detail) {
+        const d = (result as any).detail as any;
+        if (d === "missing_target_plan_code") return err(req, 400, "missing_target_plan_code");
+        if (d === "NO_ACTIVE_SUBSCRIPTION") return err(req, 409, "NO_ACTIVE_SUBSCRIPTION");
+        if (d === "PENDING_CHANGE") return err(req, 409, "PENDING_CHANGE", (result as any).extra ?? {});
+        return err(req, 500, "request_failed");
       }
-
-      const activateRedirectTo = resolveActivateRedirect(body, org_id);
-      console.log("ACTIVATE_REDIRECT_DEBUG", { org_id, activateRedirectTo });
-
-      const recoveryRedirectTo = resolveRecoveryRedirect(body);
-
-      let email_sent = false;
-      let email_detail: string | null = null;
-      let last_email_status: string | null = null;
-      let resolved_auth_user_id: string | null = null;
-
-      if (sendEmail) {
-        try {
-          const r = await sendInviteOrRecovery({
-            sbAdmin,
-            email,
-            customer_id,
-            org_id,
-            activateRedirectTo,
-          });
-
-          email_sent = true;
-          email_detail = `${r.mode}${r.user_id ? ` (${r.user_id})` : ""}`;
-          last_email_status = "SENT";
-
-          resolved_auth_user_id = r.user_id ?? (await getAuthUserIdByEmail(sbAdmin, email));
-        } catch (e: any) {
-          email_sent = false;
-          email_detail = e?.message ? String(e.message) : "email_send_failed";
-          last_email_status = "FAILED";
-
-          resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
-        }
-      } else {
-        resolved_auth_user_id = await getAuthUserIdByEmail(sbAdmin, email);
-      }
-
-      await ensureOwnerInvitedMembership(sbAdmin, {
-        org_id,
-        invited_email: email,
-        auth_user_id: resolved_auth_user_id,
-        created_by_user_id: reviewed_by,
-      });
-
-      const upd: any = {
-        reviewed_by,
-        reviewed_at: new Date().toISOString(),
-      };
-
-      if (sendEmail) {
-        upd.last_email_status = last_email_status;
-        upd.last_email_at = new Date().toISOString();
-        upd.last_email_detail = email_detail;
-      }
-
-      await sbAdmin.from("debacu_eval_access_requests").update(upd).eq("id", request_id);
-
-      return json(req, 200, {
-        ok: true,
-        customer_id,
-        org_id,
-        send_email: sendEmail,
-        email_sent,
-        email_detail,
-        invite_redirect_to: activateRedirectTo,
-        recovery_redirect_to: recoveryRedirectTo,
-      });
+      return json(req, (result as any).status ?? 200, (result as any).body);
     }
 
-    return errResp(req, 400, "invalid_action");
+    // ✅ CANCEL_DOWNGRADE (cancelar la bajada programada)
+    if (action === "CANCEL_DOWNGRADE") {
+      const result = await handleCancelDowngrade(sb, ctx.customer_id, app_id);
+      if ((result as any).detail) {
+        const d = (result as any).detail as any;
+        if (d === "NO_ACTIVE_SUBSCRIPTION") return err(req, 409, "NO_ACTIVE_SUBSCRIPTION");
+        if (d === "NO_DOWNGRADE_SCHEDULED") return err(req, 400, "NO_DOWNGRADE_SCHEDULED");
+        return err(req, 500, "request_failed");
+      }
+      return json(req, (result as any).status ?? 200, (result as any).body);
+    }
+
+    return err(req, 400, "invalid_action");
   } catch (e: any) {
-    const msg = e?.message ?? String(e);
-
-    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return errResp(req, 401, "UNAUTHORIZED");
-    if (msg === "FORBIDDEN") return errResp(req, 403, "FORBIDDEN");
-    if (String(msg).startsWith("missing_") || String(msg).startsWith("invalid_")) return errResp(req, 400, msg);
-
-    return errResp(req, 500, "internal_error");
+    console.error("debacu_eval_subscription_manage error:", e);
+    const msg = String(e?.message ?? e);
+    if (msg === "FORBIDDEN") return err(req, 403, "FORBIDDEN");
+    return err(req, 500, "request_failed");
   }
 });
