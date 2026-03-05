@@ -42,9 +42,9 @@ type BuildReq = {
 };
 
 type TenantResolved = {
-  org_id: string;        // UUID string
-  customer_id: string;   // UUID string (customer)
-  customer_name: string; // org/hotel name
+  org_id: string;
+  customer_id: string;
+  customer_name: string;
   app_code: string;
 };
 
@@ -63,24 +63,19 @@ type EntitlementsRow = {
 function isoDate(d: Date) {
   return d.toISOString().slice(0, 10);
 }
-
 function assertDate(s: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error("invalid_date_format");
 }
-
 function toNumber(v: unknown) {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : 0;
 }
-
 function monthKeyFromDateStr(yyyy_mm_dd: string) {
   return String(yyyy_mm_dd).slice(0, 7); // YYYY-MM
 }
-
 function asMoney(n: number) {
   return n.toFixed(2);
 }
-
 function csvEscape(v: unknown) {
   const s = String(v ?? "");
   if (s.includes('"') || s.includes(",") || s.includes("\n") || s.includes("\r")) {
@@ -88,7 +83,6 @@ function csvEscape(v: unknown) {
   }
   return s;
 }
-
 async function sha256Hex(bytes: Uint8Array) {
   const hash = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(hash))
@@ -102,7 +96,7 @@ async function sha256Hex(bytes: Uint8Array) {
 async function resolveOrgId(
   admin: ReturnType<typeof createClient>,
   userId: string,
-  requestedOrgId?: string | null
+  requestedOrgId?: string | null,
 ): Promise<string> {
   if (requestedOrgId) {
     const { data, error } = await admin
@@ -132,10 +126,7 @@ async function resolveOrgId(
   return String(data.org_id);
 }
 
-async function resolveTenant(
-  admin: ReturnType<typeof createClient>,
-  orgId: string
-): Promise<TenantResolved> {
+async function resolveTenant(admin: ReturnType<typeof createClient>, orgId: string): Promise<TenantResolved> {
   const { data: org, error: orgErr } = await admin
     .from("debacu_eval_organizations")
     .select("id, customer_id, name")
@@ -154,121 +145,116 @@ async function resolveTenant(
 }
 
 /**
- * ✅ NUEVO: usa helper único (ACTIVE o TRIAL_ACTIVE)
- * Basado en debacu_eval_org_entitlements_v.subscription_status
+ * ✅ Usa helper (ACTIVE o TRIAL_ACTIVE)
  */
-async function requirePlanActiveForOrg(
-  admin: ReturnType<typeof createClient>,
-  orgId: string
-): Promise<EntitlementsRow> {
+async function requirePlanActiveForOrg(admin: ReturnType<typeof createClient>, orgId: string): Promise<EntitlementsRow> {
   const ent = await getOrgEntitlementsOrThrow(admin as any, orgId);
   assertOrgEnabledOrThrow(ent);
   return ent as EntitlementsRow;
 }
 
 /* ======================================================
- * DATA FETCH
+ * DATA FETCH (NUEVO: org_guest_evidence)
  * ====================================================== */
-type EvalRow = {
-  platform: string | null;
+type EvidenceRow = {
+  platform: string | null; // lo mapeamos de platform_code/platform_raw
+  channel_code: string | null;
   incident_type: string | null;
   rating: number | null;
-  evaluation_date: string | null;
+
+  evaluation_date: string | null; // lo mapeamos de event_date
   created_at: string;
+
   economic_impact_gross: string | number | null;
   economic_recovered: string | number | null;
   economic_net_loss: string | number | null;
 };
 
-// Detecta el típico error de PostgREST “schema cache”
-function isSchemaCacheMissingTable(err: any) {
-  const msg = String(err?.message ?? err ?? "").toLowerCase();
-  return msg.includes("schema cache") && (msg.includes("could not find the table") || msg.includes("could not find relation"));
+function normalizePlatform(platform_code: string | null, platform_raw: string | null) {
+  const a = String(platform_code ?? "").trim();
+  if (a) return a;
+  const b = String(platform_raw ?? "").trim();
+  if (b) return b;
+  return "UNKNOWN";
 }
 
-async function fetchEvaluationsForRange(
+async function fetchEvidenceForRange(
   sb: ReturnType<typeof createClient>,
-  creatorCustomerUuid: string,
+  orgId: string,
   periodField: PeriodField,
   from: string,
-  to: string
-): Promise<{ table_used: string; rows: EvalRow[] }> {
-  const candidates = [
-    "debacu_evaluations",
-    "debacu_eval_evaluations",
-    "public.debacu_evaluations",
-    "public.debacu_eval_evaluations",
-  ];
+  to: string,
+): Promise<{ table_used: string; rows: EvidenceRow[] }> {
+  const table = "debacu_eval_org_guest_evidence";
 
   const cols = [
-    "platform",
+    "event_date",
+    "created_at",
+    "platform_code",
+    "platform_raw",
+    "channel_code",
     "incident_type",
     "rating",
-    "evaluation_date",
-    "created_at",
     "economic_impact_gross",
     "economic_recovered",
     "economic_net_loss",
   ].join(",");
 
-  async function run(table: string) {
-    if (periodField === "evaluation_date") {
-      const { data, error } = await sb
-        .from(table)
-        .select(cols)
-        .eq("creator_customer_uuid", creatorCustomerUuid)
-        .gte("evaluation_date", from)
-        .lte("evaluation_date", to)
-        .order("evaluation_date", { ascending: true });
+  const base = sb.from(table).select(cols).eq("org_id", orgId);
 
-      if (error) throw error;
-      return (data ?? []) as EvalRow[];
-    }
+  if (periodField === "evaluation_date") {
+    const { data, error } = await base.gte("event_date", from).lte("event_date", to).order("event_date", { ascending: true });
+    if (error) throw new Error(`QUERY_FAILED(${table}):${error.message}`);
 
-    const fromTs = `${from}T00:00:00.000Z`;
-    const toTs = `${to}T23:59:59.999Z`;
+    const rows = (data ?? []).map((r: any) => ({
+      platform: normalizePlatform(r.platform_code, r.platform_raw),
+      channel_code: r.channel_code ?? null,
+      incident_type: r.incident_type ?? null,
+      rating: r.rating ?? null,
+      evaluation_date: String(r.event_date ?? "").slice(0, 10) || null,
+      created_at: r.created_at,
+      economic_impact_gross: r.economic_impact_gross ?? null,
+      economic_recovered: r.economic_recovered ?? null,
+      economic_net_loss: r.economic_net_loss ?? null,
+    })) as EvidenceRow[];
 
-    const { data, error } = await sb
-      .from(table)
-      .select(cols)
-      .eq("creator_customer_uuid", creatorCustomerUuid)
-      .gte("created_at", fromTs)
-      .lte("created_at", toTs)
-      .order("created_at", { ascending: true });
-
-    if (error) throw error;
-    return (data ?? []) as EvalRow[];
+    return { table_used: table, rows };
   }
 
-  let lastErr: any = null;
+  const fromTs = `${from}T00:00:00.000Z`;
+  const toTs = `${to}T23:59:59.999Z`;
+  const { data, error } = await base.gte("created_at", fromTs).lte("created_at", toTs).order("created_at", { ascending: true });
 
-  for (const t of candidates) {
-    try {
-      const rows = await run(t);
-      return { table_used: t, rows };
-    } catch (e: any) {
-      lastErr = e;
-      if (isSchemaCacheMissingTable(e)) continue;
-      throw new Error(`QUERY_FAILED(${t}):${String(e?.message ?? e)}`);
-    }
-  }
+  if (error) throw new Error(`QUERY_FAILED(${table}):${error.message}`);
 
-  throw new Error(`QUERY_FAILED:No candidate evaluations table is visible to PostgREST. Last=${String(lastErr?.message ?? lastErr)}`);
+  const rows = (data ?? []).map((r: any) => ({
+    platform: normalizePlatform(r.platform_code, r.platform_raw),
+    channel_code: r.channel_code ?? null,
+    incident_type: r.incident_type ?? null,
+    rating: r.rating ?? null,
+    evaluation_date: String(r.event_date ?? "").slice(0, 10) || null,
+    created_at: r.created_at,
+    economic_impact_gross: r.economic_impact_gross ?? null,
+    economic_recovered: r.economic_recovered ?? null,
+    economic_net_loss: r.economic_net_loss ?? null,
+  })) as EvidenceRow[];
+
+  return { table_used: table, rows };
 }
 
 /* ======================================================
  * AGGREGATIONS
  * ====================================================== */
-type PlatformMonthlyRow = { month: string; platform: string; incidents: number; gross: number; recovered: number; net: number; };
-type TypeMonthlyRow = { month: string; incident_type: string; incidents: number; gross: number; recovered: number; net: number; };
-type EconMonthlyRow = { month: string; incidents: number; gross: number; recovered: number; net: number; };
+type PlatformMonthlyRow = { month: string; platform: string; incidents: number; gross: number; recovered: number; net: number };
+type TypeMonthlyRow = { month: string; incident_type: string; incidents: number; gross: number; recovered: number; net: number };
+type EconMonthlyRow = { month: string; incidents: number; gross: number; recovered: number; net: number };
 
 function computeNet(gross: number, recovered: number, netStored: number | null) {
   if (netStored != null && Number.isFinite(netStored)) return Math.max(0, netStored);
   return Math.max(0, gross - recovered);
 }
 
-function getRowDateKey(r: EvalRow, periodField: PeriodField): string {
+function getRowDateKey(r: EvidenceRow, periodField: PeriodField): string {
   if (periodField === "evaluation_date") {
     const d = (r.evaluation_date ?? "").slice(0, 10);
     if (d) return d;
@@ -276,7 +262,7 @@ function getRowDateKey(r: EvalRow, periodField: PeriodField): string {
   return String(r.created_at).slice(0, 10);
 }
 
-function buildIncidentsByPlatformMonthly(rows: EvalRow[], periodField: PeriodField): PlatformMonthlyRow[] {
+function buildIncidentsByPlatformMonthly(rows: EvidenceRow[], periodField: PeriodField): PlatformMonthlyRow[] {
   const map = new Map<string, PlatformMonthlyRow>();
   for (const r of rows) {
     const dKey = getRowDateKey(r, periodField);
@@ -301,7 +287,7 @@ function buildIncidentsByPlatformMonthly(rows: EvalRow[], periodField: PeriodFie
   );
 }
 
-function buildIncidentsByTypeMonthly(rows: EvalRow[], periodField: PeriodField): TypeMonthlyRow[] {
+function buildIncidentsByTypeMonthly(rows: EvidenceRow[], periodField: PeriodField): TypeMonthlyRow[] {
   const map = new Map<string, TypeMonthlyRow>();
   for (const r of rows) {
     const dKey = getRowDateKey(r, periodField);
@@ -326,7 +312,7 @@ function buildIncidentsByTypeMonthly(rows: EvalRow[], periodField: PeriodField):
   );
 }
 
-function buildEconomicImpactMonthly(rows: EvalRow[], periodField: PeriodField): EconMonthlyRow[] {
+function buildEconomicImpactMonthly(rows: EvidenceRow[], periodField: PeriodField): EconMonthlyRow[] {
   const map = new Map<string, EconMonthlyRow>();
   for (const r of rows) {
     const dKey = getRowDateKey(r, periodField);
@@ -363,17 +349,12 @@ type DailyHoyAyerRow = {
   net_yesterday: number;
 };
 
-function isSameDay(row: EvalRow, periodField: PeriodField, yyyy_mm_dd: string) {
+function isSameDay(row: EvidenceRow, periodField: PeriodField, yyyy_mm_dd: string) {
   const dKey = getRowDateKey(row, periodField);
   return dKey === yyyy_mm_dd;
 }
 
-function buildDailyHoyAyerByType(
-  rows: EvalRow[],
-  periodField: PeriodField,
-  dayYesterday: string,
-  dayToday: string
-): DailyHoyAyerRow[] {
+function buildDailyHoyAyerByType(rows: EvidenceRow[], periodField: PeriodField, dayYesterday: string, dayToday: string): DailyHoyAyerRow[] {
   const map = new Map<string, DailyHoyAyerRow>();
 
   function getOrInit(type: string) {
@@ -446,7 +427,7 @@ function riskBucketFromRating(rating: number | null) {
   return "LOW";
 }
 
-function buildWeekly7dDailySeries(rows: EvalRow[], periodField: PeriodField): WeeklyDailySeriesRow[] {
+function buildWeekly7dDailySeries(rows: EvidenceRow[], periodField: PeriodField): WeeklyDailySeriesRow[] {
   const map = new Map<string, WeeklyDailySeriesRow>();
 
   for (const r of rows) {
@@ -494,106 +475,50 @@ function toCsvPlatformMonthly(rows: PlatformMonthlyRow[]) {
   const header = ["month", "platform", "incidents", "gross", "recovered", "net_loss"];
   const lines = [header.join(",")];
   for (const r of rows) {
-    lines.push(
-      [
-        csvEscape(r.month),
-        csvEscape(r.platform),
-        csvEscape(r.incidents),
-        csvEscape(asMoney(r.gross)),
-        csvEscape(asMoney(r.recovered)),
-        csvEscape(asMoney(r.net)),
-      ].join(",")
-    );
+    lines.push([csvEscape(r.month), csvEscape(r.platform), csvEscape(r.incidents), csvEscape(asMoney(r.gross)), csvEscape(asMoney(r.recovered)), csvEscape(asMoney(r.net))].join(","));
   }
   return lines.join("\n");
 }
-
 function toCsvTypeMonthly(rows: TypeMonthlyRow[]) {
   const header = ["month", "incident_type", "incidents", "gross", "recovered", "net_loss"];
   const lines = [header.join(",")];
   for (const r of rows) {
-    lines.push(
-      [
-        csvEscape(r.month),
-        csvEscape(r.incident_type),
-        csvEscape(r.incidents),
-        csvEscape(asMoney(r.gross)),
-        csvEscape(asMoney(r.recovered)),
-        csvEscape(asMoney(r.net)),
-      ].join(",")
-    );
+    lines.push([csvEscape(r.month), csvEscape(r.incident_type), csvEscape(r.incidents), csvEscape(asMoney(r.gross)), csvEscape(asMoney(r.recovered)), csvEscape(asMoney(r.net))].join(","));
   }
   return lines.join("\n");
 }
-
 function toCsvEconMonthly(rows: EconMonthlyRow[]) {
   const header = ["month", "incidents", "gross", "recovered", "net_loss"];
   const lines = [header.join(",")];
   for (const r of rows) {
-    lines.push(
-      [
-        csvEscape(r.month),
-        csvEscape(r.incidents),
-        csvEscape(asMoney(r.gross)),
-        csvEscape(asMoney(r.recovered)),
-        csvEscape(asMoney(r.net)),
-      ].join(",")
-    );
+    lines.push([csvEscape(r.month), csvEscape(r.incidents), csvEscape(asMoney(r.gross)), csvEscape(asMoney(r.recovered)), csvEscape(asMoney(r.net))].join(","));
   }
   return lines.join("\n");
 }
-
 function toCsvDailyHoyAyerByType(rows: DailyHoyAyerRow[]) {
-  const header = [
-    "incident_type",
-    "incidents_today",
-    "incidents_yesterday",
-    "delta",
-    "gross_today",
-    "recovered_today",
-    "net_today",
-    "gross_yesterday",
-    "recovered_yesterday",
-    "net_yesterday",
-  ];
+  const header = ["incident_type", "incidents_today", "incidents_yesterday", "delta", "gross_today", "recovered_today", "net_today", "gross_yesterday", "recovered_yesterday", "net_yesterday"];
   const lines = [header.join(",")];
-
   for (const r of rows) {
-    lines.push(
-      [
-        csvEscape(r.incident_type),
-        csvEscape(r.incidents_today),
-        csvEscape(r.incidents_yesterday),
-        csvEscape(r.delta),
-        csvEscape(asMoney(r.gross_today)),
-        csvEscape(asMoney(r.recovered_today)),
-        csvEscape(asMoney(r.net_today)),
-        csvEscape(asMoney(r.gross_yesterday)),
-        csvEscape(asMoney(r.recovered_yesterday)),
-        csvEscape(asMoney(r.net_yesterday)),
-      ].join(",")
-    );
+    lines.push([
+      csvEscape(r.incident_type),
+      csvEscape(r.incidents_today),
+      csvEscape(r.incidents_yesterday),
+      csvEscape(r.delta),
+      csvEscape(asMoney(r.gross_today)),
+      csvEscape(asMoney(r.recovered_today)),
+      csvEscape(asMoney(r.net_today)),
+      csvEscape(asMoney(r.gross_yesterday)),
+      csvEscape(asMoney(r.recovered_yesterday)),
+      csvEscape(asMoney(r.net_yesterday)),
+    ].join(","));
   }
   return lines.join("\n");
 }
-
 function toCsvWeekly7dDailySeries(rows: WeeklyDailySeriesRow[]) {
   const header = ["day", "incidents", "risk_high", "risk_medium", "risk_low", "gross", "recovered", "net_loss"];
   const lines = [header.join(",")];
-
   for (const r of rows) {
-    lines.push(
-      [
-        csvEscape(r.day),
-        csvEscape(r.incidents),
-        csvEscape(r.risk_high),
-        csvEscape(r.risk_medium),
-        csvEscape(r.risk_low),
-        csvEscape(asMoney(r.gross)),
-        csvEscape(asMoney(r.recovered)),
-        csvEscape(asMoney(r.net)),
-      ].join(",")
-    );
+    lines.push([csvEscape(r.day), csvEscape(r.incidents), csvEscape(r.risk_high), csvEscape(r.risk_medium), csvEscape(r.risk_low), csvEscape(asMoney(r.gross)), csvEscape(asMoney(r.recovered)), csvEscape(asMoney(r.net))].join(","));
   }
   return lines.join("\n");
 }
@@ -811,26 +736,15 @@ async function buildPdfLandscape(table: PdfTable): Promise<Uint8Array> {
 /* ======================================================
  * STORAGE
  * ====================================================== */
-async function uploadBytes(
-  sb: ReturnType<typeof createClient>,
-  bucket: string,
-  path: string,
-  bytes: Uint8Array,
-  contentType: string
-) {
-  const { error } = await sb.storage.from(bucket).upload(path, bytes, {
-    contentType,
-    upsert: false,
-  });
+async function uploadBytes(sb: ReturnType<typeof createClient>, bucket: string, path: string, bytes: Uint8Array, contentType: string) {
+  const { error } = await sb.storage.from(bucket).upload(path, bytes, { contentType, upsert: false });
   if (error) throw new Error(`STORAGE_UPLOAD_FAILED:${error.message}`);
 }
-
 async function signUrl(sb: ReturnType<typeof createClient>, bucket: string, path: string) {
   const { data, error } = await sb.storage.from(bucket).createSignedUrl(path, 60 * 15);
   if (error) throw new Error(`SIGNED_URL_FAILED:${error.message}`);
   return data?.signedUrl ?? null;
 }
-
 async function deletePathBestEffort(sb: ReturnType<typeof createClient>, bucket: string, path: string) {
   try {
     await sb.storage.from(bucket).remove([path]);
@@ -845,38 +759,18 @@ async function deletePathBestEffort(sb: ReturnType<typeof createClient>, bucket:
 function mapError(e: unknown): { status: number; detail: string } {
   const msg = String((e as any)?.message ?? e ?? "request_failed");
 
-  if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED" || msg.includes("JWT")) {
-    return { status: 401, detail: "UNAUTHENTICATED" };
-  }
+  if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED" || msg.includes("JWT")) return { status: 401, detail: "UNAUTHENTICATED" };
+  if (msg === "PLAN_NOT_ACTIVE") return { status: 402, detail: "PLAN_NOT_ACTIVE" };
 
-  if (msg === "PLAN_NOT_ACTIVE") {
-    return { status: 402, detail: "PLAN_NOT_ACTIVE" };
-  }
-
-  if (
-    msg.startsWith("FORBIDDEN") ||
-    msg.startsWith("MEMBERSHIP_FAILED") ||
-    msg.startsWith("ORG_LOOKUP_FAILED") ||
-    msg.startsWith("ENTITLEMENTS_FAILED")
-  ) {
+  if (msg.startsWith("FORBIDDEN") || msg.startsWith("MEMBERSHIP_FAILED") || msg.startsWith("ORG_LOOKUP_FAILED") || msg.startsWith("ENTITLEMENTS_FAILED")) {
     return { status: 403, detail: msg };
   }
 
-  if (
-    msg.startsWith("missing_") ||
-    msg.startsWith("invalid_") ||
-    msg === "invalid_json" ||
-    msg === "method_not_allowed" ||
-    msg === "unsupported_scope" ||
-    msg === "invalid_export_type" ||
-    msg === "invalid_period_range"
-  ) {
+  if (msg.startsWith("missing_") || msg.startsWith("invalid_") || msg === "invalid_json" || msg === "method_not_allowed" || msg === "unsupported_scope" || msg === "invalid_export_type" || msg === "invalid_period_range") {
     return { status: 400, detail: msg };
   }
 
-  if (msg.startsWith("QUERY_FAILED")) {
-    return { status: 500, detail: msg };
-  }
+  if (msg.startsWith("QUERY_FAILED")) return { status: 500, detail: msg };
 
   return { status: 500, detail: msg.startsWith("STORAGE_") ? msg : "INTERNAL" };
 }
@@ -886,9 +780,7 @@ function mapError(e: unknown): { status: number; detail: string } {
  * ====================================================== */
 export default Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return preflight(req);
-  if (req.method !== "POST") {
-    return json(req, 405, { ok: false, error: "method_not_allowed", detail: "method_not_allowed" });
-  }
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed", detail: "method_not_allowed" });
 
   let storageUploaded = false;
   let storagePath = "";
@@ -938,12 +830,11 @@ export default Deno.serve(async (req: Request) => {
     if (periodFrom > periodTo) throw new Error("invalid_period_range");
 
     const filters = body.filters ?? {};
-    const periodField: PeriodField =
-      (filters?.period_field as PeriodField) || (filters?.use_created_at ? "created_at" : "evaluation_date");
+    const periodField: PeriodField = (filters?.period_field as PeriodField) || (filters?.use_created_at ? "created_at" : "evaluation_date");
 
-    // FETCH DATA (con fallback de tablas)
-    const fetched = await fetchEvaluationsForRange(admin, tenant.customer_id, periodField, periodFrom, periodTo);
-    const evalRows = fetched.rows;
+    // ✅ FETCH DATA: org_guest_evidence
+    const fetched = await fetchEvidenceForRange(admin, tenant.org_id, periodField, periodFrom, periodTo);
+    const rows = fetched.rows;
 
     // BUILD FILE
     let fileBytes: Uint8Array;
@@ -954,14 +845,14 @@ export default Deno.serve(async (req: Request) => {
       `Hotel: ${tenant.customer_name || "-"} | Periodo: ${periodFrom} -> ${periodTo} | Campo: ${periodField} | Tabla: ${fetched.table_used} | Generado: ${isoDate(new Date())}`;
 
     if (exportScope === "INCIDENTS_BY_PLATFORM_MONTHLY") {
-      const agg = buildIncidentsByPlatformMonthly(evalRows, periodField);
+      const agg = buildIncidentsByPlatformMonthly(rows, periodField);
       rowCount = agg.length;
 
       if (exportType === "CSV") {
         fileBytes = new TextEncoder().encode(toCsvPlatformMonthly(agg));
         contentType = "text/csv";
       } else {
-        const rows = agg.map((r) => ({
+        const pdfRows = agg.map((r) => ({
           month: r.month,
           platform: r.platform,
           incidents: String(r.incidents),
@@ -969,6 +860,7 @@ export default Deno.serve(async (req: Request) => {
           recovered: asMoney(r.recovered),
           net: asMoney(r.net),
         }));
+
         fileBytes = await buildPdfLandscape({
           title: "Incidencias por plataforma (mensual)",
           subtitle,
@@ -980,19 +872,19 @@ export default Deno.serve(async (req: Request) => {
             { key: "recovered", label: "Recup. (EUR)", width: 120, align: "right" },
             { key: "net", label: "Perdida neta (EUR)", width: 150, align: "right" },
           ],
-          rows,
+          rows: pdfRows,
         });
         contentType = "application/pdf";
       }
     } else if (exportScope === "INCIDENTS_BY_TYPE_MONTHLY") {
-      const agg = buildIncidentsByTypeMonthly(evalRows, periodField);
+      const agg = buildIncidentsByTypeMonthly(rows, periodField);
       rowCount = agg.length;
 
       if (exportType === "CSV") {
         fileBytes = new TextEncoder().encode(toCsvTypeMonthly(agg));
         contentType = "text/csv";
       } else {
-        const rows = agg.map((r) => ({
+        const pdfRows = agg.map((r) => ({
           month: r.month,
           incident_type: r.incident_type,
           incidents: String(r.incidents),
@@ -1000,6 +892,7 @@ export default Deno.serve(async (req: Request) => {
           recovered: asMoney(r.recovered),
           net: asMoney(r.net),
         }));
+
         fileBytes = await buildPdfLandscape({
           title: "Incidencias por tipo (mensual)",
           subtitle,
@@ -1011,25 +904,26 @@ export default Deno.serve(async (req: Request) => {
             { key: "recovered", label: "Recup. (EUR)", width: 120, align: "right" },
             { key: "net", label: "Perdida neta (EUR)", width: 150, align: "right" },
           ],
-          rows,
+          rows: pdfRows,
         });
         contentType = "application/pdf";
       }
     } else if (exportScope === "ECONOMIC_IMPACT_MONTHLY") {
-      const agg = buildEconomicImpactMonthly(evalRows, periodField);
+      const agg = buildEconomicImpactMonthly(rows, periodField);
       rowCount = agg.length;
 
       if (exportType === "CSV") {
         fileBytes = new TextEncoder().encode(toCsvEconMonthly(agg));
         contentType = "text/csv";
       } else {
-        const rows = agg.map((r) => ({
+        const pdfRows = agg.map((r) => ({
           month: r.month,
           incidents: String(r.incidents),
           gross: asMoney(r.gross),
           recovered: asMoney(r.recovered),
           net: asMoney(r.net),
         }));
+
         fileBytes = await buildPdfLandscape({
           title: "Impacto economico (mensual)",
           subtitle,
@@ -1040,19 +934,19 @@ export default Deno.serve(async (req: Request) => {
             { key: "recovered", label: "Recup. (EUR)", width: 170, align: "right" },
             { key: "net", label: "Perdida neta (EUR)", width: 190, align: "right" },
           ],
-          rows,
+          rows: pdfRows,
         });
         contentType = "application/pdf";
       }
     } else if (exportScope === "DAILY_HOY_AYER_BY_TYPE") {
-      const agg = buildDailyHoyAyerByType(evalRows, periodField, periodFrom, periodTo);
+      const agg = buildDailyHoyAyerByType(rows, periodField, periodFrom, periodTo);
       rowCount = agg.length;
 
       if (exportType === "CSV") {
         fileBytes = new TextEncoder().encode(toCsvDailyHoyAyerByType(agg));
         contentType = "text/csv";
       } else {
-        const rows = agg.map((r) => ({
+        const pdfRows = agg.map((r) => ({
           incident_type: r.incident_type,
           incidents_yesterday: String(r.incidents_yesterday),
           incidents_today: String(r.incidents_today),
@@ -1070,19 +964,19 @@ export default Deno.serve(async (req: Request) => {
             { key: "delta", label: "Variacion", width: 90, align: "center" },
             { key: "net_today", label: "Neto hoy (EUR)", width: 220, align: "right" },
           ],
-          rows,
+          rows: pdfRows,
         });
         contentType = "application/pdf";
       }
     } else if (exportScope === "WEEKLY_7D_DAILY_SERIES") {
-      const agg = buildWeekly7dDailySeries(evalRows, periodField);
+      const agg = buildWeekly7dDailySeries(rows, periodField);
       rowCount = agg.length;
 
       if (exportType === "CSV") {
         fileBytes = new TextEncoder().encode(toCsvWeekly7dDailySeries(agg));
         contentType = "text/csv";
       } else {
-        const rows = agg.map((r) => ({
+        const pdfRows = agg.map((r) => ({
           day: r.day,
           incidents: String(r.incidents),
           risk_high: String(r.risk_high),
@@ -1102,7 +996,7 @@ export default Deno.serve(async (req: Request) => {
             { key: "risk_low", label: "Bajo", width: 70, align: "right" },
             { key: "net", label: "Neto (EUR)", width: 250, align: "right" },
           ],
-          rows,
+          rows: pdfRows,
         });
         contentType = "application/pdf";
       }
@@ -1126,7 +1020,7 @@ export default Deno.serve(async (req: Request) => {
 
     const downloadUrl = await signUrl(admin, DEFAULT_BUCKET, storagePath);
 
-    // DB INSERT (alineado con tu tabla debacu_eval_audit_exports)
+    // DB INSERT
     const insertRow = {
       id: exportId,
       created_at: new Date().toISOString(),
@@ -1160,19 +1054,14 @@ export default Deno.serve(async (req: Request) => {
         customer_id: tenant.customer_id,
         period_field: periodField,
         export_scope: exportScope,
-        evaluations_table: fetched.table_used,
+        source_table: fetched.table_used,
       },
 
       org_id: tenant.org_id,
       status: "READY",
     };
 
-    const { data: ins, error: insErr } = await admin
-      .from("debacu_eval_audit_exports")
-      .insert(insertRow as any)
-      .select("id, created_at")
-      .maybeSingle();
-
+    const { data: ins, error: insErr } = await admin.from("debacu_eval_audit_exports").insert(insertRow as any).select("id, created_at").maybeSingle();
     if (insErr) {
       console.error("EXPORT_INSERT_FAILED", insErr);
       throw new Error(`EXPORT_INSERT_FAILED:${insErr.message}`);
@@ -1189,13 +1078,10 @@ export default Deno.serve(async (req: Request) => {
       storage_bucket: DEFAULT_BUCKET,
       storage_path: storagePath,
       download_url: downloadUrl,
-      evaluations_table: fetched.table_used,
+      source_table: fetched.table_used,
     });
   } catch (e) {
-    if (storageUploaded && storagePath) {
-      await deletePathBestEffort(admin, DEFAULT_BUCKET, storagePath);
-    }
-
+    if (storageUploaded && storagePath) await deletePathBestEffort(admin, DEFAULT_BUCKET, storagePath);
     const mapped = mapError(e);
     return json(req, mapped.status, { ok: false, error: "request_failed", detail: mapped.detail });
   }

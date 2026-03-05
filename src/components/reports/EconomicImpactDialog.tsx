@@ -27,23 +27,14 @@ import {
 import CloseIcon from "@mui/icons-material/Close";
 import DownloadIcon from "@mui/icons-material/Download";
 
-import {
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  Legend,
-  Line,
-} from "recharts";
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, Legend, Line } from "recharts";
 
 import { callEvalFn } from "@/services/callEvalFn";
 
 /**
- * Diario: usamos el scope WEEKLY_7D_DAILY_SERIES (agrega por día dentro del rango).
- * Si luego creas ECONOMIC_IMPACT_DAILY, solo cambia SCOPE_DAILY.
+ * NOTA:
+ * Aquí estamos usando el scope "WEEKLY_7D_DAILY_SERIES" como serie diaria (día a día) dentro del rango.
+ * Si más adelante creas un scope específico "ECONOMIC_IMPACT_DAILY", cambia SCOPE_DAILY.
  */
 type PeriodPreset = "LAST_7" | "LAST_30" | "CUSTOM";
 type PeriodField = "evaluation_date" | "created_at";
@@ -90,7 +81,7 @@ function sum(rows: EconDailyRow[], key: keyof EconDailyRow) {
   return rows.reduce((acc, r) => acc + (Number(r[key]) || 0), 0);
 }
 
-/** Estimación sin vender humo. Cap 50% */
+/** Estimación prudente. Cap 50% */
 function projectedSavings(netTotal: number, improvementRate: number) {
   const rate = Math.max(0, Math.min(0.5, improvementRate));
   return netTotal * rate;
@@ -108,14 +99,22 @@ function clampFromTo(from: string, to: string) {
 export interface EconomicImpactDialogProps {
   open: boolean;
   onClose: () => void;
+
+  /** Opcional: si quieres abrir el diálogo ya con un rango fijo */
   from?: string;
   to?: string;
+
+  /** Opcional: heredar del selector del padre */
   periodField?: PeriodField;
+
+  /** ✅ requerido para multi-tenant */
+  orgId: string;
 }
 
 export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
   open,
   onClose,
+  orgId,
   from: fromProp,
   to: toProp,
   periodField: periodFieldProp,
@@ -130,6 +129,7 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
   const [from, setFrom] = useState<string>(defaultFrom7);
   const [to, setTo] = useState<string>(today);
 
+  // 0.15 = 15%
   const [improvementRate, setImprovementRate] = useState<number>(0.15);
 
   const [loading, setLoading] = useState(false);
@@ -163,6 +163,7 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
       return;
     }
 
+    // default según preset actual
     if (preset === "LAST_7") {
       setFrom(defaultFrom7);
       setTo(today);
@@ -198,12 +199,21 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
 
   async function load() {
     setErr(null);
+
+    const org = String(orgId ?? "").trim();
+    if (!org) {
+      setRows([]);
+      setErr("Falta orgId (no se puede cargar Impacto económico).");
+      return;
+    }
+
     setLoading(true);
 
     try {
       const fixed = clampFromTo(from, to);
 
       const resp: any = await callEvalFn("customer_audit_export_build", {
+        org_id: org, // ✅ CLAVE
         export_type: "CSV",
         export_scope: SCOPE_DAILY,
         period_from: fixed.from,
@@ -232,15 +242,22 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
     if (!open) return;
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, from, to, periodField]);
+  }, [open, orgId, from, to, periodField]);
 
   async function doExport(kind: "PDF" | "CSV") {
     setErr(null);
+
+    const org = String(orgId ?? "").trim();
+    if (!org) {
+      setErr("Falta orgId (no se puede exportar Impacto económico).");
+      return;
+    }
 
     try {
       const fixed = clampFromTo(from, to);
 
       const resp: BuildResp = await callEvalFn("customer_audit_export_build", {
+        org_id: org, // ✅ CLAVE
         export_type: kind,
         export_scope: SCOPE_DAILY,
         period_from: fixed.from,
@@ -270,13 +287,7 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
   }, [rows]);
 
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      fullWidth
-      maxWidth="lg"
-      PaperProps={{ sx: { borderRadius: 3 } }}
-    >
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="lg" PaperProps={{ sx: { borderRadius: 3 } }}>
       <DialogTitle sx={{ pr: 6, pb: 1.25 }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
           <Box>
@@ -303,11 +314,7 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
         >
           <FormControl size="small" sx={{ ...compactInputSx, minWidth: 150 }}>
             <InputLabel>Periodo</InputLabel>
-            <Select
-              label="Periodo"
-              value={preset}
-              onChange={(e) => setPreset(e.target.value as PeriodPreset)}
-            >
+            <Select label="Periodo" value={preset} onChange={(e) => setPreset(e.target.value as PeriodPreset)}>
               <MenuItem value="LAST_7">Últimos 7 días</MenuItem>
               <MenuItem value="LAST_30">Últimos 30 días</MenuItem>
               <MenuItem value="CUSTOM">Personalizado</MenuItem>
@@ -369,12 +376,7 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
           </FormControl>
 
           {/* Mejora: campo estrecho + texto en la MISMA línea */}
-          <Stack
-            direction="row"
-            spacing={1}
-            alignItems="flex-end"
-            sx={{ minWidth: 210 }}
-          >
+          <Stack direction="row" spacing={1} alignItems="flex-end" sx={{ minWidth: 210 }}>
             <TextField
               size="small"
               label="Mejora (%)"
@@ -382,7 +384,7 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
               value={Math.round(improvementRate * 100)}
               onChange={(e) => setImprovementRate(Number(e.target.value) / 100)}
               inputProps={{ min: 0, max: 50, step: 1 }}
-              sx={{ ...compactInputSx, width: 92 }} // ✅ pensado para 3 cifras
+              sx={{ ...compactInputSx, width: 92 }}
             />
             <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, pb: 0.65 }}>
               (límite máx. 50%)
@@ -391,7 +393,7 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
 
           <Box sx={{ flex: 1 }} />
 
-          {/* Botones compactos: en una línea */}
+          {/* Botones compactos */}
           <Stack direction="row" spacing={1} sx={{ flexWrap: "nowrap" }}>
             <Button
               variant="outlined"
@@ -399,13 +401,7 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
               startIcon={<DownloadIcon sx={{ fontSize: 16 }} />}
               onClick={() => void doExport("CSV")}
               disabled={loading}
-              sx={{
-                fontSize: 11,
-                px: 1.5,
-                py: 0.4,
-                minHeight: 32,
-                whiteSpace: "nowrap",
-              }}
+              sx={{ fontSize: 11, px: 1.5, py: 0.4, minHeight: 32, whiteSpace: "nowrap" }}
             >
               Exportar CSV
             </Button>
@@ -415,13 +411,7 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
               startIcon={<DownloadIcon sx={{ fontSize: 16 }} />}
               onClick={() => void doExport("PDF")}
               disabled={loading}
-              sx={{
-                fontSize: 11,
-                px: 1.5,
-                py: 0.4,
-                minHeight: 32,
-                whiteSpace: "nowrap",
-              }}
+              sx={{ fontSize: 11, px: 1.5, py: 0.4, minHeight: 32, whiteSpace: "nowrap" }}
             >
               Exportar PDF
             </Button>
@@ -434,26 +424,11 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
           </Alert>
         )}
 
-        {/* KPI cards (más compactas) */}
+        {/* KPI cards */}
         <Stack direction={{ xs: "column", md: "row" }} spacing={1.25} sx={{ mb: 1.75 }}>
-          <KpiCard
-            title="Coste directo"
-            value={`${money(totals.gross)} EUR`}
-            subtitle={`Incidencias: ${totals.incidents}`}
-            tone="blue"
-          />
-          <KpiCard
-            title="Recuperado"
-            value={`${money(totals.recovered)} EUR`}
-            subtitle={`% recuperado: ${totals.pctRecovered}%`}
-            tone="green"
-          />
-          <KpiCard
-            title="Pérdida neta"
-            value={`${money(totals.net)} EUR`}
-            subtitle="Neto = net_loss (o coste - recuperado)"
-            tone="red"
-          />
+          <KpiCard title="Coste directo" value={`${money(totals.gross)} EUR`} subtitle={`Incidencias: ${totals.incidents}`} tone="blue" />
+          <KpiCard title="Recuperado" value={`${money(totals.recovered)} EUR`} subtitle={`% recuperado: ${totals.pctRecovered}%`} tone="green" />
+          <KpiCard title="Pérdida neta" value={`${money(totals.net)} EUR`} subtitle="Neto = net_loss (o coste - recuperado)" tone="red" />
           <KpiCard
             title="Ahorro proyectado"
             value={`${money(totals.saving)} EUR`}
@@ -500,7 +475,7 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
                 <Legend />
 
                 <Area type="monotone" dataKey="coste" name="Coste" stroke="#2563eb" fill="#2563eb" fillOpacity={0.12} />
-                <Area type="monotone" dataKey="recuperado" name="Recuperado" stroke="#16a34a" fill="#16a34a" fillOpacity={0.10} />
+                <Area type="monotone" dataKey="recuperado" name="Recuperado" stroke="#16a34a" fill="#16a34a" fillOpacity={0.1} />
                 <Line type="monotone" dataKey="neto" name="Neto" stroke="#ef4444" strokeWidth={2} dot={{ r: 2 }} />
               </AreaChart>
             </ResponsiveContainer>
@@ -514,25 +489,13 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
           Detalle por día
         </Typography>
 
-        <Box
-          sx={{
-            border: "1px solid",
-            borderColor: "divider",
-            borderRadius: 2,
-            overflow: "hidden",
-          }}
-        >
+        <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, overflow: "hidden" }}>
           <Table size="small">
             <TableHead>
               <TableRow
                 sx={{
                   bgcolor: "#f6f8fb",
-                  "& th": {
-                    fontSize: 12,
-                    fontWeight: 900,
-                    color: "#334155",
-                    py: 1,
-                  },
+                  "& th": { fontSize: 12, fontWeight: 900, color: "#334155", py: 1 },
                 }}
               >
                 <TableCell>Día</TableCell>
@@ -623,7 +586,7 @@ const KpiCard: React.FC<{
         border: "1px solid",
         borderColor: highlight ? t.border : "divider",
         bgcolor: highlight ? t.bg : "background.paper",
-        p: 1.5, // ✅ más compacta
+        p: 1.5,
         minWidth: 180,
       }}
     >
@@ -631,15 +594,7 @@ const KpiCard: React.FC<{
         <Typography variant="caption" color="text.secondary" fontWeight={900} sx={{ fontSize: 11 }}>
           {title}
         </Typography>
-        <Box
-          sx={{
-            width: 8,
-            height: 8,
-            borderRadius: 99,
-            bgcolor: t.chip,
-            opacity: 0.9,
-          }}
-        />
+        <Box sx={{ width: 8, height: 8, borderRadius: 99, bgcolor: t.chip, opacity: 0.9 }} />
       </Stack>
 
       <Typography variant="h6" fontWeight={900} sx={{ mt: 0.15, fontSize: 18 }}>
@@ -666,7 +621,7 @@ function parseDailyCsv(csv: string): EconDailyRow[] {
   const header = lines[0].split(",").map((s) => s.trim());
   const idx = (name: string) => header.indexOf(name);
 
-  // day, incidents, risk_high, risk_medium, risk_low, gross, recovered, net_loss
+  // Esperado: day, incidents, gross, recovered, net_loss (según tu export scope actual)
   const iDay = idx("day");
   const iInc = idx("incidents");
   const iGross = idx("gross");

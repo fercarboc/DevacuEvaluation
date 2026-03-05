@@ -291,7 +291,10 @@ function ExportDialog({
               <>
                 {" "}
                 ·{" "}
-                <button className="underline font-semibold" onClick={() => result.download_url && triggerDownload(result.download_url)}>
+                <button
+                  className="underline font-semibold"
+                  onClick={() => result.download_url && triggerDownload(result.download_url)}
+                >
                   Descargar
                 </button>
               </>
@@ -300,7 +303,11 @@ function ExportDialog({
         ) : null}
 
         <div className="flex items-center justify-end gap-2">
-          <button onClick={onClose} className="rounded-lg border border-slate-200 px-4 py-2 text-sm hover:bg-slate-50" disabled={busy}>
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-slate-200 px-4 py-2 text-sm hover:bg-slate-50"
+            disabled={busy}
+          >
             Cerrar
           </button>
           <button
@@ -332,7 +339,6 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
   const [orgId, setOrgId] = useState<string | null>(() => localStorage.getItem("debacu_eval_org_id"));
 
   useEffect(() => {
-    // inicial (por si cambió antes de montar)
     setOrgId(localStorage.getItem("debacu_eval_org_id"));
 
     const onStorage = (e: StorageEvent) => {
@@ -478,12 +484,9 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
    * --------------------------- */
   const [openDailyReport, setOpenDailyReport] = useState(false);
   const [openWeeklyReport, setOpenWeeklyReport] = useState(false);
-  const [openAuditReport, setOpenAuditReport] = useState(false);
-  const [openAbuseReport, setOpenAbuseReport] = useState(false);
   const [openEconomicReport, setOpenEconomicReport] = useState(false);
 
   const todayIso = toISODate(startOfToday());
-  const yesterdayIso = toISODate(addDays(startOfToday(), -1));
   const last7FromIso = toISODate(addDays(startOfToday(), -6));
   const weeklyDialogRange = { from: last7FromIso, to: todayIso };
 
@@ -708,7 +711,10 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
           </div>
 
           <div className="flex items-center justify-end gap-2">
-            <button onClick={() => setRangeOpen(false)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm hover:bg-slate-50">
+            <button
+              onClick={() => setRangeOpen(false)}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-sm hover:bg-slate-50"
+            >
               Cancelar
             </button>
             <button
@@ -727,7 +733,11 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
       </Modal>
 
       {/* ✅ DailyReportDialog (MUI) */}
-      <DailyReportDialog open={openDailyReport} onClose={() => setOpenDailyReport(false)} />
+      <DailyReportDialog
+        open={openDailyReport}
+        onClose={() => setOpenDailyReport(false)}
+        orgId={orgId ?? ""} // ✅ CLAVE
+      />
 
       {/* ✅ WeeklyReportDialog (MUI + Recharts) */}
       <WeeklyReportDialog
@@ -736,11 +746,16 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
         defaultFrom={weeklyDialogRange.from}
         defaultTo={weeklyDialogRange.to}
         periodField={periodField}
-        orgId={orgId} // 👈 CLAVE
+        orgId={orgId} // ya lo tenías
       />
 
       {/* ✅ EconomicImpactDialog (MUI) */}
-      <EconomicImpactDialog open={openEconomicReport} onClose={() => setOpenEconomicReport(false)} />
+      <EconomicImpactDialog
+  open={openEconomicReport}
+  onClose={() => setOpenEconomicReport(false)}
+  orgId={orgId ?? ""}   // ✅ CLAVE
+  periodField={periodField}
+/>
     </div>
   );
 };

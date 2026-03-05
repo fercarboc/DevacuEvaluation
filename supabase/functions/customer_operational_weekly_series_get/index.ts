@@ -27,15 +27,22 @@ type EntitlementsRow = {
   seats_used: number | null;
 };
 
-type EvalRow = {
+type EvidenceRow = {
+  // base
+  event_date: string; // date
+  created_at: string; // timestamptz
+
+  // risk + impact
   rating: number | null;
-  evaluation_date: string | null;
-  created_at: string;
   economic_impact_gross: string | number | null;
   economic_recovered: string | number | null;
   economic_net_loss: string | number | null;
-  creator_customer_uuid: string | null;
-  customer_id: string | null;
+
+  // dims
+  platform_code: string | null;
+  platform_raw: string | null;
+  channel_code: string | null;
+  incident_type: string | null;
 };
 
 type WeeklySeriesRow = {
@@ -70,9 +77,9 @@ function riskBucketFromRating(rating: number | null) {
   if (v === 3) return "MEDIUM";
   return "LOW";
 }
-function getRowDateKey(r: EvalRow, periodField: PeriodField): string {
+function getRowDateKey(r: EvidenceRow, periodField: PeriodField): string {
   if (periodField === "evaluation_date") {
-    const d = (r.evaluation_date ?? "").slice(0, 10);
+    const d = String(r.event_date ?? "").slice(0, 10);
     if (d) return d;
   }
   return String(r.created_at).slice(0, 10);
@@ -105,7 +112,7 @@ function fillMissingDays(rows: WeeklySeriesRow[], from: string, to: string): Wee
 }
 
 /**
- * ✅ Resuelve el org_id validando membership ACTIVE.
+ * ✅ Resuelve org_id validando membership ACTIVE.
  * Robusto:
  * - match por user_id OR auth_user_id OR invited_email (email del JWT)
  * - si entra por invited_email y auth_user_id está null => autopatch auth_user_id=user.id
@@ -156,10 +163,7 @@ async function resolveOrgIdForUserOrThrow(
 
     if (!m.auth_user_id && email && String(m.invited_email ?? "").toLowerCase() === email) {
       console.log("[weekly_series] autopatch_auth_user_id", { member_id: m.id, org_id: m.org_id, uid });
-      const { error: upErr } = await admin
-        .from("debacu_eval_org_members")
-        .update({ auth_user_id: uid })
-        .eq("id", m.id);
+      const { error: upErr } = await admin.from("debacu_eval_org_members").update({ auth_user_id: uid }).eq("id", m.id);
       if (upErr) console.log("[weekly_series] autopatch_auth_user_id_error", upErr.message);
     }
 
@@ -198,31 +202,30 @@ async function resolveOrgIdForUserOrThrow(
   return String(m.org_id);
 }
 
-async function fetchEvaluationsForRange(
+async function fetchEvidenceForRange(
   admin: ReturnType<typeof supabaseServiceClient>,
-  customerId: string,
+  orgId: string,
   periodField: PeriodField,
   from: string,
   to: string,
-): Promise<EvalRow[]> {
+): Promise<EvidenceRow[]> {
   const selectCols = [
-    "rating",
-    "evaluation_date",
+    "event_date",
     "created_at",
+    "rating",
+    "incident_type",
+    "platform_code",
+    "platform_raw",
+    "channel_code",
     "economic_impact_gross",
     "economic_recovered",
     "economic_net_loss",
-    "creator_customer_uuid",
-    "customer_id",
   ].join(",");
 
-  const q = admin
-    .from("debacu_evaluations")
-    .select(selectCols)
-    .or(`customer_id.eq.${customerId},creator_customer_uuid.eq.${customerId}`);
+  const q = admin.from("debacu_eval_org_guest_evidence").select(selectCols).eq("org_id", orgId);
 
   if (periodField === "evaluation_date") {
-    const { data, error } = await q.gte("evaluation_date", from).lte("evaluation_date", to);
+    const { data, error } = await q.gte("event_date", from).lte("event_date", to);
     if (error) throw new Error("request_failed");
     return (data ?? []) as any;
   }
@@ -235,7 +238,7 @@ async function fetchEvaluationsForRange(
   return (data ?? []) as any;
 }
 
-function buildDailySeries(rows: EvalRow[], periodField: PeriodField): WeeklySeriesRow[] {
+function buildDailySeries(rows: EvidenceRow[], periodField: PeriodField): WeeklySeriesRow[] {
   const map = new Map<string, WeeklySeriesRow>();
 
   for (const r of rows) {
@@ -293,7 +296,7 @@ export default Deno.serve(async (req: Request) => {
   const admin = supabaseServiceClient();
 
   try {
-    console.log("[weekly_series] v2026-02-22-entitlements-trial-enabled");
+    console.log("[weekly_series] v2026-03-05-org_guest_evidence");
 
     const user = await requireUser(req);
     const userEmail = String((user as any)?.email ?? "").trim() || null;
@@ -330,31 +333,30 @@ export default Deno.serve(async (req: Request) => {
 
     // ✅ Entitlements via helper + TRIAL_ACTIVE habilitado
     const ent = (await getOrgEntitlementsOrThrow(admin as any, orgId)) as unknown as EntitlementsRow;
-    assertOrgEnabledOrThrow(ent as any); // acepta ACTIVE o TRIAL_ACTIVE
-
-    const customerId = String(ent.customer_id);
-    if (!customerId) throw new Error("FORBIDDEN");
+    assertOrgEnabledOrThrow(ent as any);
 
     const app_code = DEFAULT_APP_CODE;
 
-    const evalRows = await fetchEvaluationsForRange(admin, customerId, periodFieldRaw, periodFrom, periodTo);
+    // ✅ NUEVO: leer de org_guest_evidence por org_id
+    const rows = await fetchEvidenceForRange(admin, orgId, periodFieldRaw, periodFrom, periodTo);
 
-    const seriesRaw = buildDailySeries(evalRows, periodFieldRaw);
+    const seriesRaw = buildDailySeries(rows, periodFieldRaw);
     const series = fillMissingDays(seriesRaw, periodFrom, periodTo);
 
     return json(req, 200, {
       ok: true,
       app_code,
       org_id: orgId,
-      customer_id: customerId,
+      customer_id: ent.customer_id ?? null,
       plan_code: ent.plan_code ?? null,
       max_users: ent.max_users ?? null,
       seats_used: ent.seats_used ?? null,
       period_from: periodFrom,
       period_to: periodTo,
       period_field: periodFieldRaw,
-      total_rows: evalRows.length,
+      total_rows: rows.length,
       series,
+      source_table: "debacu_eval_org_guest_evidence",
     });
   } catch (e) {
     const mapped = mapErrorToHttp(e);

@@ -15,7 +15,6 @@ function mustEnv(name: string) {
 
 const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-
 // ✅ mismo pepper que import_csv (para identity_key HMAC)
 const GLOBAL_PEPPER = mustEnv("DEBACU_GLOBAL_PEPPER");
 
@@ -85,7 +84,6 @@ function seasonMultiplier(season: string | null, profile: any) {
 function normalizeDocumentBase(v?: string | null) {
   const t = str(v);
   if (!t) return null;
-  // debe ser compatible con generation_expression:
   // upper(regexp_replace(trim(document), '[\s-]+', '', 'g'))
   const out = t.trim().replace(/[\s-]+/g, "").toUpperCase();
   return out || null;
@@ -201,12 +199,53 @@ async function requireOrgContext(
 }
 
 /* ======================================================
+ * property_id resolver (✅ FIX 500)
+ * - 1) debacu_eval_organizations.property_id
+ * - 2) fallback debacu_eval_properties (si existe) por org_id
+ * ====================================================== */
+async function getDefaultPropertyId(admin: ReturnType<typeof sbService>, org_id: string) {
+  // 1) organizations.property_id
+  try {
+    const { data, error } = await admin
+      .from("debacu_eval_organizations")
+      .select("property_id")
+      .eq("id", org_id)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (data?.property_id) return String(data.property_id);
+  } catch (_e) {
+    // si la columna no existe o falla, seguimos al fallback
+  }
+
+  // 2) fallback: debacu_eval_properties (si existe)
+  try {
+    const { data, error } = await admin
+      .from("debacu_eval_properties")
+      .select("id")
+      .eq("org_id", org_id)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (data?.id) return String(data.id);
+  } catch (_e) {
+    // si la tabla no existe, no rompemos aquí
+  }
+
+  return null;
+}
+
+/* ======================================================
  * Data fetchers
  * ====================================================== */
 async function getHotelProfile(admin: ReturnType<typeof sbService>, customer_id: string) {
   const { data, error } = await admin
     .from("debacu_eval_hotel_profile")
-    .select("customer_id, hotel_category, adr_real, season_mult_high, season_mult_low, profile_completed")
+    .select(
+      "customer_id, hotel_category, adr_real, season_mult_high, season_mult_low, profile_completed",
+    )
     .eq("customer_id", customer_id)
     .maybeSingle();
 
@@ -228,7 +267,9 @@ async function getAdrReference(admin: ReturnType<typeof sbService>, hotel_catego
 async function getIncidentCatalog(admin: ReturnType<typeof sbService>, incident_type: string) {
   const { data, error } = await admin
     .from("debacu_incident_catalog")
-    .select("incident_type, is_active, severity, default_gross_min, default_gross_max, default_recovery_pct, title, description, suggested_actions")
+    .select(
+      "incident_type, is_active, severity, default_gross_min, default_gross_max, default_recovery_pct, title, description, suggested_actions",
+    )
     .eq("incident_type", incident_type)
     .maybeSingle();
 
@@ -238,10 +279,16 @@ async function getIncidentCatalog(admin: ReturnType<typeof sbService>, incident_
   return data;
 }
 
-async function getIncidentOverride(admin: ReturnType<typeof sbService>, customer_id: string, incident_type: string) {
+async function getIncidentOverride(
+  admin: ReturnType<typeof sbService>,
+  customer_id: string,
+  incident_type: string,
+) {
   const { data, error } = await admin
     .from("debacu_hotel_incident_overrides")
-    .select("incident_type, is_active, severity_override, default_gross_min_override, default_gross_max_override, default_recovery_pct_override, title_override, description_override, suggested_actions_override")
+    .select(
+      "incident_type, is_active, severity_override, default_gross_min_override, default_gross_max_override, default_recovery_pct_override, title_override, description_override, suggested_actions_override",
+    )
     .eq("customer_id", customer_id)
     .eq("incident_type", incident_type)
     .maybeSingle();
@@ -252,7 +299,11 @@ async function getIncidentOverride(admin: ReturnType<typeof sbService>, customer
   return data;
 }
 
-async function getHotelItemUnitPrice(admin: ReturnType<typeof sbService>, customer_id: string, item_code: string) {
+async function getHotelItemUnitPrice(
+  admin: ReturnType<typeof sbService>,
+  customer_id: string,
+  item_code: string,
+) {
   const { data, error } = await admin
     .from("debacu_hotel_item_catalog")
     .select("unit_price, is_active")
@@ -309,6 +360,13 @@ Deno.serve(async (req) => {
     const hotelCategoryOk = profile?.hotel_category !== null && profile?.hotel_category !== undefined;
     const profileCompletedOk = profile?.profile_completed === true;
     if (!profile || !hotelCategoryOk || !profileCompletedOk) {
+      return err(req, 409, "ONBOARDING_REQUIRED");
+    }
+
+    // ✅ FIX: property_id obligatorio en debacu_evaluations (según tu captura)
+    const property_id = await getDefaultPropertyId(admin, ctx.org_id);
+    if (!property_id) {
+      logLine({ fn: FN, stage: "property_missing", org_id: ctx.org_id });
       return err(req, 409, "ONBOARDING_REQUIRED");
     }
 
@@ -411,6 +469,8 @@ Deno.serve(async (req) => {
 
       // tenant ownership
       customer_id: ctx.customer_id,
+      org_id: ctx.org_id,       // ✅ añade org_id (aunque sea nullable)
+      property_id,              // ✅ CRÍTICO (NO NULL en tu tabla)
 
       // creator (audit)
       creator_customer_uuid,
@@ -439,7 +499,7 @@ Deno.serve(async (req) => {
       .select(
         "id, document, document_norm, email, email_norm, phone, phone_digits, identity_key, " +
           "full_name, nationality, rating, comment, platform, evaluation_date, " +
-          "customer_id, creator_customer_uuid, creator_customer_id, creator_customer_name, " +
+          "customer_id, org_id, property_id, creator_customer_uuid, creator_customer_id, creator_customer_name, " +
           "hotel_category, incident_type, economic_impact_gross, economic_recovered, economic_net_loss, " +
           "impact_items, season_applied, adr_reference, adr_real_snapshot, created_at",
       )
@@ -453,6 +513,7 @@ Deno.serve(async (req) => {
         msg: error.message ?? null,
         details: (error as any)?.details ?? null,
         hint: (error as any)?.hint ?? null,
+        payload_keys: Object.keys(payload),
       });
       return err(req, 500, "insert_failed");
     }
@@ -463,6 +524,7 @@ Deno.serve(async (req) => {
       user_id: user.id,
       org_id: ctx.org_id,
       customer_id: ctx.customer_id,
+      property_id,
       evaluation_id: data?.id ?? null,
     });
 

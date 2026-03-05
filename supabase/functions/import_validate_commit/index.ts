@@ -16,7 +16,6 @@ const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
 const GLOBAL_PEPPER = mustEnv("DEBACU_GLOBAL_PEPPER");
 
 // ✅ Storage bucket donde guardas los CSV
-//    Por defecto: customer-imports (NO customer-exports)
 const IMPORT_BUCKET = Deno.env.get("DEBACU_IMPORT_BUCKET") || "customer-imports";
 
 // ------------------------------------------------------------
@@ -85,11 +84,46 @@ function daysBetweenFromToday(dateISO: string) {
   if (!Number.isFinite(ms)) return null;
   return Math.max(0, Math.floor(ms / 86400000));
 }
+function minDate(a: string | null, b: string | null): string | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a <= b ? a : b;
+}
+function maxDate(a: string | null, b: string | null): string | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a >= b ? a : b;
+}
+
+// ------------------------------------------------------------
+// ✅ IMPORT TYPE mapping (para pasar debacu_eval_import_batches_type_chk)
+// ------------------------------------------------------------
+function mapImportType(runType: string) {
+  const rt = String(runType || "").toUpperCase();
+
+  // Tu CHECK actual permite: FUTURE_BOOKINGS, PAST_STAYS, GUEST_STAYS, INCIDENTS
+  if (rt === "FUTURE_BOOKINGS") return "FUTURE_BOOKINGS";
+  if (rt === "HISTORICAL_STAYS") return "PAST_STAYS";
+  if (rt === "HISTORICAL_BOOKINGS") return "PAST_STAYS";
+  if (rt === "INHOUSE_TODAY") return "GUEST_STAYS";
+
+  // fallback seguro:
+  if (rt.includes("FUTURE")) return "FUTURE_BOOKINGS";
+  if (rt.includes("PAST") || rt.includes("HISTORICAL")) return "PAST_STAYS";
+  if (rt.includes("GUEST") || rt.includes("INHOUSE")) return "GUEST_STAYS";
+  if (rt.includes("INCIDENT")) return "INCIDENTS";
+
+  return "GUEST_STAYS";
+}
 
 // ------------------------------------------------------------
 // ✅ Guard: membership check (ACTIVE) para org_id
 // ------------------------------------------------------------
-async function requireOrgMemberActive(admin: ReturnType<typeof sbAdmin>, org_id: string, user_id: string) {
+async function requireOrgMemberActive(
+  admin: ReturnType<typeof sbAdmin>,
+  org_id: string,
+  user_id: string,
+) {
   const { data, error } = await admin
     .from("debacu_eval_org_members")
     .select("id, status, role")
@@ -99,7 +133,9 @@ async function requireOrgMemberActive(admin: ReturnType<typeof sbAdmin>, org_id:
 
   if (error) throw new Error(`org_member_check_failed:${error.message}`);
   if (!data?.id) return { ok: false as const, reason: "NOT_MEMBER" as const };
-  if (String(data.status || "").toUpperCase() !== "ACTIVE") return { ok: false as const, reason: "NOT_ACTIVE" as const };
+  if (String(data.status || "").toUpperCase() !== "ACTIVE") {
+    return { ok: false as const, reason: "NOT_ACTIVE" as const };
+  }
 
   return { ok: true as const, member: data };
 }
@@ -180,6 +216,10 @@ type IdentityInfo = {
   document_norm: string | null;
   email_norm: string | null;
   phone_digits: string | null;
+
+  doc_key: string | null;
+  email_key: string | null;
+  phone_key: string | null;
 };
 
 async function computeIdentity(row: any, strategy: string): Promise<IdentityInfo> {
@@ -253,6 +293,10 @@ async function computeIdentity(row: any, strategy: string): Promise<IdentityInfo
     }
   }
 
+  const doc_key = doc ? await hmacHex(`DOC:${doc}`) : null;
+  const email_key = email ? await hmacHex(`EMAIL:${email}`) : null;
+  const phone_key = phone ? await hmacHex(`PHONE:${phone}`) : null;
+
   if (!raw) {
     return {
       identity_key: null,
@@ -261,6 +305,9 @@ async function computeIdentity(row: any, strategy: string): Promise<IdentityInfo
       document_norm: doc,
       email_norm: email,
       phone_digits: phone,
+      doc_key,
+      email_key,
+      phone_key,
     };
   }
 
@@ -272,6 +319,9 @@ async function computeIdentity(row: any, strategy: string): Promise<IdentityInfo
     document_norm: doc,
     email_norm: email,
     phone_digits: phone,
+    doc_key,
+    email_key,
+    phone_key,
   };
 }
 
@@ -291,10 +341,9 @@ function requiredFieldsFor(runType: string) {
 // ------------------------------------------------------------
 // Mapping: hotel_column -> debacu_field
 // ------------------------------------------------------------
- function applyMapping(headers: string[], values: string[], mapping: Record<string, string>) {
+function applyMapping(headers: string[], values: string[], mapping: Record<string, string>) {
   const obj: Record<string, any> = {};
 
-  // Campos “debacu” que aceptamos directamente si vienen como header
   const DIRECT_FIELDS = new Set([
     "checkin_date",
     "checkout_date",
@@ -319,7 +368,6 @@ function requiredFieldsFor(runType: string) {
     "date_of_birth",
   ]);
 
-  // Alias típicos de CSV “humanos”
   const ALIASES: Record<string, string> = {
     document: "document_number",
     doc: "document_number",
@@ -340,18 +388,16 @@ function requiredFieldsFor(runType: string) {
     const v = values[i] ?? "";
     if (!rawH) continue;
 
-    // 1) Si hay mapping explícito, manda
     const mapped = mapping?.[rawH];
     if (mapped) {
       obj[mapped] = v;
       continue;
     }
 
-    // 2) Si no hay mapping, aceptamos header directo o por alias
     const h = rawH.toLowerCase();
-    const normalized = (ALIASES[h] ?? rawH).trim(); // mantiene case original si ya venía correcto
-
+    const normalized = (ALIASES[h] ?? rawH).trim();
     const normalizedLower = normalized.toLowerCase();
+
     if (DIRECT_FIELDS.has(normalizedLower)) {
       obj[normalizedLower] = v;
     }
@@ -359,14 +405,14 @@ function requiredFieldsFor(runType: string) {
 
   return obj;
 }
+
 // ------------------------------------------------------------
 // Storage read
 // ------------------------------------------------------------
 async function readCsvFromStorage(admin: ReturnType<typeof sbAdmin>, filePath: string) {
   const { data, error } = await admin.storage.from(IMPORT_BUCKET).download(filePath);
   if (error || !data) throw new Error(`storage_download_failed:${error?.message || "no_data"}`);
-  const text = await data.text();
-  return text;
+  return await data.text();
 }
 
 // ------------------------------------------------------------
@@ -383,7 +429,6 @@ async function getPreviousRunId(
     .select("id, created_at")
     .eq("id", current_run_id)
     .maybeSingle();
-
   if (curErr || !cur?.created_at) return null;
 
   const { data: prev, error: prevErr } = await admin
@@ -410,12 +455,38 @@ function decayFactor(days_since_last: number | null) {
   if (days_since_last < 365) return 0.5;
   return 0.25;
 }
-
 function bandRank(b: string) {
   return b === "HIGH" ? 3 : b === "MEDIUM" ? 2 : 1;
 }
 function confRank(c: string) {
   return c === "HIGH" ? 3 : c === "MEDIUM" ? 2 : 1;
+}
+
+// ------------------------------------------------------------
+// stay_status mapping (NO NULL)
+// ------------------------------------------------------------
+function deriveStayStatus(runType: string, csvStatus: string | null) {
+  const rt = String(runType || "").toUpperCase();
+  const s = upper(csvStatus || "");
+
+  if (s) {
+    if (["PLANNED", "CHECKED_IN", "COMPLETED", "NO_SHOW", "CANCELLED"].includes(s)) return s;
+
+    if (["BOOKED", "RESERVED", "CONFIRMED", "PENDING"].includes(s)) return "PLANNED";
+    if (["INHOUSE", "IN_HOUSE", "CHECKEDIN", "CHECKED-IN"].includes(s)) return "CHECKED_IN";
+    if (["CHECKEDOUT", "CHECKED_OUT", "CHECKED-OUT", "DONE", "DEPARTED"].includes(s)) return "COMPLETED";
+    if (["CANCELED", "CANCEL", "ANULADA", "ANULADO"].includes(s)) return "CANCELLED";
+    if (["NOSHOW", "NO-SHOW"].includes(s)) return "NO_SHOW";
+
+    return "PLANNED";
+  }
+
+  if (rt === "FUTURE_BOOKINGS") return "PLANNED";
+  if (rt === "INHOUSE_TODAY") return "CHECKED_IN";
+  if (rt === "HISTORICAL_STAYS") return "COMPLETED";
+  if (rt === "HISTORICAL_BOOKINGS") return "PLANNED";
+
+  return "PLANNED";
 }
 
 // ------------------------------------------------------------
@@ -446,7 +517,7 @@ Deno.serve(async (req) => {
     if (!profile_id) return json(req, 400, { ok: false, error: "missing_profile_id" });
     if (!file_path && !csv_text) return json(req, 400, { ok: false, error: "missing_file_or_csv_text" });
 
-    // ✅ Security gate: membership ACTIVE en org
+    // ✅ Security gate
     const mem = await requireOrgMemberActive(admin, org_id, userId);
     if (!mem.ok) {
       return json(req, 403, {
@@ -464,11 +535,10 @@ Deno.serve(async (req) => {
       .eq("org_id", org_id)
       .maybeSingle();
 
-    if (pErr || !profile) {
-      return json(req, 404, { ok: false, error: "profile_not_found" });
-    }
+    if (pErr || !profile) return json(req, 404, { ok: false, error: "profile_not_found" });
 
     const effectiveRunType = String(run_type || profile.source_type || "").toUpperCase();
+    const import_type = mapImportType(effectiveRunType);
     const delimiter = String(profile.delimiter || ",");
     const identity_strategy = String(profile.identity_strategy || "DOCUMENT_STRONG");
     const mapping = (profile.mapping || {}) as Record<string, string>;
@@ -479,12 +549,11 @@ Deno.serve(async (req) => {
 
     // 3) Parse
     const rawRows = parseCsv(csv, delimiter);
-    if (rawRows.length < 2) {
-      return json(req, 400, { ok: false, error: "csv_empty_or_missing_rows" });
-    }
+    if (rawRows.length < 2) return json(req, 400, { ok: false, error: "csv_empty_or_missing_rows" });
 
     const headers = rawRows[0].map((h) => str(h));
     const dataRows = rawRows.slice(1);
+    const totalRows = dataRows.length;
 
     // 4) Create import job
     const file_hash = await crypto.subtle
@@ -516,19 +585,18 @@ Deno.serve(async (req) => {
     const parsed: any[] = [];
 
     for (let i = 0; i < dataRows.length; i++) {
-      const rowNum = i + 2; // header=1
+      const rowNum = i + 2;
       const values = dataRows[i];
       const obj = applyMapping(headers, values, mapping);
 
-      // Si viene full_name pero faltan first/last, lo partimos
-if (!str(obj.first_name) || !str(obj.last_name)) {
-  const fn = str(obj.full_name);
-  if (fn) {
-    const parts = fn.split(/\s+/).filter(Boolean);
-    if (!str(obj.first_name) && parts.length >= 1) obj.first_name = parts[0];
-    if (!str(obj.last_name) && parts.length >= 2) obj.last_name = parts.slice(1).join(" ");
-  }
-}
+      if (!str(obj.first_name) || !str(obj.last_name)) {
+        const fn = str(obj.full_name);
+        if (fn) {
+          const parts = fn.split(/\s+/).filter(Boolean);
+          if (!str(obj.first_name) && parts.length >= 1) obj.first_name = parts[0];
+          if (!str(obj.last_name) && parts.length >= 2) obj.last_name = parts.slice(1).join(" ");
+        }
+      }
 
       obj.checkin_date = toISODate(obj.checkin_date);
       obj.checkout_date = toISODate(obj.checkout_date);
@@ -555,10 +623,14 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
       obj.identity_key = ident.identity_key;
       obj.match_basis = ident.match_basis;
       obj.match_confidence = ident.match_confidence;
-
       obj.document_norm = ident.document_norm;
       obj.email_norm = ident.email_norm;
       obj.phone_digits = ident.phone_digits;
+      obj.doc_key = ident.doc_key;
+      obj.email_key = ident.email_key;
+      obj.phone_key = ident.phone_key;
+
+      if (!str(obj.full_name)) obj.full_name = `${str(obj.first_name)} ${str(obj.last_name)}`.trim();
 
       parsed.push(obj);
     }
@@ -569,9 +641,9 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
     await admin
       .from("import_jobs")
       .update({
-        total_rows: dataRows.length,
+        total_rows: totalRows,
         valid_rows: validRows.length,
-        invalid_rows: dataRows.length - validRows.length,
+        invalid_rows: totalRows - validRows.length,
         status: "VALIDATED",
         summary: {
           run_type: effectiveRunType,
@@ -586,15 +658,39 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
         ok: true,
         mode: "DRY_RUN",
         import_job_id: job.id,
-        total_rows: dataRows.length,
+        total_rows: totalRows,
         valid_rows: validRows.length,
-        invalid_rows: dataRows.length - validRows.length,
+        invalid_rows: totalRows - validRows.length,
         errors: errors.slice(0, 300),
         preview: validRows.slice(0, 20),
       });
     }
 
-    // 6) COMMIT: create screening_run
+    const nowTs = todayIsoTs();
+
+    // 6) Create import_batch
+    const { data: batchRow, error: bErr } = await admin
+      .from("debacu_eval_import_batches")
+      .insert({
+        org_id,
+        import_type, // ✅ YA MAPEADO -> pasa el check constraint
+        total_rows: totalRows,
+        processed_rows: totalRows,
+        error_rows: 0,
+        file_name: file_path || null,
+        created_at: nowTs,
+      })
+      .select("id")
+      .single();
+
+    if (bErr || !batchRow?.id) {
+      await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
+      return json(req, 500, { ok: false, error: "import_batch_create_failed", detail: bErr?.message });
+    }
+
+    const importBatchId = String(batchRow.id);
+
+    // 7) Create screening_run
     const { data: run, error: runErr } = await admin
       .from("screening_runs")
       .insert({
@@ -615,11 +711,9 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
     }
 
     const runId = String(run.id);
-
-    // Previous run for delta (persona+fecha)
     const prevRunId = await getPreviousRunId(admin, org_id, effectiveRunType, runId);
 
-    // ✅ Prev snapshot: key(identity_key|checkin_date) -> {incidents, loss, band}
+    // Prev snapshot map
     const prevMap = new Map<string, { incidents: number; loss: number; band: string }>();
     if (prevRunId) {
       const { data: prevRows, error: prevErr } = await admin
@@ -632,8 +726,7 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
           const ik = String(pr.identity_key || "");
           const cd = pr.checkin_date ? String(pr.checkin_date) : "";
           if (!ik || !cd) continue;
-          const k = `${ik}|${cd}`;
-          prevMap.set(k, {
+          prevMap.set(`${ik}|${cd}`, {
             incidents: Number(pr.incidents_count ?? 0),
             loss: Number(pr.total_net_loss ?? 0),
             band: String(pr.risk_band ?? "LOW"),
@@ -642,18 +735,29 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
       }
     }
 
-    // ✅ Preload guest_index rows for ALL identity_keys (chunked)
+    // Preload guest_index
     const uniqueIdentityKeys = Array.from(new Set(validRows.map((r) => String(r.identity_key || "")).filter(Boolean)));
 
-    const indexMap = new Map<
-      string,
-      { incidents_count: number; total_net_loss: number; risk_band: string; last_incident_date: string | null }
-    >();
+    type GuestIndexRow = {
+      identity_key: string;
+      stays_count: number;
+      incidents_count: number;
+      total_net_loss: number;
+      first_seen_date: string | null;
+      last_seen_date: string | null;
+      last_incident_date: string | null;
+      risk_band: string | null;
+      doc_key: string | null;
+      email_key: string | null;
+      phone_key: string | null;
+    };
+
+    const indexMap = new Map<string, GuestIndexRow>();
 
     for (const part of chunk(uniqueIdentityKeys, 1000)) {
       const { data: idxRows, error: idxErr } = await admin
-        .from("debacu_eval_import_guest_index")
-        .select("identity_key,incidents_count,total_net_loss,risk_band,last_incident_date")
+        .from("debacu_eval_guest_index")
+        .select("identity_key,stays_count,incidents_count,total_net_loss,first_seen_date,last_seen_date,last_incident_date,risk_band,doc_key,email_key,phone_key")
         .in("identity_key", part);
 
       if (idxErr) {
@@ -663,77 +767,78 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
 
       (idxRows || []).forEach((r: any) => {
         indexMap.set(String(r.identity_key), {
+          identity_key: String(r.identity_key),
+          stays_count: Number(r.stays_count ?? 0),
           incidents_count: Number(r.incidents_count ?? 0),
           total_net_loss: Number(r.total_net_loss ?? 0),
-          risk_band: String(r.risk_band ?? "LOW"),
+          first_seen_date: r.first_seen_date ? String(r.first_seen_date) : null,
+          last_seen_date: r.last_seen_date ? String(r.last_seen_date) : null,
           last_incident_date: r.last_incident_date ? String(r.last_incident_date) : null,
+          risk_band: r.risk_band ? String(r.risk_band) : null,
+          doc_key: r.doc_key ? String(r.doc_key) : null,
+          email_key: r.email_key ? String(r.email_key) : null,
+          phone_key: r.phone_key ? String(r.phone_key) : null,
         });
       });
+
+      for (const ik of part) {
+        if (!indexMap.has(ik)) {
+          indexMap.set(ik, {
+            identity_key: ik,
+            stays_count: 0,
+            incidents_count: 0,
+            total_net_loss: 0,
+            first_seen_date: null,
+            last_seen_date: null,
+            last_incident_date: null,
+            risk_band: null,
+            doc_key: null,
+            email_key: null,
+            phone_key: null,
+          });
+        }
+      }
     }
 
-    // Persona + Fecha aggregation for screening_results & alerts
+    // Consolidation
     type Agg = {
       identity_key: string;
       checkin_date: string;
       row_number: number;
       checkout_date: string | null;
-
       match_confidence: string;
       match_basis: string | null;
-
       incidents_count: number;
       total_net_loss: number;
       last_incident_date: string | null;
       days_since_last: number | null;
-
       risk_band: string;
       prev_risk_band: string | null;
       risk_band_changed: boolean;
       delta_incidents_count: number;
       delta_total_net_loss: number;
-
-      total_amount_max: number;
+      full_name: string;
+      stay_status: string;
+      doc_key: string | null;
+      email_key: string | null;
+      phone_key: string | null;
     };
 
     const agg = new Map<string, Agg>();
-
-    let high = 0, med = 0, lowc = 0;
-
-    const watchWithRef: any[] = [];
-    const watchNoRef: any[] = [];
-
-    const WATCH_CHUNK = 500;
     const RESULTS_CHUNK = 1000;
     const ALERTS_CHUNK = 1000;
-
-    const nowTs = todayIsoTs();
+    const STAYS_CHUNK = 1000;
+    const INDEX_CHUNK = 1000;
 
     for (let i = 0; i < validRows.length; i++) {
       const r = validRows[i];
+
       const identity_key = String(r.identity_key);
       const checkin_date = (r.checkin_date as string | null) || null;
       const checkout_date = (r.checkout_date as string | null) || null;
-
       if (!checkin_date) continue;
 
       const row_number = i + 2;
-
-      const reservation_ref = str(r.reservation_ref);
-      const watchPayload: any = {
-        org_id,
-        reservation_ref: reservation_ref || null,
-        identity_key,
-        checkin_date,
-        checkout_date,
-        channel: str(r.channel) || null,
-        total_amount: r.total_amount ?? 0,
-        currency: r.currency || null,
-        status: r.status || null,
-        last_seen_at: nowTs,
-      };
-
-      if (reservation_ref) watchWithRef.push(watchPayload);
-      else watchNoRef.push(watchPayload);
 
       const idxRow = indexMap.get(identity_key);
       const incidents_count = Number(idxRow?.incidents_count ?? 0);
@@ -742,7 +847,6 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
       const last_incident_date = idxRow?.last_incident_date ?? null;
 
       const days_since_last = last_incident_date ? daysBetweenFromToday(last_incident_date) : null;
-
       const df = decayFactor(days_since_last);
       const adjusted_loss = total_net_loss * df;
 
@@ -751,15 +855,15 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
       else if (incidents_count >= 2 || adjusted_loss >= 200) risk_band = "HIGH";
       else risk_band = "MEDIUM";
 
-      const prevKey = `${identity_key}|${checkin_date}`;
+      const key = `${identity_key}|${checkin_date}`;
+
       let prev_band: string | null = null;
       let risk_band_changed = false;
-
       let delta_incidents = incidents_count;
       let delta_loss = total_net_loss;
 
-      if (prevMap.has(prevKey)) {
-        const prev = prevMap.get(prevKey)!;
+      if (prevMap.has(key)) {
+        const prev = prevMap.get(key)!;
         prev_band = prev.band;
         risk_band_changed = prev.band !== risk_band;
         delta_incidents = incidents_count - prev.incidents;
@@ -769,41 +873,40 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
       if (!Number.isFinite(delta_incidents)) delta_incidents = 0;
       if (!Number.isFinite(delta_loss)) delta_loss = 0;
 
-      const k = prevKey;
-      const existing = agg.get(k);
+      const full_name = str(r.full_name) || `${str(r.first_name)} ${str(r.last_name)}`.trim();
+      const stay_status = deriveStayStatus(effectiveRunType, r.status || null);
 
+      const doc_key = r.doc_key ? String(r.doc_key) : null;
+      const email_key = r.email_key ? String(r.email_key) : null;
+      const phone_key = r.phone_key ? String(r.phone_key) : null;
+
+      const existing = agg.get(key);
       if (!existing) {
-        agg.set(k, {
+        agg.set(key, {
           identity_key,
           checkin_date,
           row_number,
           checkout_date,
-
           match_confidence: r.match_confidence || "LOW",
           match_basis: r.match_basis || null,
-
           incidents_count,
           total_net_loss,
           last_incident_date,
           days_since_last,
-
           risk_band,
           prev_risk_band: prev_band,
           risk_band_changed,
           delta_incidents_count: delta_incidents,
           delta_total_net_loss: delta_loss,
-
-          total_amount_max: Number(r.total_amount ?? 0),
+          full_name,
+          stay_status,
+          doc_key,
+          email_key,
+          phone_key,
         });
       } else {
         if (row_number < existing.row_number) existing.row_number = row_number;
-
-        if (checkout_date && (!existing.checkout_date || checkout_date > existing.checkout_date)) {
-          existing.checkout_date = checkout_date;
-        }
-
-        const ta = Number(r.total_amount ?? 0);
-        if (Number.isFinite(ta) && ta > existing.total_amount_max) existing.total_amount_max = ta;
+        if (checkout_date && (!existing.checkout_date || checkout_date > existing.checkout_date)) existing.checkout_date = checkout_date;
 
         const mc = String(r.match_confidence || "LOW");
         if (confRank(mc) > confRank(existing.match_confidence)) {
@@ -819,60 +922,118 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
 
         if (delta_incidents > existing.delta_incidents_count) existing.delta_incidents_count = delta_incidents;
         if (delta_loss > existing.delta_total_net_loss) existing.delta_total_net_loss = delta_loss;
-      }
 
-      if (watchWithRef.length >= WATCH_CHUNK) {
-        const batch = watchWithRef.splice(0, watchWithRef.length);
-        const { error: wErr } = await admin
-          .from("watchlist_reservations")
-          .upsert(batch, { onConflict: "org_id,reservation_ref" });
-        if (wErr) {
-          await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
-          return json(req, 500, { ok: false, error: "watchlist_upsert_failed", detail: wErr.message });
-        }
-      }
+        if (!existing.doc_key && doc_key) existing.doc_key = doc_key;
+        if (!existing.email_key && email_key) existing.email_key = email_key;
+        if (!existing.phone_key && phone_key) existing.phone_key = phone_key;
 
-      if (watchNoRef.length >= WATCH_CHUNK) {
-        const batch = watchNoRef.splice(0, watchNoRef.length);
-        const { error: wErr } = await admin
-          .from("watchlist_reservations")
-          .upsert(batch, { onConflict: "org_id,identity_key,checkin_date" });
-        if (wErr) {
-          await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
-          return json(req, 500, { ok: false, error: "watchlist_upsert_failed", detail: wErr.message });
-        }
-      }
-    }
-
-    if (watchWithRef.length) {
-      const { error: wErr } = await admin
-        .from("watchlist_reservations")
-        .upsert(watchWithRef, { onConflict: "org_id,reservation_ref" });
-      if (wErr) {
-        await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
-        return json(req, 500, { ok: false, error: "watchlist_upsert_failed", detail: wErr.message });
-      }
-    }
-
-    if (watchNoRef.length) {
-      const { error: wErr } = await admin
-        .from("watchlist_reservations")
-        .upsert(watchNoRef, { onConflict: "org_id,identity_key,checkin_date" });
-      if (wErr) {
-        await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
-        return json(req, 500, { ok: false, error: "watchlist_upsert_failed", detail: wErr.message });
+        const prio = (x: string) => (x === "CHECKED_IN" ? 5 : x === "PLANNED" ? 4 : x === "COMPLETED" ? 3 : x === "NO_SHOW" ? 2 : 1);
+        if (prio(stay_status) > prio(existing.stay_status)) existing.stay_status = stay_status;
       }
     }
 
     const consolidated = Array.from(agg.values());
 
-    high = 0; med = 0; lowc = 0;
+    let high = 0, med = 0, lowc = 0;
     for (const a of consolidated) {
       if (a.risk_band === "HIGH") high++;
       else if (a.risk_band === "MEDIUM") med++;
       else lowc++;
     }
 
+    // ------------------------------------------------------------
+    // ✅ UPSERT STAYS (NO DUPLICADOS)
+    // Requiere UNIQUE INDEX: (org_id, identity_key, checkin_date)
+    // ------------------------------------------------------------
+    for (const part of chunk(consolidated, STAYS_CHUNK)) {
+      const batch = part.map((a) => ({
+        org_id,
+        identity_key: a.identity_key,
+        full_name: a.full_name || null,
+        checkin_date: a.checkin_date,
+        checkout_date: a.checkout_date,
+        stay_status: a.stay_status,
+        import_batch_id: importBatchId,
+        updated_at: nowTs, // ✅ tu tabla tiene updated_at
+      }));
+
+      const { error: sErr } = await admin
+        .from("debacu_eval_guest_stays")
+        .upsert(batch, { onConflict: "org_id,identity_key,checkin_date" });
+
+      if (sErr) {
+        await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
+        return json(req, 500, { ok: false, error: "guest_stays_upsert_failed", detail: sErr.message });
+      }
+    }
+
+    // ------------------------------------------------------------
+    // ✅ UPSERT guest_index (stays_count + seen_dates)
+    // ⚠️ Nota: si quieres que NO sume stays_count al reimportar el mismo CSV,
+    // hay que calcular "stays_added" = filas realmente nuevas. Esto es otro paso.
+    // ------------------------------------------------------------
+    type StayAgg = { stays_added: number; min_ci: string | null; max_co: string | null; doc_key: string | null; email_key: string | null; phone_key: string | null };
+    const perIdentity = new Map<string, StayAgg>();
+
+    for (const a of consolidated) {
+      const ik = a.identity_key;
+      const cur = perIdentity.get(ik) || { stays_added: 0, min_ci: null, max_co: null, doc_key: null, email_key: null, phone_key: null };
+      cur.stays_added += 1;
+      cur.min_ci = minDate(cur.min_ci, a.checkin_date);
+      cur.max_co = maxDate(cur.max_co, a.checkout_date || a.checkin_date);
+      if (!cur.doc_key && a.doc_key) cur.doc_key = a.doc_key;
+      if (!cur.email_key && a.email_key) cur.email_key = a.email_key;
+      if (!cur.phone_key && a.phone_key) cur.phone_key = a.phone_key;
+      perIdentity.set(ik, cur);
+    }
+
+    const upserts: any[] = [];
+    for (const [ik, sa] of perIdentity.entries()) {
+      const existing = indexMap.get(ik) || {
+        identity_key: ik,
+        stays_count: 0,
+        incidents_count: 0,
+        total_net_loss: 0,
+        first_seen_date: null,
+        last_seen_date: null,
+        last_incident_date: null,
+        risk_band: null,
+        doc_key: null,
+        email_key: null,
+        phone_key: null,
+      };
+
+      const next_first = minDate(existing.first_seen_date, sa.min_ci);
+      const next_last = maxDate(existing.last_seen_date, sa.max_co);
+
+      upserts.push({
+        identity_key: ik,
+        stays_count: Number(existing.stays_count ?? 0) + Number(sa.stays_added ?? 0),
+        first_seen_date: next_first,
+        last_seen_date: next_last,
+        incidents_count: Number(existing.incidents_count ?? 0),
+        total_net_loss: Number(existing.total_net_loss ?? 0),
+        last_incident_date: existing.last_incident_date,
+        risk_band: existing.risk_band || "LOW",
+        doc_key: existing.doc_key || sa.doc_key,
+        email_key: existing.email_key || sa.email_key,
+        phone_key: existing.phone_key || sa.phone_key,
+        updated_at: nowTs,
+      });
+    }
+
+    for (const part of chunk(upserts, INDEX_CHUNK)) {
+      const { error: uErr } = await admin
+        .from("debacu_eval_guest_index")
+        .upsert(part, { onConflict: "identity_key" });
+
+      if (uErr) {
+        await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
+        return json(req, 500, { ok: false, error: "guest_index_upsert_failed", detail: uErr.message });
+      }
+    }
+
+    // screening_results
     for (const part of chunk(consolidated, RESULTS_CHUNK)) {
       const batch = part.map((a) => ({
         run_id: runId,
@@ -901,6 +1062,7 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
       }
     }
 
+    // alerts
     const alertsAll = consolidated
       .filter((a) => a.delta_incidents_count > 0 || a.delta_total_net_loss > 0 || a.risk_band_changed || a.risk_band === "HIGH")
       .map((a) => {
@@ -948,13 +1110,15 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
         summary: {
           run_id: runId,
           prev_run_id: prevRunId,
-          total_rows: dataRows.length,
+          total_rows: totalRows,
           valid_rows: validRows.length,
-          invalid_rows: dataRows.length - validRows.length,
+          invalid_rows: totalRows - validRows.length,
           consolidated_rows: consolidated.length,
           high,
           medium: med,
           low: lowc,
+          import_batch_id: importBatchId,
+          import_type,
         },
       })
       .eq("id", job.id);
@@ -963,12 +1127,14 @@ if (!str(obj.first_name) || !str(obj.last_name)) {
       ok: true,
       mode: "COMMIT",
       import_job_id: job.id,
+      import_batch_id: importBatchId,
       run_id: runId,
       prev_run_id: prevRunId,
-      total_rows: dataRows.length,
+      total_rows: totalRows,
       valid_rows: validRows.length,
-      invalid_rows: dataRows.length - validRows.length,
+      invalid_rows: totalRows - validRows.length,
       consolidated_rows: consolidated.length,
+      guest_index_upserts: upserts.length,
       high,
       medium: med,
       low: lowc,

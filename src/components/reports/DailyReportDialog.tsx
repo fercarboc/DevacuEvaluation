@@ -25,21 +25,7 @@ import {
 import CloseIcon from "@mui/icons-material/Close";
 import DownloadIcon from "@mui/icons-material/Download";
 
-import {
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  Legend,
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-} from "recharts";
-
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from "recharts";
 
 import { callEvalFn } from "@/services/callEvalFn";
 
@@ -78,16 +64,16 @@ function money(n: number) {
 }
 
 function safeLabel(s: string) {
-  // Por si llegan tipos largos/raros
   return String(s ?? "").trim() || "UNKNOWN";
 }
 
 export interface DailyReportDialogProps {
   open: boolean;
   onClose: () => void;
+  orgId: string; // ✅ obligatorio
 }
 
-export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onClose }) => {
+export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onClose, orgId }) => {
   const today = useMemo(() => isoDate(new Date()), []);
   const yesterday = useMemo(() => isoDate(addDays(new Date(), -1)), []);
 
@@ -101,10 +87,18 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
 
   async function load() {
     setErr(null);
+
+    // ✅ si no hay orgId, no intentes exportar: te traerá 0 o org equivocada
+    if (!orgId || orgId.trim().length < 8) {
+      setRows([]);
+      setErr("No hay orgId activo. Re-inicia sesión o selecciona un hotel.");
+      return;
+    }
+
     setLoading(true);
     try {
-      // Pedimos CSV y lo parseamos para UI
       const resp: any = await callEvalFn("customer_audit_export_build", {
+        org_id: orgId, // ✅ CLAVE
         export_type: "CSV",
         export_scope: "DAILY_HOY_AYER_BY_TYPE",
         period_from: dateYesterday,
@@ -120,6 +114,7 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
       setRows(parseDailyCsv(csvText));
     } catch (e: any) {
       setErr(String(e?.message ?? e));
+      setRows([]);
     } finally {
       setLoading(false);
     }
@@ -129,12 +124,19 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
     if (!open) return;
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, dateToday, dateYesterday, periodField]);
+  }, [open, dateToday, dateYesterday, periodField, orgId]);
 
   async function doExport(kind: "PDF" | "CSV") {
     setErr(null);
+
+    if (!orgId || orgId.trim().length < 8) {
+      setErr("No hay orgId activo. Re-inicia sesión o selecciona un hotel.");
+      return;
+    }
+
     try {
       const resp: BuildResp = await callEvalFn("customer_audit_export_build", {
+        org_id: orgId, // ✅ CLAVE
         export_type: kind,
         export_scope: "DAILY_HOY_AYER_BY_TYPE",
         period_from: dateYesterday,
@@ -164,30 +166,12 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
     const pctRec = todayGross > 0 ? Math.round((todayRec / todayGross) * 100) : 0;
 
     const deltaInc =
-      yestInc > 0
-        ? Math.round(((todayInc - yestInc) / yestInc) * 100)
-        : todayInc > 0
-          ? 100
-          : 0;
+      yestInc > 0 ? Math.round(((todayInc - yestInc) / yestInc) * 100) : todayInc > 0 ? 100 : 0;
 
     const deltaNet =
-      yestNet > 0
-        ? Math.round(((todayNet - yestNet) / yestNet) * 100)
-        : todayNet > 0
-          ? 100
-          : 0;
+      yestNet > 0 ? Math.round(((todayNet - yestNet) / yestNet) * 100) : todayNet > 0 ? 100 : 0;
 
-    return {
-      todayInc,
-      yestInc,
-      deltaInc,
-      todayNet,
-      yestNet,
-      deltaNet,
-      pctRec,
-      todayGross,
-      todayRec,
-    };
+    return { todayInc, yestInc, deltaInc, todayNet, yestNet, deltaNet, pctRec, todayGross, todayRec };
   }, [rows]);
 
   const chartData = useMemo(() => {
@@ -198,9 +182,7 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
     }));
   }, [rows]);
 
-  const subtitle = useMemo(() => {
-    return `Comparativa rápida para detectar cambios de riesgo y coste.`;
-  }, []);
+  const subtitle = useMemo(() => `Comparativa rápida para detectar cambios de riesgo y coste.`, []);
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="lg">
@@ -222,13 +204,8 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
       </DialogTitle>
 
       <DialogContent sx={{ pt: 1.5 }}>
-        {/* CONTROLES (bajados y compactos) */}
-        <Stack
-          direction={{ xs: "column", md: "row" }}
-          spacing={1.25}
-          alignItems={{ xs: "stretch", md: "center" }}
-          sx={{ mb: 1.5 }}
-        >
+        {/* CONTROLES */}
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1.25} alignItems={{ xs: "stretch", md: "center" }} sx={{ mb: 1.5 }}>
           <TextField
             size="small"
             label="Ayer"
@@ -270,14 +247,7 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
               startIcon={<DownloadIcon fontSize="small" />}
               onClick={() => void doExport("CSV")}
               disabled={loading}
-              sx={{
-                px: 1.25,
-                py: 0.65,
-                fontSize: 12,
-                borderRadius: 2,
-                textTransform: "none",
-                whiteSpace: "nowrap",
-              }}
+              sx={{ px: 1.25, py: 0.65, fontSize: 12, borderRadius: 2, textTransform: "none", whiteSpace: "nowrap" }}
             >
               CSV
             </Button>
@@ -288,14 +258,7 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
               startIcon={<DownloadIcon fontSize="small" />}
               onClick={() => void doExport("PDF")}
               disabled={loading}
-              sx={{
-                px: 1.25,
-                py: 0.65,
-                fontSize: 12,
-                borderRadius: 2,
-                textTransform: "none",
-                whiteSpace: "nowrap",
-              }}
+              sx={{ px: 1.25, py: 0.65, fontSize: 12, borderRadius: 2, textTransform: "none", whiteSpace: "nowrap" }}
             >
               PDF
             </Button>
@@ -308,14 +271,9 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
           </Alert>
         )}
 
-        {/* KPIs (más compactos) */}
+        {/* KPIs */}
         <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ mb: 1.5 }}>
-          <Kpi
-            title="Incidencias (hoy)"
-            value={`${kpis.todayInc}`}
-            subtitle={`Ayer: ${kpis.yestInc}  |  Variación: ${kpis.deltaInc}%`}
-            tone="info"
-          />
+          <Kpi title="Incidencias (hoy)" value={`${kpis.todayInc}`} subtitle={`Ayer: ${kpis.yestInc}  |  Variación: ${kpis.deltaInc}%`} tone="info" />
           <Kpi
             title="Pérdida neta (hoy)"
             value={`${money(kpis.todayNet)} EUR`}
@@ -347,12 +305,8 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="tipo" angle={-18} textAnchor="end" interval={0} height={70} />
                 <YAxis allowDecimals={false} />
-                <Tooltip
-                  formatter={(value: any, name: any) => [value, name]}
-                  labelFormatter={(label: any) => `Tipo: ${label}`}
-                />
+                <Tooltip formatter={(value: any, name: any) => [value, name]} labelFormatter={(label: any) => `Tipo: ${label}`} />
                 <Legend />
-                {/* Color profesional: ayer gris, hoy azul */}
                 <Bar dataKey="Ayer" name="Ayer" fill="#94a3b8" radius={[6, 6, 0, 0]} />
                 <Bar dataKey="Hoy" name="Hoy" fill="#2563eb" radius={[6, 6, 0, 0]} />
               </BarChart>
@@ -369,12 +323,7 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
 
         <Table size="small" sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, overflow: "hidden" }}>
           <TableHead>
-            <TableRow
-              sx={{
-                bgcolor: "rgba(15, 23, 42, 0.04)",
-                "& th": { fontWeight: 800, fontSize: 12, color: "text.secondary" },
-              }}
-            >
+            <TableRow sx={{ bgcolor: "rgba(15, 23, 42, 0.04)", "& th": { fontWeight: 800, fontSize: 12, color: "text.secondary" } }}>
               <TableCell>Tipo</TableCell>
               <TableCell align="right">Ayer</TableCell>
               <TableCell align="right">Hoy</TableCell>
@@ -389,13 +338,7 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
               const isDown = r.delta < 0;
 
               return (
-                <TableRow
-                  key={r.incident_type}
-                  hover
-                  sx={{
-                    "& td": { fontSize: 12 },
-                  }}
-                >
+                <TableRow key={r.incident_type} hover sx={{ "& td": { fontSize: 12 } }}>
                   <TableCell>
                     <MuiTooltip title={safeLabel(r.incident_type)} placement="top" arrow>
                       <Typography sx={{ fontSize: 12 }} noWrap>
@@ -452,20 +395,11 @@ const Kpi: React.FC<{
     tone === "success"
       ? { borderColor: "success.light", bgcolor: "success.50" }
       : tone === "danger"
-        ? { borderColor: "error.light", bgcolor: "error.50" }
-        : { borderColor: "info.light", bgcolor: "info.50" };
+      ? { borderColor: "error.light", bgcolor: "error.50" }
+      : { borderColor: "info.light", bgcolor: "info.50" };
 
   return (
-    <Box
-      sx={{
-        flex: 1,
-        borderRadius: 2,
-        border: "1px solid",
-        p: 1.5,
-        minWidth: 220,
-        ...toneStyles,
-      }}
-    >
+    <Box sx={{ flex: 1, borderRadius: 2, border: "1px solid", p: 1.5, minWidth: 220, ...toneStyles }}>
       <Typography variant="caption" color="text.secondary" fontWeight={800} sx={{ fontSize: 11 }}>
         {title}
       </Typography>
@@ -524,7 +458,6 @@ function parseDailyCsv(csv: string): DailyRow[] {
     });
   }
 
-  // ordena por incidencias hoy desc
   out.sort((a, b) => b.incidents_today - a.incidents_today);
   return out;
 }
@@ -558,6 +491,5 @@ function splitCsvLine(line: string) {
   res.push(cur);
   return res.map((s) => s.trim());
 }
-
 
 export default DailyReportDialog;
