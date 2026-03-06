@@ -1,4 +1,4 @@
-// supabase/functions/debacu_eval_stats_operativas_get/index.ts
+// supabase/functions/client_operational_stats/index.ts
 // deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
@@ -8,7 +8,7 @@ import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
 
 const DEFAULT_APP_ID = "DEBACU_EVAL";
 
-// membership ACTIVE (ajusta si tu schema difiere)
+// membership ACTIVE
 const MEMBERSHIP_STATUS_COLUMN = "status";
 const MEMBERSHIP_ACTIVE_VALUE = "ACTIVE";
 
@@ -21,7 +21,7 @@ function dayRangeUTC(isoDate: string) {
   return { startISO: start.toISOString(), endExclusiveISO: endExclusive.toISOString() };
 }
 
-/** Rango inclusivo [from..to] (YYYY-MM-DD) -> startISO UTC y endExclusiveISO UTC */
+/** Rango inclusivo [from..to] */
 function rangeUTC(from: string, to: string) {
   const { startISO } = dayRangeUTC(from);
   const { endExclusiveISO } = dayRangeUTC(to);
@@ -51,6 +51,14 @@ function riskFromMeta(meta: any): RiskBucket {
   return "DESCONOCIDO";
 }
 
+function ratingToRisk(rating: number | null | undefined): RiskBucket {
+  const v = Number(rating);
+  if (!Number.isFinite(v)) return "DESCONOCIDO";
+  if (v <= 2) return "ALTO";
+  if (v === 3) return "MEDIO";
+  return "BAJO";
+}
+
 function hourUTC(iso: string) {
   return new Date(iso).getUTCHours();
 }
@@ -73,8 +81,7 @@ type HourlyPoint = {
 };
 
 type ReqBody = {
-  org_id?: string; // recomendado: UI lo manda
-  // Compat: aceptamos period_from/period_to (nuevo) o from/to (viejo)
+  org_id?: string;
   period_from?: string;
   period_to?: string;
   from?: string;
@@ -87,7 +94,7 @@ function isUuid(v: string) {
 }
 
 /** ======================================================
- * ORG + ENTITLEMENTS (source of truth)
+ * ORG + ENTITLEMENTS
  * ====================================================== */
 async function resolveOrgIdOrThrow(
   admin: SupabaseClient,
@@ -100,7 +107,6 @@ async function resolveOrgIdOrThrow(
     const orgId = String(requestedOrgId).trim();
     if (!isUuid(orgId)) throw new Error("invalid_org_id");
 
-    // preferimos ACTIVE, pero toleramos membership existente
     try {
       const { data, error } = await admin
         .from("debacu_eval_org_members")
@@ -126,7 +132,6 @@ async function resolveOrgIdOrThrow(
     }
   }
 
-  // fallback: primera ACTIVE
   try {
     const { data, error } = await admin
       .from("debacu_eval_org_members")
@@ -141,7 +146,6 @@ async function resolveOrgIdOrThrow(
     if (!data?.org_id) throw new Error("FORBIDDEN");
     return { org_id: String(data.org_id), org_id_resolved_by: "first_active" };
   } catch {
-    // fallback: primera membership sin status
     const { data, error } = await admin
       .from("debacu_eval_org_members")
       .select("org_id, created_at")
@@ -158,7 +162,7 @@ async function resolveOrgIdOrThrow(
 type EntitlementsRow = {
   org_id: string;
   customer_id: string | null;
-  subscription_status: string | null; // ACTIVE | TRIAL_ACTIVE | ...
+  subscription_status: string | null;
   plan_code?: string | null;
 };
 
@@ -203,6 +207,7 @@ export default Deno.serve(async (req: Request) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(periodFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(periodTo)) {
       return json(req, 400, { ok: false, error: "invalid_date_format" });
     }
+
     if (periodFrom > periodTo) {
       return json(req, 400, { ok: false, error: "invalid_period_range" });
     }
@@ -210,14 +215,14 @@ export default Deno.serve(async (req: Request) => {
     const isSingleDay = periodFrom === periodTo;
     const { startISO, endExclusiveISO } = rangeUTC(periodFrom, periodTo);
 
-    // org + entitlements
+    // org + plan
     const { org_id, org_id_resolved_by } = await resolveOrgIdOrThrow(admin, user.id, body?.org_id ?? null);
     const ent = await loadEntitlementsOrThrow(admin, org_id);
     assertPlanEnabledOrThrow(ent);
 
     const customer_id = String(ent.customer_id);
 
-    // 1) Cargar CHECK_SIGNALS del rango
+    // 1) CONSULTAS: audit_log CHECK_SIGNALS
     const { data: auditRows, error: aErr } = await admin
       .from("debacu_eval_audit_log")
       .select("created_at, meta")
@@ -229,18 +234,17 @@ export default Deno.serve(async (req: Request) => {
 
     if (aErr) throw new Error(`failed_load_audit_rows:${aErr.message}`);
 
-    // 2) Cargar registros creados por el hotel en el rango
-    // Mantengo creator_customer_uuid como en tu código (ajusta si cambia el source of truth)
-    const { data: evalRows, error: eErr } = await admin
-      .from("debacu_evaluations")
-      .select("created_at")
-      .eq("creator_customer_uuid", customer_id)
+    // 2) REGISTROS AÑADIDOS: NUEVA TABLA VIVA
+    const { data: evidenceRows, error: evErr } = await admin
+      .from("debacu_eval_org_guest_evidence")
+      .select("created_at, event_date, rating")
+      .eq("org_id", org_id)
       .gte("created_at", startISO)
       .lt("created_at", endExclusiveISO);
 
-    if (eErr) throw new Error(`failed_load_evaluation_rows:${eErr.message}`);
+    if (evErr) throw new Error(`failed_load_evidence_rows:${evErr.message}`);
 
-    // 3) Daily con días completos aunque no haya datos
+    // 3) Daily map con todos los días
     const dailyMap = new Map<string, DailyPoint>();
 
     const fromStart = new Date(dayRangeUTC(periodFrom).startISO);
@@ -248,10 +252,17 @@ export default Deno.serve(async (req: Request) => {
 
     for (let d = new Date(fromStart); d <= toStart; d = addDaysUTC(d, 1)) {
       const key = toISODateUTC(d);
-      dailyMap.set(key, { date: key, count: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0, records: 0 });
+      dailyMap.set(key, {
+        date: key,
+        count: 0,
+        highRisk: 0,
+        mediumRisk: 0,
+        lowRisk: 0,
+        records: 0,
+      });
     }
 
-    // 4) Agregar consultas por día + riesgo
+    // 4) Agregar consultas por día + riesgo desde audit_log
     let totalConsultas = 0;
     let totalHigh = 0;
     let totalMed = 0;
@@ -263,7 +274,14 @@ export default Deno.serve(async (req: Request) => {
 
       const dayKey = createdAt.slice(0, 10);
       const p =
-        dailyMap.get(dayKey) ?? { date: dayKey, count: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0, records: 0 };
+        dailyMap.get(dayKey) ?? {
+          date: dayKey,
+          count: 0,
+          highRisk: 0,
+          mediumRisk: 0,
+          lowRisk: 0,
+          records: 0,
+        };
 
       p.count += 1;
       totalConsultas += 1;
@@ -283,16 +301,23 @@ export default Deno.serve(async (req: Request) => {
       dailyMap.set(dayKey, p);
     }
 
-    // 5) Agregar registros creados por día
+    // 5) Agregar registros creados por día desde org_guest_evidence
     let totalRegistros = 0;
 
-    for (const row of evalRows ?? []) {
+    for (const row of evidenceRows ?? []) {
       const createdAt = String((row as any)?.created_at ?? "");
       if (!createdAt) continue;
 
       const dayKey = createdAt.slice(0, 10);
       const p =
-        dailyMap.get(dayKey) ?? { date: dayKey, count: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0, records: 0 };
+        dailyMap.get(dayKey) ?? {
+          date: dayKey,
+          count: 0,
+          highRisk: 0,
+          mediumRisk: 0,
+          lowRisk: 0,
+          records: 0,
+        };
 
       p.records += 1;
       totalRegistros += 1;
@@ -304,7 +329,7 @@ export default Deno.serve(async (req: Request) => {
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([, v]) => v);
 
-    // 6) HOURLY si es un solo día
+    // 6) HOURLY si un solo día (solo consultas)
     let hourly: HourlyPoint[] | null = null;
 
     if (isSingleDay) {
@@ -334,6 +359,12 @@ export default Deno.serve(async (req: Request) => {
 
     return json(req, 200, {
       ok: true,
+
+      // ✅ en raíz para que el front no quede ambiguo
+      period_from: periodFrom,
+      period_to: periodTo,
+      mode: isSingleDay ? "HOURLY" : "DAILY",
+
       meta: {
         app_id: appId,
         org_id,
@@ -341,10 +372,8 @@ export default Deno.serve(async (req: Request) => {
         customer_id,
         plan_code: (ent as any).plan_code ?? null,
         subscription_status: ent.subscription_status ?? null,
-        period_from: periodFrom,
-        period_to: periodTo,
-        mode: isSingleDay ? "HOURLY" : "DAILY",
       },
+
       totals: {
         consultas: totalConsultas,
         registros: totalRegistros,
@@ -355,6 +384,7 @@ export default Deno.serve(async (req: Request) => {
           risky: totalHigh + totalMed,
         },
       },
+
       daily,
       hourly,
     });
@@ -377,7 +407,7 @@ export default Deno.serve(async (req: Request) => {
       return json(req, 403, { ok: false, error: "FORBIDDEN" });
     }
 
-    console.error("debacu_eval_stats_operativas_get error:", msg);
+    console.error("client_operational_stats error:", msg);
     return json(req, 500, { ok: false, error: "request_failed", detail: "internal_error" });
   }
 });

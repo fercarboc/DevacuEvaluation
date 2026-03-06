@@ -153,8 +153,9 @@ function Modal({
 /** ======================================================
  * Fetch real (Edge)
  * ====================================================== */
-async function fetchOperationalStats(params: { from: string; to: string }): Promise<OperationalStatsResponse> {
+async function fetchOperationalStats(params: { from: string; to: string; orgId: string }): Promise<OperationalStatsResponse> {
   const res = await callEvalFn("client_operational_stats", {
+    org_id: params.orgId,
     period_from: params.from,
     period_to: params.to,
   });
@@ -390,7 +391,14 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
       setError(null);
 
       try {
-        const data = await fetchOperationalStats({ from, to });
+                if (!orgId) {
+          setError("No hay orgId activo.");
+          setResp(null);
+          setLoading(false);
+          return;
+        }
+
+const data = await fetchOperationalStats({ from, to, orgId });
         if (cancelled) return;
         setResp(data);
       } catch (e: any) {
