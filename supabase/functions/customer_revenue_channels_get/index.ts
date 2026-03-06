@@ -50,16 +50,16 @@ type EntitlementsRow = {
   plan_code: string | null; // FREE | BASIC | MEDIUM | PREMIUM | ...
 };
 
-type EvalRow = {
-  platform: string | null;
+type EvidenceRow = {
+  platform_code: string | null;
+  platform_raw: string | null;
+  channel_code: string | null;
   rating: number | null;
   economic_impact_gross: number | string | null;
   economic_recovered: number | string | null;
   economic_net_loss: number | string | null;
-  evaluation_date: string | null;
+  event_date: string | null;
   created_at: string | null;
-  customer_id: string | null;
-  creator_customer_uuid: string | null;
 };
 
 type OrgResolvedBy = "requested" | "first_active" | "first_any";
@@ -104,61 +104,68 @@ function normalizePeriodField(v: unknown): PeriodField {
   return "evaluation_date";
 }
 
-function normPlatform(platform: unknown): string {
-  return String(platform ?? "").trim().toUpperCase();
+function normText(v: unknown): string {
+  return String(v ?? "").trim().toUpperCase();
 }
 
-function platformKeyFromNorm(pn: string): string {
-  if (!pn) return "UNKNOWN";
+function platformKeyFromRow(r: EvidenceRow): string {
+  const pCode = normText(r.platform_code);
+  const pRaw = normText(r.platform_raw);
 
-  // OTA
-  if (pn.includes("BOOKING")) return "BOOKING";
-  if (pn.includes("AIRBNB")) return "AIRBNB";
-  if (pn.includes("EXPEDIA")) return "EXPEDIA";
+  const base = pCode || pRaw;
+  if (!base) return "UNKNOWN";
 
-  // DIRECTO
-  if (pn === "WEB" || pn.includes("WEB ")) return "WEB";
-  if (pn === "DIRECT" || pn === "DIRECTA" || pn.includes("DIRECT")) return "DIRECT";
-  if (pn.includes("RESERVADOR")) return "RESERVADOR";
-  if (pn.includes("MOTOR_PROPIO") || pn.includes("MOTOR PROPIO")) return "MOTOR_PROPIO";
-  if (pn.includes("MIRAI")) return "MIRAI";
+  if (base.includes("BOOKING")) return "BOOKING";
+  if (base.includes("AIRBNB")) return "AIRBNB";
+  if (base.includes("EXPEDIA")) return "EXPEDIA";
 
-  // B2B
-  if (pn.startsWith("AGENCIA") || pn.includes("AGENCIA")) return "AGENCIA";
-  if (pn.includes("VIAJES")) return "VIAJES";
+  if (base === "WEB" || base.includes("WEB ")) return "WEB";
+  if (base === "DIRECT" || base === "DIRECTA" || base.includes("DIRECT")) return "DIRECT";
+  if (base.includes("RESERVADOR")) return "RESERVADOR";
+  if (base.includes("MOTOR_PROPIO") || base.includes("MOTOR PROPIO")) return "MOTOR_PROPIO";
+  if (base.includes("MIRAI")) return "MIRAI";
 
-  return pn.replace(/\s+/g, "_");
+  if (base.startsWith("AGENCIA") || base.includes("AGENCIA")) return "AGENCIA";
+  if (base.includes("VIAJES")) return "VIAJES";
+
+  return base.replace(/\s+/g, "_");
 }
 
-function channelGroupFromPlatformKey(pk: string): ChannelGroup {
-  const k = pk.toUpperCase();
+function channelGroupFromRow(r: EvidenceRow, platformKey: string): ChannelGroup {
+  const cCode = normText(r.channel_code);
+  const pk = platformKey.toUpperCase();
 
-  if (k === "BOOKING" || k === "AIRBNB" || k === "EXPEDIA") return "OTA";
+  if (cCode === "OTA") return "OTA";
+  if (cCode === "DIRECTO" || cCode === "DIRECT") return "DIRECTO";
+  if (cCode === "B2B") return "B2B";
+  if (cCode === "OTROS" || cCode === "OTHER") return "OTROS";
+
+  if (pk === "BOOKING" || pk === "AIRBNB" || pk === "EXPEDIA") return "OTA";
 
   if (
-    k === "WEB" ||
-    k === "DIRECT" ||
-    k === "DIRECTA" ||
-    k === "RESERVADOR" ||
-    k === "MOTOR_PROPIO" ||
-    k === "MIRAI"
+    pk === "WEB" ||
+    pk === "DIRECT" ||
+    pk === "DIRECTA" ||
+    pk === "RESERVADOR" ||
+    pk === "MOTOR_PROPIO" ||
+    pk === "MIRAI"
   ) {
     return "DIRECTO";
   }
 
-  if (k.startsWith("AGENCIA") || k === "VIAJES") return "B2B";
+  if (pk.startsWith("AGENCIA") || pk === "VIAJES") return "B2B";
 
   return "OTROS";
 }
 
-function riskBucketFromRating(rating: number): "HIGH" | "MEDIUM" | "LOW" {
+function riskBucketFromRating(ratingRaw: unknown): "HIGH" | "MEDIUM" | "LOW" {
+  const rating = Math.max(1, Math.min(5, Math.trunc(toNumber(ratingRaw))));
   if (rating <= 2) return "HIGH";
   if (rating === 3) return "MEDIUM";
   return "LOW";
 }
 
 function computeNetLoss(gross: number, recovered: number, netLossRaw: number): number {
-  // si net_loss está vacío o 0, calculamos gross - recovered
   if (!netLossRaw || netLossRaw === 0) {
     const calc = gross - recovered;
     return calc > 0 ? calc : 0;
@@ -176,7 +183,6 @@ async function resolveOrgIdForUserOrThrow(
 ): Promise<{ orgId: string; resolvedBy: OrgResolvedBy }> {
   const uid = String(userId);
 
-  // UI debería mandar org_id; si viene, validamos membership activa (o al menos existente).
   if (requestedOrgId) {
     try {
       const { data, error } = await admin
@@ -203,7 +209,6 @@ async function resolveOrgIdForUserOrThrow(
     }
   }
 
-  // fallback determinista: primera ACTIVE; si no, primera por created_at
   try {
     const { data, error } = await admin
       .from("debacu_eval_org_members")
@@ -245,7 +250,7 @@ async function loadEntitlementsOrThrow(admin: SupabaseClient, orgId: string) {
 /**
  * Gate del módulo Revenue:
  * - Suscripción habilitada: ACTIVE o TRIAL_ACTIVE
- * - Plan permitido: MEDIUM o PREMIUM (ajústalo si quieres abrirlo a BASIC)
+ * - Plan permitido: MEDIUM o PREMIUM
  */
 function assertRevenueAllowedOrThrow(ent: EntitlementsRow) {
   const st = String(ent.subscription_status ?? "").toUpperCase();
@@ -265,54 +270,59 @@ function assertRevenueAllowedOrThrow(ent: EntitlementsRow) {
  * ====================================================== */
 async function fetchAndAggregate(
   admin: SupabaseClient,
-  customerId: string,
+  orgId: string,
   periodField: PeriodField,
   periodFrom: string,
   periodTo: string,
 ) {
   const PAGE_SIZE = 2000;
-  const HARD_LIMIT = 50000; // evita reventar memoria por rangos absurdos
+  const HARD_LIMIT = 50000;
   let offset = 0;
 
   const fromIso = `${periodFrom}T00:00:00.000Z`;
-  // created_at: [from, to+1)
   const toPlus1 = new Date(`${periodTo}T00:00:00.000Z`);
   toPlus1.setUTCDate(toPlus1.getUTCDate() + 1);
   const toIsoExclusive = toPlus1.toISOString();
 
-  const selectCols =
-    "platform,rating,economic_impact_gross,economic_recovered,economic_net_loss,evaluation_date,created_at,customer_id,creator_customer_uuid";
+  const selectCols = [
+    "platform_code",
+    "platform_raw",
+    "channel_code",
+    "rating",
+    "economic_impact_gross",
+    "economic_recovered",
+    "economic_net_loss",
+    "event_date",
+    "created_at",
+  ].join(",");
 
   const acc = new Map<string, RowOut>();
   let totalFetched = 0;
 
   for (;;) {
     let q = admin
-      .from("debacu_evaluations")
+      .from("debacu_eval_org_guest_evidence")
       .select(selectCols)
-      // compat datos sucios: customer_id o creator_customer_uuid
-      .or(`customer_id.eq.${customerId},creator_customer_uuid.eq.${customerId}`)
+      .eq("org_id", orgId)
       .range(offset, offset + PAGE_SIZE - 1);
 
     if (periodField === "evaluation_date") {
-      q = q.gte("evaluation_date", periodFrom).lte("evaluation_date", periodTo);
+      q = q.gte("event_date", periodFrom).lte("event_date", periodTo);
     } else {
       q = q.gte("created_at", fromIso).lt("created_at", toIsoExclusive);
     }
 
     const { data, error } = await q;
-    if (error) throw new Error("request_failed");
+    if (error) throw new Error(`request_failed:${error.message}`);
 
-    const rows = (data ?? []) as EvalRow[];
+    const rows = (data ?? []) as EvidenceRow[];
     totalFetched += rows.length;
 
     for (const r of rows) {
-      const pn = normPlatform(r.platform);
-      const platform_key = platformKeyFromNorm(pn);
-      const channel_group = channelGroupFromPlatformKey(platform_key);
+      const platform_key = platformKeyFromRow(r);
+      const channel_group = channelGroupFromRow(r, platform_key);
 
-      const rating = Math.max(1, Math.min(5, Math.trunc(toNumber(r.rating))));
-      const risk = riskBucketFromRating(rating);
+      const risk = riskBucketFromRating(r.rating);
 
       const gross = toNumber(r.economic_impact_gross);
       const recovered = toNumber(r.economic_recovered);
@@ -339,6 +349,7 @@ async function fetchAndAggregate(
         } as RowOut);
 
       cur.total_records += 1;
+
       if (risk === "HIGH") cur.risk_high += 1;
       else if (risk === "MEDIUM") cur.risk_medium += 1;
       else cur.risk_low += 1;
@@ -382,7 +393,7 @@ async function fetchAndAggregate(
 }
 
 /* ======================================================
- * Errors (STRICT)
+ * Errors
  * ====================================================== */
 function fail(req: Request, status: number, detail: string) {
   return json(req, status, { ok: false, error: "request_failed", detail });
@@ -397,12 +408,11 @@ function mapError(e: unknown): { status: number; detail: string } {
 
   if (msg.startsWith("missing_") || msg.startsWith("invalid_")) return { status: 400, detail: msg };
 
-  // fallback
-  return { status: 500, detail: "request_failed" };
+  return { status: 500, detail: msg.startsWith("request_failed:") ? msg : "request_failed" };
 }
 
 /* ======================================================
- * MAIN (JWT-only, no RPC)
+ * MAIN
  * ====================================================== */
 export default Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return preflight(req);
@@ -411,10 +421,7 @@ export default Deno.serve(async (req: Request) => {
   const admin = supabaseServiceClient();
 
   try {
-    // 1) JWT user
     const user = await requireUser(req);
-
-    // 2) body
     const body = (await req.json().catch(() => ({}))) as InputBody;
 
     const period_from = String(body.period_from ?? body.periodFrom ?? "").trim();
@@ -427,23 +434,18 @@ export default Deno.serve(async (req: Request) => {
     if (!isIsoDate(period_to)) return fail(req, 400, "invalid_period_to");
     if (period_from > period_to) return fail(req, 400, "invalid_period_range");
 
-    // 3) multi-org (STAFF: user_id OR auth_user_id)
     const { orgId: org_id, resolvedBy: org_id_resolved_by } = await resolveOrgIdForUserOrThrow(
       admin,
       user.id,
       body.org_id ? String(body.org_id) : null,
     );
 
-    // 4) entitlements + plan gate (Revenue module)
     const ent = await loadEntitlementsOrThrow(admin, org_id);
     assertRevenueAllowedOrThrow(ent);
 
-    const customer_id = String(ent.customer_id);
-
-    // 5) query + aggregate
     const { rows, total_fetched } = await fetchAndAggregate(
       admin,
-      customer_id,
+      org_id,
       period_field,
       period_from,
       period_to,
@@ -454,11 +456,12 @@ export default Deno.serve(async (req: Request) => {
       meta: {
         org_id,
         org_id_resolved_by,
-        customer_id,
+        customer_id: ent.customer_id ?? null,
         period_from,
         period_to,
         period_field,
         total_fetched,
+        source_table: "debacu_eval_org_guest_evidence",
         plan_code: ent.plan_code ?? null,
         subscription_status: ent.subscription_status ?? null,
       },

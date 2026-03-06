@@ -15,7 +15,6 @@ function mustEnv(name: string) {
 
 const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-// ✅ mismo pepper que import_csv (para identity_key HMAC)
 const GLOBAL_PEPPER = mustEnv("DEBACU_GLOBAL_PEPPER");
 
 function sbService() {
@@ -53,23 +52,33 @@ function err(req: Request, status: number, detail: ErrDetail) {
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
+
 function str(v: unknown) {
   return String(v ?? "").trim();
 }
+
 function upper(v: unknown) {
   const t = str(v);
   return t ? t.toUpperCase() : "";
 }
+
 function num(v: unknown): number | null {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(String(v).replace(",", "."));
   return Number.isFinite(n) ? n : null;
 }
+
 function clampInt(v: unknown, min: number, max: number) {
   const n = Math.trunc(Number(v));
   if (!Number.isFinite(n)) return min;
   return Math.min(max, Math.max(min, n));
 }
+
+function round2(v: number | null) {
+  if (v === null || v === undefined || !Number.isFinite(v)) return null;
+  return Math.round(v * 100) / 100;
+}
+
 function seasonMultiplier(season: string | null, profile: any) {
   const high = num(profile?.season_mult_high) ?? 1;
   const low = num(profile?.season_mult_low) ?? 1;
@@ -78,13 +87,43 @@ function seasonMultiplier(season: string | null, profile: any) {
   return 1;
 }
 
+function normalizePlatformCode(v?: string | null) {
+  const t = upper(v);
+  return t || "UNKNOWN";
+}
+
+function normalizeChannelCode(v?: string | null) {
+  const t = upper(v);
+  return t || "UNKNOWN";
+}
+
+function normalizeNationalityIso2(v?: string | null) {
+  const t = upper(v);
+  if (!t) return null;
+  return t.length === 2 ? t : null;
+}
+
+function deriveSeverity(rating: number | null, netLoss: number | null): "LOW" | "MEDIUM" | "HIGH" {
+  const r = rating ?? 0;
+  const n = netLoss ?? 0;
+
+  if (n >= 500 || r >= 4) return "HIGH";
+  if (n >= 100 || r >= 3) return "MEDIUM";
+  return "LOW";
+}
+
+function deriveRiskBand(incidentsCount: number, totalNetLoss: number): "LOW" | "MEDIUM" | "HIGH" {
+  if (incidentsCount >= 3 || totalNetLoss >= 500) return "HIGH";
+  if (incidentsCount >= 1 || totalNetLoss >= 100) return "MEDIUM";
+  return "LOW";
+}
+
 /* ======================================================
- * Normalizaciones BASE (⚠️ NO usar para insertar *_norm, son GENERATED)
+ * Normalizaciones base
  * ====================================================== */
 function normalizeDocumentBase(v?: string | null) {
   const t = str(v);
   if (!t) return null;
-  // upper(regexp_replace(trim(document), '[\s-]+', '', 'g'))
   const out = t.trim().replace(/[\s-]+/g, "").toUpperCase();
   return out || null;
 }
@@ -104,7 +143,7 @@ function normalizePhoneDigitsBase(v?: string | null) {
 }
 
 /* ======================================================
- * HMAC identity_key (NO es GENERATED en tu DB, así que se inserta)
+ * HMAC identity_key
  * Jerarquía: DOC > EMAIL > PHONE
  * ====================================================== */
 async function generateIdentityKey(identifier: string) {
@@ -152,8 +191,7 @@ async function computeIdentityFromInput(input: any) {
 }
 
 /* ======================================================
- * AuthZ tenant (STRICT: org_id requerido)
- * - membership lookup soporta user_id OR auth_user_id
+ * AuthZ tenant
  * ====================================================== */
 async function requireOrgContext(
   admin: ReturnType<typeof sbService>,
@@ -172,7 +210,6 @@ async function requireOrgContext(
 
   if (memErr || !mem?.org_id) return null;
 
-  // primero intentamos entitlements view
   let customer_id: string | null = null;
 
   const { data: ent, error: entErr } = await admin
@@ -183,7 +220,6 @@ async function requireOrgContext(
 
   if (!entErr && ent?.customer_id) customer_id = String(ent.customer_id);
 
-  // fallback: organizations.customer_id
   if (!customer_id) {
     const { data: org, error: orgErr } = await admin
       .from("debacu_eval_organizations")
@@ -199,12 +235,9 @@ async function requireOrgContext(
 }
 
 /* ======================================================
- * property_id resolver (✅ FIX 500)
- * - 1) debacu_eval_organizations.property_id
- * - 2) fallback debacu_eval_properties (si existe) por org_id
+ * property_id resolver
  * ====================================================== */
 async function getDefaultPropertyId(admin: ReturnType<typeof sbService>, org_id: string) {
-  // 1) organizations.property_id
   try {
     const { data, error } = await admin
       .from("debacu_eval_organizations")
@@ -215,10 +248,9 @@ async function getDefaultPropertyId(admin: ReturnType<typeof sbService>, org_id:
     if (error) throw error;
     if (data?.property_id) return String(data.property_id);
   } catch (_e) {
-    // si la columna no existe o falla, seguimos al fallback
+    // fallback
   }
 
-  // 2) fallback: debacu_eval_properties (si existe)
   try {
     const { data, error } = await admin
       .from("debacu_eval_properties")
@@ -231,7 +263,7 @@ async function getDefaultPropertyId(admin: ReturnType<typeof sbService>, org_id:
     if (error) throw error;
     if (data?.id) return String(data.id);
   } catch (_e) {
-    // si la tabla no existe, no rompemos aquí
+    // no rompemos
   }
 
   return null;
@@ -318,6 +350,165 @@ async function getHotelItemUnitPrice(
 }
 
 /* ======================================================
+ * New model writers
+ * ====================================================== */
+async function insertOrgGuestEvidence(
+  admin: ReturnType<typeof sbService>,
+  args: {
+    org_id: string;
+    identity_key: string;
+    source_id: string;
+    evaluation_date: string;
+    nationality?: string | null;
+    platform?: string | null;
+    rating: number;
+    incident_type?: string | null;
+    evidence_flag?: boolean | null;
+    economic_impact_gross?: number | null;
+    economic_recovered?: number | null;
+    economic_net_loss?: number | null;
+  },
+) {
+  // Evitar duplicado manualmente porque NO tienes unique(source_table, source_id)
+  const { data: existing, error: existingErr } = await admin
+    .from("debacu_eval_org_guest_evidence")
+    .select("id")
+    .eq("source_table", "debacu_evaluations")
+    .eq("source_id", args.source_id)
+    .maybeSingle();
+
+  if (existingErr) throw existingErr;
+  if (existing?.id) return;
+
+  const nationality_raw = upper(args.nationality) || null;
+  const nationality_iso2 = normalizeNationalityIso2(args.nationality);
+
+  const platform_raw = str(args.platform) || null;
+  const platform_code = normalizePlatformCode(args.platform);
+  const channel_code = normalizeChannelCode(args.platform);
+
+  const severity = deriveSeverity(args.rating, args.economic_net_loss ?? null);
+
+  const evidencePayload: Record<string, unknown> = {
+    org_id: args.org_id,
+    identity_key: args.identity_key,
+    event_date: args.evaluation_date,
+    nationality_iso2,
+    nationality_raw,
+    platform_code,
+    channel_code,
+    platform_raw,
+    rating: args.rating,
+    incident_type: args.incident_type ?? null,
+    evidence_flag: args.evidence_flag ?? false,
+    severity,
+    economic_impact_gross: round2(args.economic_impact_gross ?? null),
+    economic_recovered: round2(args.economic_recovered ?? null),
+    economic_net_loss: round2(args.economic_net_loss ?? null),
+    source_table: "debacu_evaluations",
+    source_id: args.source_id,
+  };
+
+  const { error } = await admin
+    .from("debacu_eval_org_guest_evidence")
+    .insert(evidencePayload);
+
+  if (error) throw error;
+}
+
+async function syncOrgGuestIndex(
+  admin: ReturnType<typeof sbService>,
+  args: {
+    org_id: string;
+    identity_key: string;
+    document_norm?: string | null;
+    email_norm?: string | null;
+    phone_digits?: string | null;
+    evaluation_date: string;
+  },
+) {
+  const { data: evidenceRows, error: evidenceErr } = await admin
+    .from("debacu_eval_org_guest_evidence")
+    .select("event_date, economic_net_loss")
+    .eq("org_id", args.org_id)
+    .eq("identity_key", args.identity_key);
+
+  if (evidenceErr) throw evidenceErr;
+
+  const incidents_count = Array.isArray(evidenceRows) ? evidenceRows.length : 0;
+
+  const total_net_loss =
+    round2(
+      (evidenceRows ?? []).reduce((acc: number, row: any) => {
+        return acc + (Number(row?.economic_net_loss ?? 0) || 0);
+      }, 0),
+    ) ?? 0;
+
+  let last_incident_date = args.evaluation_date;
+  for (const row of evidenceRows ?? []) {
+    const d = str(row?.event_date);
+    if (d && d > last_incident_date) last_incident_date = d;
+  }
+
+  const risk_band = deriveRiskBand(incidents_count, total_net_loss);
+
+  const { data: existing, error: existingErr } = await admin
+    .from("debacu_eval_org_guest_index")
+    .select(
+      "id, org_id, identity_key, stays_count, first_seen_date, last_seen_date, doc_key, email_key, phone_key",
+    )
+    .eq("org_id", args.org_id)
+    .eq("identity_key", args.identity_key)
+    .maybeSingle();
+
+  if (existingErr) throw existingErr;
+
+  if (existing?.id) {
+    const updatePayload: Record<string, unknown> = {
+      incidents_count,
+      total_net_loss,
+      last_incident_date,
+      risk_band,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (!existing.doc_key && args.document_norm) updatePayload.doc_key = args.document_norm;
+    if (!existing.email_key && args.email_norm) updatePayload.email_key = args.email_norm;
+    if (!existing.phone_key && args.phone_digits) updatePayload.phone_key = args.phone_digits;
+
+    const { error: updErr } = await admin
+      .from("debacu_eval_org_guest_index")
+      .update(updatePayload)
+      .eq("id", existing.id);
+
+    if (updErr) throw updErr;
+    return;
+  }
+
+  const insertPayload: Record<string, unknown> = {
+    org_id: args.org_id,
+    identity_key: args.identity_key,
+    doc_key: args.document_norm ?? null,
+    email_key: args.email_norm ?? null,
+    phone_key: args.phone_digits ?? null,
+    stays_count: 0,
+    incidents_count,
+    total_net_loss,
+    first_seen_date: args.evaluation_date,
+    last_seen_date: args.evaluation_date,
+    last_incident_date,
+    risk_band,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error: insErr } = await admin
+    .from("debacu_eval_org_guest_index")
+    .insert(insertPayload);
+
+  if (insErr) throw insErr;
+}
+
+/* ======================================================
  * MAIN
  * ====================================================== */
 Deno.serve(async (req) => {
@@ -359,26 +550,26 @@ Deno.serve(async (req) => {
     const profile = await getHotelProfile(admin, ctx.customer_id);
     const hotelCategoryOk = profile?.hotel_category !== null && profile?.hotel_category !== undefined;
     const profileCompletedOk = profile?.profile_completed === true;
+
     if (!profile || !hotelCategoryOk || !profileCompletedOk) {
       return err(req, 409, "ONBOARDING_REQUIRED");
     }
 
-    // ✅ FIX: property_id obligatorio en debacu_evaluations (según tu captura)
     const property_id = await getDefaultPropertyId(admin, ctx.org_id);
     if (!property_id) {
       logLine({ fn: FN, stage: "property_missing", org_id: ctx.org_id });
       return err(req, 409, "ONBOARDING_REQUIRED");
     }
 
-    // mínimos
+    // Campos mínimos
     const document_raw = str(input.document);
     const full_name = upper(input.full_name ?? input.fullName);
     const rating = clampInt(input.rating, 1, 5);
 
-    if (!document_raw || !full_name) return err(req, 400, "missing_required_fields");
+    if (!document_raw || !full_name) {
+      return err(req, 400, "missing_required_fields");
+    }
 
-    // ✅ identidad HMAC (requisito: DOC/EMAIL/PHONE)
-    // OJO: document_norm/email_norm/phone_digits SON GENERATED en DB -> NO insertarlos
     const ident = await computeIdentityFromInput(input);
     if (!ident.identity_key) return err(req, 400, "NO_IDENTIFIER");
 
@@ -392,7 +583,6 @@ Deno.serve(async (req) => {
     const adr_reference = await getAdrReference(admin, hotel_category);
     const adr_real_snapshot = num(profile.adr_real);
 
-    // economía
     let economic_impact_gross: number | null = null;
     let economic_recovered: number | null = null;
     let economic_net_loss: number | null = null;
@@ -419,7 +609,10 @@ Deno.serve(async (req) => {
         gross_items += unit * qty;
       }
 
-      const gross_min = num(ovr?.default_gross_min_override) ?? num(cat.default_gross_min) ?? 0;
+      const gross_min =
+        num(ovr?.default_gross_min_override) ??
+        num(cat.default_gross_min) ??
+        0;
 
       economic_impact_gross =
         gross_items > 0
@@ -427,10 +620,15 @@ Deno.serve(async (req) => {
           : Math.round(gross_min * mult * 100) / 100;
 
       const recovered_input = num(input.economic_recovered ?? input.economicRecovered);
+
       if (recovered_input !== null) {
         economic_recovered = Math.round(Math.max(0, recovered_input) * 100) / 100;
       } else {
-        const pct = num(ovr?.default_recovery_pct_override) ?? num(cat.default_recovery_pct) ?? 0;
+        const pct =
+          num(ovr?.default_recovery_pct_override) ??
+          num(cat.default_recovery_pct) ??
+          0;
+
         economic_recovered = Math.round((economic_impact_gross * pct / 100) * 100) / 100;
       }
 
@@ -438,56 +636,58 @@ Deno.serve(async (req) => {
       if (economic_net_loss < 0) economic_net_loss = 0;
     }
 
-    // creator_* (audit)
-    const creator_customer_uuid = user.id; // auth.users.id
-    const creator_customer_id = str(input.creator_customer_id ?? input.creatorCustomerId) || ctx.customer_id;
-    const creator_customer_name = str(input.creator_customer_name ?? input.creatorCustomerName) || null;
+    const creator_customer_uuid = user.id;
+    const creator_customer_id =
+      str(input.creator_customer_id ?? input.creatorCustomerId) || ctx.customer_id;
+    const creator_customer_name =
+      str(input.creator_customer_name ?? input.creatorCustomerName) || null;
 
-    // BASE FIELDS (no *_norm)
     const email = normalizeEmailBase(input.email) ?? null;
     const phone = str(input.phone) || null;
+    const evaluation_date = str(input.evaluation_date ?? input.evaluationDate) || todayISO();
+    const nationality = upper(input.nationality) || null;
+    const platform = str(input.platform) || APP_ID;
+    const evidence_flag =
+      input.evidence_flag ??
+      input.evidenceFlag ??
+      input.has_evidence ??
+      input.hasEvidence ??
+      false;
 
-    // INSERT payload compatible con GENERATED columns
+    // =====================================================
+    // INSERT MODELO ANTIGUO
+    // =====================================================
     const payload: Record<string, unknown> = {
-      // base identifiers
       document: document_raw.toUpperCase(),
       email,
       phone,
 
-      // HMAC identity
       identity_key: ident.identity_key,
 
-      // person
       full_name,
-      nationality: upper(input.nationality) || null,
+      nationality,
 
-      // evaluation
       rating,
       comment: str(input.comment).slice(0, 240) || null,
-      platform: str(input.platform) || APP_ID,
-      evaluation_date: str(input.evaluation_date ?? input.evaluationDate) || todayISO(),
+      platform,
+      evaluation_date,
 
-      // tenant ownership
       customer_id: ctx.customer_id,
-      org_id: ctx.org_id,       // ✅ añade org_id (aunque sea nullable)
-      property_id,              // ✅ CRÍTICO (NO NULL en tu tabla)
+      org_id: ctx.org_id,
+      property_id,
 
-      // creator (audit)
       creator_customer_uuid,
       creator_customer_id,
       creator_customer_name,
 
-      // snapshots
       hotel_category,
       adr_reference,
       adr_real_snapshot,
       season_applied,
 
-      // incident
       incident_type,
       impact_items: incident_type ? (impact_items.length ? impact_items : null) : null,
 
-      // economy
       economic_impact_gross,
       economic_recovered,
       economic_net_loss,
@@ -508,7 +708,7 @@ Deno.serve(async (req) => {
     if (error) {
       logLine({
         fn: FN,
-        stage: "insert_err",
+        stage: "insert_old_err",
         code: (error as any)?.code ?? null,
         msg: error.message ?? null,
         details: (error as any)?.details ?? null,
@@ -516,6 +716,64 @@ Deno.serve(async (req) => {
         payload_keys: Object.keys(payload),
       });
       return err(req, 500, "insert_failed");
+    }
+
+    // =====================================================
+    // SYNC MODELO NUEVO
+    // =====================================================
+    try {
+      await insertOrgGuestEvidence(admin, {
+        org_id: ctx.org_id,
+        identity_key: ident.identity_key,
+        source_id: String(data.id),
+        evaluation_date,
+        nationality,
+        platform,
+        rating,
+        incident_type,
+        evidence_flag: Boolean(evidence_flag),
+        economic_impact_gross,
+        economic_recovered,
+        economic_net_loss,
+      });
+
+      await syncOrgGuestIndex(admin, {
+        org_id: ctx.org_id,
+        identity_key: ident.identity_key,
+        document_norm: ident.document_norm,
+        email_norm: ident.email_norm,
+        phone_digits: ident.phone_digits,
+        evaluation_date,
+      });
+    } catch (syncErr: any) {
+      logLine({
+        fn: FN,
+        stage: "new_model_sync_err",
+        evaluation_id: data?.id ?? null,
+        org_id: ctx.org_id,
+        identity_key: ident.identity_key,
+        message: syncErr?.message ?? String(syncErr ?? ""),
+        details: syncErr?.details ?? null,
+        hint: syncErr?.hint ?? null,
+        code: syncErr?.code ?? null,
+      });
+
+      return json(req, 500, {
+        ok: false,
+        error: "request_failed",
+        detail: "insert_failed",
+        partial: {
+          old_table_written: true,
+          new_tables_written: false,
+          evaluation_id: data?.id ?? null,
+        },
+        sync_error: {
+          message: syncErr?.message ?? String(syncErr ?? ""),
+          details: syncErr?.details ?? null,
+          hint: syncErr?.hint ?? null,
+          code: syncErr?.code ?? null,
+        },
+      });
     }
 
     logLine({
@@ -526,11 +784,24 @@ Deno.serve(async (req) => {
       customer_id: ctx.customer_id,
       property_id,
       evaluation_id: data?.id ?? null,
+      identity_key: ident.identity_key,
     });
 
-    return json(req, 200, { ok: true, row: data });
-  } catch (e) {
+    return json(req, 200, {
+      ok: true,
+      row: data,
+      sync: {
+        old_table_written: true,
+        new_tables_written: true,
+      },
+    });
+  } catch (e: any) {
     console.error("debacu-eval-add error:", e);
-    return err(req, 500, "request_failed");
+    return json(req, 500, {
+      ok: false,
+      error: "request_failed",
+      detail: "request_failed",
+      message: e?.message ?? String(e ?? ""),
+    });
   }
 });
