@@ -71,13 +71,44 @@ function normalizePlanCode(v: any): PlanCode {
   return "FREE";
 }
 
-// ✅ Normaliza YYYY-MM-DD (o ISO) a algo legible
 function formatEffectiveDate(value?: string | null) {
   if (!value) return "-";
-  // soporta "2026-04-02" o ISO
   const d = value.length === 10 ? new Date(`${value}T00:00:00`) : new Date(value);
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleDateString("es-ES");
+}
+
+function toSafeNumber(v: any): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function getInvoiceAmount(row: any): number {
+  const total = toSafeNumber(row?.total);
+  if (total !== null && total > 0) return total;
+
+  const amountPaid = toSafeNumber(row?.amount_paid);
+  if (amountPaid !== null && amountPaid > 0) return amountPaid;
+
+  const amountDue = toSafeNumber(row?.amount_due);
+  if (amountDue !== null && amountDue > 0) return amountDue;
+
+  const subtotal = toSafeNumber(row?.subtotal);
+  if (subtotal !== null && subtotal > 0) return subtotal;
+
+  const legacyAmount = toSafeNumber(row?.amount);
+  if (legacyAmount !== null && legacyAmount > 0) return legacyAmount;
+
+  const legacyAmountTotal = toSafeNumber(row?.amount_total);
+  if (legacyAmountTotal !== null && legacyAmountTotal > 0) {
+    return legacyAmountTotal > 999 ? legacyAmountTotal / 100 : legacyAmountTotal;
+  }
+
+  return 0;
 }
 
 export const PlanesTab: React.FC<TabProps> = ({ user }) => {
@@ -90,30 +121,23 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
   const [isChangingPlan, setIsChangingPlan] = useState(false);
   const [selectedPlanCode, setSelectedPlanCode] = useState<PlanCode | null>(null);
 
-  // ✅ Fuente 1: estado “subscription_state” (puede ir desfasado tras cambios)
   const { state: subscriptionState, refresh } = use_subscription_state();
   const activeSub = subscriptionState?.subscription ?? null;
   const activePlanRow = subscriptionState?.plan ?? null;
 
-  // ✅ Fuente 2: bundle del backend (source of truth para “Mi cuenta”)
-  //    Esto corrige el bug: backend devuelve MEDIUM pero la UI se quedaba en FREE por usar subscriptionState.
   const [bundleSubscription, setBundleSubscription] = useState<any | null>(null);
   const [bundlePlan, setBundlePlan] = useState<any | null>(null);
   const [bundleMeta, setBundleMeta] = useState<any | null>(null);
-
-  // ✅ NUEVO: downgrade info del bundle (lo devuelve el backend / handleGet mejorado)
   const [bundleDowngrade, setBundleDowngrade] = useState<any | null>(null);
 
-  // ✅ “Effective” = preferimos bundle si existe
   const effectiveSub = bundleSubscription ?? activeSub ?? null;
   const effectivePlanRow = bundlePlan ?? activePlanRow ?? null;
 
   const currentPlanCode: PlanCode = useMemo(() => {
-    // 1) preferimos plan.code del bundle
-    const fromBundle = normalizePlanCode((bundlePlan as any)?.code);
-    if (fromBundle !== "FREE" || String((bundlePlan as any)?.code ?? "").trim()) return fromBundle;
+    const rawBundleCode = String((bundlePlan as any)?.code ?? "").trim();
+    const fromBundle = normalizePlanCode(rawBundleCode);
+    if (rawBundleCode) return fromBundle;
 
-    // 2) fallback a subscription_state
     const code = String(subscriptionState?.plan_code ?? "").toUpperCase();
     if (code === "BASIC" || code === "MEDIUM" || code === "PREMIUM") return code;
     return "FREE";
@@ -125,28 +149,30 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
     const fromDb = (effectivePlanRow as any)?.price_monthly;
     if (typeof fromDb === "number") return fromDb;
 
-    // algunos bundles podrían venir con priceMonthly camelCase
     const camel = (effectivePlanRow as any)?.priceMonthly;
     if (typeof camel === "number") return camel;
 
     return PLAN_METADATA[currentPlanCode]?.defaultPrice ?? 0;
   }, [effectivePlanRow, currentPlanCode]);
 
-  const isFreePlan = currentPlanCode === "FREE" || (effectiveSub as any)?.billing_frequency === "FREE_TRIAL" || monthlyFee === 0;
+  const isFreePlan =
+    currentPlanCode === "FREE" ||
+    (effectiveSub as any)?.billing_frequency === "FREE_TRIAL" ||
+    monthlyFee === 0;
 
   const planDisplayName =
-    (effectivePlanRow as any)?.name ?? PLAN_METADATA[currentPlanCode]?.name ?? subscriptionState?.plan_display_name ?? "Plan";
+    (effectivePlanRow as any)?.name ??
+    PLAN_METADATA[currentPlanCode]?.name ??
+    subscriptionState?.plan_display_name ??
+    "Plan";
 
   const maxQueries = useMemo(() => {
-    // 1) preferimos plan.max_queries_per_month del bundle
     const v1 = (bundlePlan as any)?.max_queries_per_month;
     if (typeof v1 === "number") return v1;
 
-    // 2) fallback a subscription_state
     const v2 = subscriptionState?.limits_max_queries_per_month;
     if (typeof v2 === "number") return v2;
 
-    // 3) metadata
     const v3 = PLAN_METADATA[currentPlanCode]?.maxQueries;
     return typeof v3 === "number" ? v3 : null;
   }, [bundlePlan, subscriptionState?.limits_max_queries_per_month, currentPlanCode]);
@@ -159,7 +185,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
 
   const hasPendingChange = (effectiveSub?.status ?? subscriptionState?.status) === "PENDING_PAYMENT";
 
-  // ✅ DOWNGRADE: usar downgrade del bundle si existe (source of truth)
   const scheduledDowngrade = bundleDowngrade ?? null;
   const requiredPlan = String(
     scheduledDowngrade?.target_plan_code ??
@@ -169,7 +194,10 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
   ).trim();
 
   const downgradeScheduleId = String(
-    scheduledDowngrade?.schedule_id ?? (effectiveSub as any)?.stripe_schedule_id ?? (effectiveSub as any)?.stripeScheduleId ?? ""
+    scheduledDowngrade?.schedule_id ??
+      (effectiveSub as any)?.stripe_schedule_id ??
+      (effectiveSub as any)?.stripeScheduleId ??
+      ""
   ).trim();
 
   const downgradeEffectiveDate =
@@ -179,13 +207,10 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
     null;
 
   const hasScheduledDowngrade = Boolean(
-    (scheduledDowngrade?.scheduled === true) ||
-      downgradeScheduleId ||
-      requiredPlan
+    scheduledDowngrade?.scheduled === true || downgradeScheduleId || requiredPlan
   );
 
   useEffect(() => {
-    // ✅ si vuelves de Stripe con org_id, guárdalo para evitar “no puedo cargar dashboard”
     const u = new URL(window.location.href);
     const orgId = u.searchParams.get("org_id");
     if (orgId) setEvalOrgId(orgId);
@@ -204,39 +229,38 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         const bundle = await getAccountBundle(idToTry);
         if (cancelled) return;
 
-        // ✅ Persistimos meta / plan / subscription del bundle para pintar “Mi plan” correctamente
         setBundleMeta(bundle?.meta ?? null);
         setBundlePlan(bundle?.plan ?? null);
         setBundleSubscription(bundle?.subscription ?? null);
-
-        // ✅ NUEVO: guardamos downgrade si viene
-        // Esperado: bundle.downgrade = { scheduled, target_plan_code, effective_date, schedule_id, ... }
         setBundleDowngrade((bundle as any)?.downgrade ?? null);
 
-        // ✅ Si el backend nos devuelve org_id, lo guardamos para que acciones (cambio de plan) funcionen siempre
         const orgFromBundle = String(bundle?.meta?.org_id ?? "").trim();
         if (orgFromBundle) setEvalOrgId(orgFromBundle);
 
         const invoiceRows = (bundle?.invoices ?? []) as any[];
+
         setInvoices(
           invoiceRows.map((row) => {
-            const statusPaid = String(row.status ?? "").toLowerCase() === "paid";
-            const invUrl = row.hosted_invoice_url ?? row.invoice_pdf ?? row.url ?? null;
-            const invNumber = row.invoice_number ?? row.number ?? null;
+            const statusRaw = String(row?.status ?? "").toLowerCase();
+            const statusPaid = statusRaw === "paid";
+            const invUrl = row?.invoice_pdf ?? row?.hosted_invoice_url ?? row?.url ?? null;
+            const invNumber = row?.invoice_number ?? row?.number ?? null;
 
             const desc =
-              row.plan_name
+              row?.description
+                ? String(row.description)
+                : row?.plan_name
                 ? String(row.plan_name)
-                : row.plan_code
+                : row?.plan_code
                 ? `Plan Debacu ${String(row.plan_code)}`
                 : `Plan Debacu ${planDisplayName}`;
 
             return {
-              id: String(row.stripe_invoice_id ?? row.id ?? ""),
-              date: row.invoice_created_at ?? row.date ?? null,
-              amount: typeof row.amount === "number" ? row.amount : Number(row.amount_total ?? 0) / 100,
+              id: String(row?.stripe_invoice_id ?? row?.id ?? ""),
+              date: row?.invoice_created_at ?? row?.created_at ?? row?.date ?? null,
+              amount: getInvoiceAmount(row),
               description: desc,
-              status: statusPaid ? "Paid" : "Pending",
+              status: statusPaid ? "Paid" : statusRaw ? statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1) : "Pending",
               url: invUrl,
               number: invNumber,
             } as Invoice;
@@ -280,7 +304,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user.id, refresh, planDisplayName]);
 
   const handlePlanChange = async (target: PaidPlanCode) => {
@@ -294,7 +317,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
       const org_id_current = getEvalOrgId();
 
       if (!org_id_current) {
-        // ✅ fallback defensivo: intentar org_id del bundle si existe
         const orgFromBundle = String(bundleMeta?.org_id ?? "").trim();
         if (orgFromBundle) setEvalOrgId(orgFromBundle);
       }
@@ -316,15 +338,12 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
 
       if (!isUpgrade && !isDowngrade) return;
 
-      // ✅ Si ya hay bajada programada, no dejes programar otra (evita estados raros)
-      // (si quieres permitir “cambiar la bajada”, primero CANCEL_DOWNGRADE y luego SCHEDULE_DOWNGRADE)
       if (hasScheduledDowngrade && isDowngrade) {
         setPlanError("Ya tienes una bajada de plan programada. Cancélala antes de programar otra.");
         await refresh();
         return;
       }
 
-      // ✅ Downgrade: se programa para el siguiente ciclo
       if (isDowngrade && !isFreePlan) {
         const resp = await changeSubscriptionPlan({
           org_id: finalOrgId,
@@ -335,9 +354,7 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         });
 
         if ((resp as any)?.ok) {
-          // refrescamos estado y también bundle
           await refresh();
-          // recargar bundle para pintar downgrade inmediatamente
           const idToTry = (user as any)?.customerId ?? (user as any)?.customer_id ?? user.id;
           const bundle = await getAccountBundle(idToTry);
           setBundleMeta(bundle?.meta ?? null);
@@ -351,7 +368,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
         return;
       }
 
-      // ✅ Upgrade (y también FREE->pago): CHANGE => crea checkout
       const resp = await changeSubscriptionPlan({
         org_id: finalOrgId,
         action: "CHANGE",
@@ -390,7 +406,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
     try {
       const org_id_current = getEvalOrgId();
       if (!org_id_current) {
-        // ✅ fallback defensivo: intentar org_id del bundle si existe
         const orgFromBundle = String(bundleMeta?.org_id ?? "").trim();
         if (orgFromBundle) setEvalOrgId(orgFromBundle);
       }
@@ -409,7 +424,6 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
 
       await refresh();
 
-      // recargar bundle para quitar downgrade inmediatamente
       const idToTry = (user as any)?.customerId ?? (user as any)?.customer_id ?? user.id;
       const bundle = await getAccountBundle(idToTry);
       setBundleMeta(bundle?.meta ?? null);
@@ -566,17 +580,9 @@ export const PlanesTab: React.FC<TabProps> = ({ user }) => {
                 const optionRank = PLAN_RANK[option.code] ?? 0;
                 const canChange = optionRank !== currentRank;
 
-                // ✅ Si hay bajada programada, deshabilita SOLO el botón del plan target (opcional),
-                // y deshabilita cualquier otra bajada para no crear estados raros.
                 const isDowngradeOption = optionRank < currentRank;
                 const isThisTheScheduledTarget = hasScheduledDowngrade && requiredPlan && option.code === requiredPlan;
 
-                // Política:
-                // - Si hay PENDING_PAYMENT => bloquea todo
-                // - Si es plan actual => bloquea
-                // - Si hay downgrade programado:
-                //    - bloquea todas las opciones de BAJAR (para no programar otra sin cancelar)
-                //    - permite SUBIR (upgrade) si quieres (Stripe lo soporta y tu backend hace CHECKOUT)
                 const buttonDisabled =
                   isChangingPlan ||
                   hasPendingChange ||
