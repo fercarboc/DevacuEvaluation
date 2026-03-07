@@ -1,0 +1,301 @@
+# Análisis Técnico y Diseño de Base de Datos: Debacu Revenue Intelligence
+## Consolidación de Arquitectura Híbrida y Multi-tenant
+
+Este documento consolida el diseño de la base de datos para **Debacu Revenue Intelligence**, integrando el modelo multi-tenant, el sistema de importaciones robusto y la estrategia de consolidación híbrida (Reservas + Producción Diaria).
+
+---
+
+## 1. Arquitectura Multi-tenant y Planes
+
+Para un control estricto de límites y monetización, se separa el catálogo de planes de la asignación a organizaciones.
+
+### 1.1. DDL: Planes y Entitlements
+```sql
+CREATE TYPE plan_code AS ENUM ('FREE', 'BASIC', 'MEDIUM', 'PREMIUM', 'ENTERPRISE');
+CREATE TYPE user_role AS ENUM ('OWNER', 'ADMIN', 'STAFF');
+
+CREATE TABLE plan_catalog (
+    code plan_code PRIMARY KEY,
+    name TEXT NOT NULL,
+    properties_limit INTEGER NOT NULL,
+    seats_total INTEGER NOT NULL,
+    features JSONB DEFAULT '{}'
+);
+
+INSERT INTO plan_catalog VALUES 
+('FREE', 'Plan Gratuito', 1, 1, '{"reports": false}'),
+('BASIC', 'Plan Básico', 3, 2, '{"reports": true}'),
+('PREMIUM', 'Plan Premium', 10, 5, '{"reports": true, "api": true}');
+
+CREATE TABLE organizations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name TEXT NOT NULL,
+    plan_code plan_code DEFAULT 'FREE' REFERENCES plan_catalog(code),
+    status TEXT DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'SUSPENDED', 'TRIAL')),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE org_members (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    role user_role DEFAULT 'STAFF',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(org_id, user_id)
+);
+```
+
+---
+
+## 2. Modelo de Datos Core (Modo Híbrido)
+
+### 2.1. Propiedades
+```sql
+CREATE TABLE properties (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    rooms_total INTEGER NOT NULL CHECK (rooms_total > 0),
+    city TEXT,
+    currency CHAR(3) DEFAULT 'EUR',
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+### 2.2. Enums y Tipos de Datos
+```sql
+CREATE TYPE channel_type AS ENUM ('DIRECT_WEB', 'DIRECT_PHONE', 'WALK_IN', 'BOOKING', 'EXPEDIA', 'AIRBNB', 'AGENCY', 'OTHER');
+CREATE TYPE segment_type AS ENUM ('LEISURE', 'BUSINESS', 'CORPORATE', 'GROUPS', 'LONG_STAY', 'OTHER');
+CREATE TYPE reservation_status AS ENUM ('CONFIRMED', 'CANCELLED', 'NO_SHOW', 'CHECKED_IN', 'CHECKED_OUT');
+CREATE TYPE event_type AS ENUM ('FAIR', 'HOLIDAY', 'HIGH_SEASON', 'LOW_SEASON', 'BRIDGE', 'OTHER');
+CREATE TYPE event_impact AS ENUM ('LOW', 'MEDIUM', 'HIGH');
+```
+
+### 2.3. Reservas (Granular)
+```sql
+CREATE TABLE reservations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID NOT NULL REFERENCES organizations(id),
+    property_id UUID NOT NULL REFERENCES properties(id),
+    external_reservation_id TEXT, 
+    booking_date DATE NOT NULL,
+    arrival_date DATE NOT NULL,
+    departure_date DATE NOT NULL,
+    nights INTEGER GENERATED ALWAYS AS (departure_date - arrival_date) STORED,
+    rooms INTEGER NOT NULL DEFAULT 1 CHECK (rooms > 0),
+    revenue_gross NUMERIC(12, 2) NOT NULL,
+    channel channel_type NOT NULL,
+    segment segment_type NOT NULL,
+    status reservation_status DEFAULT 'CONFIRMED',
+    commission_pct NUMERIC(5, 2) DEFAULT 0 CHECK (commission_pct >= 0 AND commission_pct <= 100),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT valid_stay_dates CHECK (departure_date > arrival_date)
+);
+
+-- Índice UNIQUE parcial para evitar duplicados de PMS
+CREATE UNIQUE INDEX idx_res_external_id_unique 
+ON reservations (org_id, property_id, external_reservation_id) 
+WHERE external_reservation_id IS NOT NULL;
+```
+
+### 2.4. Producción Diaria (Agregado/Fallback)
+```sql
+CREATE TABLE daily_production (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID NOT NULL REFERENCES organizations(id),
+    property_id UUID NOT NULL REFERENCES properties(id),
+    the_date DATE NOT NULL,
+    rooms_total INTEGER NOT NULL CHECK (rooms_total >= 0),
+    rooms_sold INTEGER NOT NULL CHECK (rooms_sold >= 0),
+    revenue_gross NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    pvp NUMERIC(12, 2),
+    channel channel_type,
+    segment segment_type,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(property_id, the_date, channel, segment)
+);
+```
+
+---
+
+## 3. Estrategia de Consolidación Híbrida
+
+### 3.1. Vista: Agregación de Reservas a Diario
+```sql
+CREATE VIEW revenue_daily_from_reservations_v AS
+SELECT 
+    org_id,
+    property_id,
+    arrival_date AS the_date,
+    SUM(rooms) AS rooms_sold,
+    SUM(revenue_gross) AS revenue_gross,
+    SUM(revenue_gross * (1 - commission_pct / 100)) AS revenue_net,
+    AVG(revenue_gross / NULLIF(rooms, 0)) AS adr
+FROM reservations
+WHERE status NOT IN ('CANCELLED', 'NO_SHOW')
+GROUP BY org_id, property_id, arrival_date;
+```
+
+### 3.2. Vista: Consolidación Híbrida (Source of Truth)
+```sql
+CREATE VIEW revenue_daily_consolidated_v AS
+SELECT 
+    p.id AS property_id,
+    d.the_date,
+    COALESCE(r.rooms_sold, d.rooms_sold) AS rooms_sold,
+    COALESCE(r.revenue_gross, d.revenue_gross) AS revenue_gross,
+    CASE 
+        WHEN r.the_date IS NOT NULL THEN 'RESERVATIONS'
+        ELSE 'DAILY_PRODUCTION'
+    END AS source
+FROM properties p
+LEFT JOIN daily_production d ON d.property_id = p.id
+LEFT JOIN revenue_daily_from_reservations_v r ON r.property_id = p.id AND r.the_date = d.the_date;
+```
+
+---
+
+## 4. Eventos y Contexto
+```sql
+CREATE TABLE events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    property_id UUID REFERENCES properties(id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    type event_type DEFAULT 'OTHER',
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    impact event_impact DEFAULT 'MEDIUM',
+    note TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+---
+
+## 5. Pipeline de Importación y Trazabilidad
+
+### 5.1. DDL: Imports
+```sql
+CREATE TYPE import_type AS ENUM ('RESERVATIONS', 'DAILY_PRODUCTION', 'PICKUP_SNAPSHOTS');
+CREATE TYPE import_status AS ENUM ('PENDING', 'VALIDATED', 'IMPORTED', 'FAILED');
+
+CREATE TABLE revenue_imports (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID NOT NULL REFERENCES organizations(id),
+    property_id UUID NOT NULL REFERENCES properties(id),
+    import_type import_type NOT NULL,
+    status import_status DEFAULT 'PENDING',
+    storage_path TEXT NOT NULL,
+    file_sha256 TEXT,
+    total_rows INTEGER DEFAULT 0,
+    valid_rows INTEGER DEFAULT 0,
+    invalid_rows INTEGER DEFAULT 0,
+    error_summary JSONB,
+    created_by UUID REFERENCES auth.users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE revenue_import_errors (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    import_id UUID REFERENCES revenue_imports(id) ON DELETE CASCADE,
+    row_number INTEGER NOT NULL,
+    field TEXT,
+    code TEXT,
+    message TEXT,
+    raw_row JSONB
+);
+```
+
+---
+
+## 6. Informes y Auditoría
+
+### 6.1. DDL: Reportes
+```sql
+CREATE TYPE view_mode AS ENUM ('GROSS', 'NET');
+
+CREATE TABLE revenue_report_exports (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID NOT NULL REFERENCES organizations(id),
+    property_id UUID NOT NULL REFERENCES properties(id),
+    report_type TEXT NOT NULL,
+    date_from DATE NOT NULL,
+    date_to DATE NOT NULL,
+    view_mode view_mode DEFAULT 'GROSS',
+    include_cancelled BOOLEAN DEFAULT FALSE,
+    include_no_show BOOLEAN DEFAULT FALSE,
+    storage_bucket TEXT DEFAULT 'revenue-reports',
+    storage_path TEXT NOT NULL,
+    pdf_sha256 TEXT,
+    created_by UUID REFERENCES auth.users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE revenue_report_export_downloads (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    report_id UUID REFERENCES revenue_report_exports(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES auth.users(id),
+    downloaded_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+---
+
+## 7. Seguridad y RLS
+
+### 7.1. Patrón de Acceso Multi-tenant
+```sql
+CREATE OR REPLACE FUNCTION check_org_active_access(target_org_id UUID)
+RETURNS BOOLEAN 
+SET search_path = public
+AS $$
+BEGIN
+    RETURN EXISTS (
+        SELECT 1 FROM org_members 
+        JOIN organizations ON organizations.id = org_members.org_id
+        WHERE org_members.user_id = auth.uid() 
+        AND org_members.org_id = target_org_id
+        AND organizations.status = 'ACTIVE'
+    );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Políticas de ejemplo (Reservas)
+ALTER TABLE reservations ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "res_select" ON reservations FOR SELECT USING (check_org_active_access(org_id));
+CREATE POLICY "res_write" ON reservations FOR ALL USING (check_org_active_access(org_id) AND get_user_role(org_id) IN ('OWNER', 'ADMIN'));
+```
+
+---
+
+## 8. Optimización y Rendimiento
+
+### 8.1. Índices Compuestos
+- `reservations(org_id, property_id, arrival_date)`
+- `reservations(org_id, property_id, booking_date)`
+- `daily_production(org_id, property_id, the_date)`
+- `events(property_id, start_date, end_date)`
+
+### 8.2. Escalabilidad
+- **Materialized Views**: Recomendadas para agregados mensuales y snapshots de pickup.
+- **Particionado**: Considerar particionamiento por `org_id` en `reservations` si el volumen excede los 10M de registros.
+
+---
+
+## 9. Edge Functions (Contratos)
+- `revenue_import_validate`: Valida CSV y registra errores.
+- `revenue_import_commit`: Inserta datos validados en transacción.
+- `revenue_get_dashboard`: Sirve KPIs consolidados.
+- `revenue_generate_report_pdf`: Genera y almacena informes.
+- `properties_create`: Valida límites de plan antes de crear.
+
+---
+
+## 10. Checklist MVP Híbrido
+- [x] Importación dual (Reservas y Producción).
+- [x] Deduplicación por ID externo.
+- [x] Consolidación automática en vistas.
+- [x] Aislamiento RLS multi-tenant.
+- [x] Control de límites por plan.

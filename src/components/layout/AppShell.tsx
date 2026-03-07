@@ -1,4 +1,3 @@
-// src/components/layout/AppShell.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import {
   LayoutDashboard,
@@ -17,12 +16,13 @@ import {
   Download,
   Settings,
   Lock,
+  Building2,
 } from "lucide-react";
 
 /**
  * ✅ Views de la app.
  * - Operativa: dashboard/search/add/account/admin
- * - Revenue Intelligence: rev_channels/rev_risk/rev_leakage
+ * - Revenue Intelligence: rev_channels/rev_risk/rev_leakage/rev_properties
  * - Auditoría: aud_summary/aud_risk/aud_stats/aud_history/aud_exports/aud_config/aud_screening_csv
  */
 export type AuthedView =
@@ -34,20 +34,21 @@ export type AuthedView =
   | "rev_channels"
   | "rev_risk"
   | "rev_leakage"
+  | "rev_properties"
   | "aud_summary"
   | "aud_risk"
   | "aud_stats"
   | "aud_history"
   | "aud_exports"
   | "aud_config"
-  | "aud_screening_csv"; // ✅ NUEVA
+  | "aud_screening_csv";
 
 export type NavItem = {
   view: AuthedView;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
-  disabled?: boolean; // disabled real (no clickable)
-  locked?: boolean; // ✅ bloqueado por plan (clicable para demo)
+  disabled?: boolean;
+  locked?: boolean;
   section?: "OPERATIVA" | "REVENUE" | "AUDITORIA" | "CUENTA";
 };
 
@@ -62,11 +63,6 @@ type Props = {
   children: React.ReactNode;
   navItems?: NavItem[];
   showAccountActions?: boolean;
-
-  /**
-   * ✅ Código de plan real (p.ej. "FREE" | "BASIC" | "MEDIUM" | "PREMIUM")
-   * Viene de planCard.code en tu response.
-   */
   currentPlanCode?: string;
 };
 
@@ -114,7 +110,13 @@ const NavItemButton: React.FC<{
       <Icon
         className={classNames(
           "w-4 h-4",
-          disabled ? "text-slate-300" : active ? "text-blue-600" : isLocked ? "text-slate-400" : "text-slate-400"
+          disabled
+            ? "text-slate-300"
+            : active
+            ? "text-blue-600"
+            : isLocked
+            ? "text-slate-400"
+            : "text-slate-400"
         )}
       />
       <span className="font-medium tracking-tight">{label}</span>
@@ -160,10 +162,11 @@ export default function AppShell({
       { view: "search", label: "Consultar", icon: Search, section: "OPERATIVA" },
       { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
 
-      // Revenue Intelligence (✅ locked si no hay acceso)
+      // Revenue Intelligence
       { view: "rev_channels", label: "Análisis por Canal", icon: BarChart3, section: "REVENUE", locked: !canAccessRevenue },
       { view: "rev_risk", label: "Nivel de Riesgo", icon: ShieldAlert, section: "REVENUE", locked: !canAccessRevenue },
       { view: "rev_leakage", label: "Fugas de Revenue", icon: TrendingDown, section: "REVENUE", locked: !canAccessRevenue },
+      { view: "rev_properties", label: "Propiedades", icon: Building2, section: "REVENUE", locked: !canAccessRevenue },
 
       // Auditoría
       { view: "aud_screening_csv", label: "Screening CSV", icon: FileText, section: "AUDITORIA" },
@@ -180,7 +183,6 @@ export default function AppShell({
 
     const src = navItems ?? base;
 
-    // Siempre aplicamos lock a revenue en función del plan
     return src.map((i) => {
       if (i.section === "REVENUE") return { ...i, locked: !canAccessRevenue };
       return i;
@@ -195,7 +197,6 @@ export default function AppShell({
     return { operativa, revenue, auditoria, cuenta };
   }, [nav]);
 
-  // ✅ UX: ESC cierra menú mobile
   useEffect(() => {
     if (!mobileMenuOpen) return;
 

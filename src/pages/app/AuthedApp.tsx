@@ -13,6 +13,7 @@ import { useEvalAuth } from "@/context/EvalAuthContext";
 import ChannelAnalysis from "@/views/ChannelAnalysis";
 import RiskAnalysis from "@/views/RiskAnalysis";
 import Leaks from "@/views/Leaks";
+import SettingsProperties from "@/modules/revenue-intelligence/pages/SettingsProperties";
 
 // ✅ Demo/PAYWALL Revenue
 import RevenueLockedDemo from "@/components/revenue/RevenueLockedDemo";
@@ -37,6 +38,7 @@ import {
   Download,
   CreditCard,
   FileSpreadsheet,
+  Building2,
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
@@ -81,7 +83,12 @@ function toPlanCode(plan: PlanTier): "FREE" | "BASIC" | "MEDIUM" | "PREMIUM" {
 }
 
 function isRevenueView(v: AuthedView) {
-  return v === "rev_channels" || v === "rev_risk" || v === "rev_leakage";
+  return (
+    v === "rev_channels" ||
+    v === "rev_risk" ||
+    v === "rev_leakage" ||
+    v === "rev_properties"
+  );
 }
 
 /* ---------------- component ---------------- */
@@ -125,10 +132,9 @@ export default function AuthedApp() {
   /* ---------- navegación ---------- */
   const navItems: NavItem[] = React.useMemo(
     () => [
-      // OPERATIVA (orden que quieres)
+      // OPERATIVA
       { view: "dashboard", label: "Dashboard", icon: LayoutDashboard, section: "OPERATIVA" },
 
-      // 👇 2) Consulta automática CSV
       {
         view: "aud_screening_csv",
         label: "Consulta automática (CSV)",
@@ -136,16 +142,14 @@ export default function AuthedApp() {
         section: "OPERATIVA",
       },
 
-      // 👇 3) Consulta manual
       { view: "search", label: "Consulta manual", icon: Search, section: "OPERATIVA" },
-
-      // 👇 4) Registrar incidencia manual
       { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
 
       // Revenue Intelligence
       { view: "rev_channels", label: "Análisis por Canal", icon: BarChart3, section: "REVENUE" },
       { view: "rev_risk", label: "Nivel de Riesgo", icon: ShieldAlert, section: "REVENUE" },
       { view: "rev_leakage", label: "Fugas de Revenue", icon: TrendingDown, section: "REVENUE" },
+      { view: "rev_properties", label: "Propiedades", icon: Building2, section: "REVENUE" },
 
       // Auditoría
       { view: "aud_stats", label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
@@ -179,6 +183,8 @@ export default function AuthedApp() {
         return "Análisis por Nivel de Riesgo";
       case "rev_leakage":
         return "Fugas de Revenue";
+      case "rev_properties":
+        return "Propiedades";
 
       // Auditoría
       case "aud_stats":
@@ -211,6 +217,8 @@ export default function AuthedApp() {
         return "Segmentación del impacto económico real (net loss) y volumen de incidencias por nivel.";
       case "rev_leakage":
         return "Ranking de fugas de margen: net loss y cuota sobre el total.";
+      case "rev_properties":
+        return "Gestiona las propiedades y la configuración base de Revenue Intelligence.";
 
       // Auditoría
       case "aud_stats":
@@ -267,14 +275,18 @@ export default function AuthedApp() {
       {/* Mi cuenta */}
       {currentView === "account" && <MiCuenta user={user as any} />}
 
-      {/* Revenue Intelligence (bloqueado por plan => DEMO) */}
+      {/* Revenue Intelligence bloqueado por plan */}
       {isRevenueView(currentView) && !canAccessRevenue && (
         <RevenueLockedDemo currentPlan={currentPlan} onGoPlans={() => setCurrentView("account")} />
       )}
 
+      {/* Revenue Intelligence */}
       {currentView === "rev_channels" && canAccessRevenue && <ChannelAnalysis />}
       {currentView === "rev_risk" && canAccessRevenue && <RiskAnalysis />}
       {currentView === "rev_leakage" && canAccessRevenue && <Leaks />}
+      {currentView === "rev_properties" && canAccessRevenue && (
+        <SettingsProperties user={user as any} />
+      )}
 
       {/* Auditoría */}
       {currentView === "aud_stats" && <StatsViewAuditor currentPlan={currentPlan} />}
