@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useRevenue } from '../context/RevenueContext';
+import { useRevenue } from '../context/RevenuePropertyContext';
 import { DashboardPeriod } from '../types';
 import DashboardFilters from '../components/dashboard/DashboardFilters';
 import KPIGrid from '../components/dashboard/KPIGrid';

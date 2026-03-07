@@ -2,7 +2,7 @@
 import { useDropzone } from 'react-dropzone';
 import Papa from 'papaparse';
 import { FileUp, CheckCircle2, AlertCircle, Info, FileText, Table as TableIcon, Database } from 'lucide-react';
-import { useRevenue } from '../context/RevenueContext';
+import { useRevenue } from '../context/RevenuePropertyContext';
 import { DailyData, DailyChannelSegmentRow, Channel, Segment } from '../types';
 
 type ImportType = 'Reservas' | 'Producción diaria' | 'Producción por Canal/Segmento' | 'Tarifas';

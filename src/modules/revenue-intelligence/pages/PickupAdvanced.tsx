@@ -1,5 +1,5 @@
  import React, { useState, useMemo } from 'react';
-import { useRevenue } from '../context/RevenueContext';
+import { useRevenue } from '../context/RevenuePropertyContext';
 import { TrendingUp, Users, Calendar, BarChart3, Building2, Download, Info, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 

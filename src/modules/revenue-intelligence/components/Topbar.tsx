@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useRevenue } from '../context/RevenueContext';
+import { useRevenue } from '../context/RevenuePropertyContext';
 import { useAuth } from '../context/AuthContext';
 import { 
   Building2, 

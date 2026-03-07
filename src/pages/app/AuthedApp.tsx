@@ -14,6 +14,11 @@ import ChannelAnalysis from "@/views/ChannelAnalysis";
 import RiskAnalysis from "@/views/RiskAnalysis";
 import Leaks from "@/views/Leaks";
 import SettingsProperties from "@/modules/revenue-intelligence/pages/SettingsProperties";
+import PropertySelector from "@/modules/revenue-intelligence/components/PropertySelector";
+import {
+  getProperties,
+  type RevenueProperty,
+} from "@/modules/revenue-intelligence/services/revenueProperties.service";
 
 // ✅ Demo/PAYWALL Revenue
 import RevenueLockedDemo from "@/components/revenue/RevenueLockedDemo";
@@ -100,6 +105,11 @@ export default function AuthedApp() {
   // ✅ Vistas controladas por AppShell
   const [currentView, setCurrentView] = React.useState<AuthedView>("dashboard");
 
+  // ✅ Propiedad activa revenue
+  const [revenueProperties, setRevenueProperties] = React.useState<RevenueProperty[]>([]);
+  const [selectedPropertyId, setSelectedPropertyId] = React.useState<string | null>(null);
+  const [propertiesLoading, setPropertiesLoading] = React.useState(false);
+
   const handleLogout = async () => {
     await signOut();
     navigate("/", { replace: true });
@@ -128,6 +138,52 @@ export default function AuthedApp() {
   const currentPlan = toPlanTier(planLike);
   const currentPlanCode = toPlanCode(currentPlan);
   const canAccessRevenue = currentPlan === PlanTier.MEDIUM || currentPlan === PlanTier.PREMIUM;
+
+  /* ---------- carga de propiedades revenue ---------- */
+  React.useEffect(() => {
+    let cancelled = false;
+
+    async function loadRevenueProperties() {
+      if (!canAccessRevenue) {
+        setRevenueProperties([]);
+        setSelectedPropertyId(null);
+        return;
+      }
+
+      try {
+        setPropertiesLoading(true);
+
+        const rows = await getProperties();
+
+        if (cancelled) return;
+
+        setRevenueProperties(rows);
+
+        const savedId = localStorage.getItem("revenue_active_property_id");
+        if (savedId && rows.some((p) => p.id === savedId)) {
+          setSelectedPropertyId(savedId);
+        } else if (rows.length > 0) {
+          setSelectedPropertyId(rows[0].id);
+        } else {
+          setSelectedPropertyId(null);
+        }
+      } catch (error) {
+        console.error("loadRevenueProperties error:", error);
+        if (!cancelled) {
+          setRevenueProperties([]);
+          setSelectedPropertyId(null);
+        }
+      } finally {
+        if (!cancelled) setPropertiesLoading(false);
+      }
+    }
+
+    void loadRevenueProperties();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canAccessRevenue]);
 
   /* ---------- navegación ---------- */
   const navItems: NavItem[] = React.useMemo(
@@ -237,6 +293,21 @@ export default function AuthedApp() {
     setCurrentView(view);
   }, []);
 
+  const headerLeft = React.useMemo(() => {
+    if (!canAccessRevenue) return null;
+    if (!isRevenueView(currentView)) return null;
+    if (propertiesLoading) return null;
+    if (!revenueProperties.length) return null;
+
+    return (
+     <PropertySelector
+      properties={revenueProperties}
+      selectedId={selectedPropertyId}
+      onSelect={setSelectedPropertyId}
+    />
+    );
+  }, [canAccessRevenue, currentView, propertiesLoading, revenueProperties, selectedPropertyId]);
+
   return (
     <AppShell
       userEmail={(user as any).email}
@@ -248,6 +319,7 @@ export default function AuthedApp() {
       subtitle={subtitle}
       navItems={navItems}
       currentPlanCode={currentPlanCode}
+      headerLeft={headerLeft}
     >
       {/* 1) Dashboard */}
       {currentView === "dashboard" && (
@@ -281,9 +353,18 @@ export default function AuthedApp() {
       )}
 
       {/* Revenue Intelligence */}
-      {currentView === "rev_channels" && canAccessRevenue && <ChannelAnalysis />}
-      {currentView === "rev_risk" && canAccessRevenue && <RiskAnalysis />}
-      {currentView === "rev_leakage" && canAccessRevenue && <Leaks />}
+      {currentView === "rev_channels" && canAccessRevenue && (
+        <ChannelAnalysis />
+      )}
+
+      {currentView === "rev_risk" && canAccessRevenue && (
+        <RiskAnalysis />
+      )}
+
+      {currentView === "rev_leakage" && canAccessRevenue && (
+        <Leaks />
+      )}
+
       {currentView === "rev_properties" && canAccessRevenue && (
         <SettingsProperties user={user as any} />
       )}

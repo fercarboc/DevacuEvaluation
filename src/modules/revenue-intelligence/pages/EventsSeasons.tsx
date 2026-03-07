@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useRevenue } from '../context/RevenueContext';
+import { useRevenue } from '../context/RevenuePropertyContext';
 import { CalendarDays, Plus, Trash2, AlertTriangle, Info, Calendar as CalendarIcon } from 'lucide-react';
 import { EventType, EventImpact } from '../types';
 

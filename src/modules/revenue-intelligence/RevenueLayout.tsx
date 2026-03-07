@@ -2,7 +2,7 @@ import React from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { LayoutDashboard, Calendar, BarChart3, TrendingUp, Settings, FileUp, FileText, CalendarDays, ShieldCheck, PieChart } from 'lucide-react';
 import { useAuth } from './context/AuthContext';
-import { RevenueProvider } from './context/RevenueContext';
+import { RevenueProvider } from './context/RevenuePropertyContext';
 import Topbar from './components/Topbar';
 
 const Sidebar: React.FC = () => {

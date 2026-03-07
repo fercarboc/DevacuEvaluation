@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useRevenue } from '../context/RevenueContext';
+import { useRevenue } from '../context/RevenuePropertyContext';
 import { Calendar, Filter, Download, Info, Building2, Eye, X } from 'lucide-react';
 
 const DayByDay: React.FC = () => {

@@ -21,9 +21,6 @@ import {
 
 /**
  * ✅ Views de la app.
- * - Operativa: dashboard/search/add/account/admin
- * - Revenue Intelligence: rev_channels/rev_risk/rev_leakage/rev_properties
- * - Auditoría: aud_summary/aud_risk/aud_stats/aud_history/aud_exports/aud_config/aud_screening_csv
  */
 export type AuthedView =
   | "dashboard"
@@ -58,12 +55,13 @@ type Props = {
   activeView: AuthedView;
   onNavigate: (view: AuthedView) => void;
   onLogout: () => void;
-  title: string;
+  title?: string;
   subtitle?: string;
   children: React.ReactNode;
   navItems?: NavItem[];
   showAccountActions?: boolean;
   currentPlanCode?: string;
+  headerLeft?: React.ReactNode;
 };
 
 function classNames(...parts: Array<string | false | null | undefined>) {
@@ -120,7 +118,6 @@ const NavItemButton: React.FC<{
         )}
       />
       <span className="font-medium tracking-tight">{label}</span>
-
       {isLocked ? <Lock className="w-4 h-4 text-slate-400 ml-auto" /> : null}
     </button>
   );
@@ -149,6 +146,7 @@ export default function AppShell({
   navItems,
   showAccountActions = true,
   currentPlanCode,
+  headerLeft,
 }: Props) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -157,18 +155,15 @@ export default function AppShell({
 
   const nav = useMemo<NavItem[]>(() => {
     const base: NavItem[] = [
-      // Operativa
       { view: "dashboard", label: "Dashboard", icon: LayoutDashboard, section: "OPERATIVA" },
       { view: "search", label: "Consultar", icon: Search, section: "OPERATIVA" },
       { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
 
-      // Revenue Intelligence
       { view: "rev_channels", label: "Análisis por Canal", icon: BarChart3, section: "REVENUE", locked: !canAccessRevenue },
       { view: "rev_risk", label: "Nivel de Riesgo", icon: ShieldAlert, section: "REVENUE", locked: !canAccessRevenue },
       { view: "rev_leakage", label: "Fugas de Revenue", icon: TrendingDown, section: "REVENUE", locked: !canAccessRevenue },
       { view: "rev_properties", label: "Propiedades", icon: Building2, section: "REVENUE", locked: !canAccessRevenue },
 
-      // Auditoría
       { view: "aud_screening_csv", label: "Screening CSV", icon: FileText, section: "AUDITORIA" },
       { view: "aud_summary", label: "Resumen", icon: FileText, section: "AUDITORIA" },
       { view: "aud_risk", label: "Auditoría de riesgo", icon: Shield, section: "AUDITORIA" },
@@ -177,7 +172,6 @@ export default function AppShell({
       { view: "aud_exports", label: "Exportaciones", icon: Download, section: "AUDITORIA" },
       { view: "aud_config", label: "Configuración-Avisos", icon: Settings, section: "AUDITORIA" },
 
-      // Cuenta
       { view: "account", label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
     ];
 
@@ -296,7 +290,11 @@ export default function AppShell({
           >
             <Menu className="w-6 h-6" />
           </button>
-          <div className="text-sm font-semibold text-slate-900">Debacu Evaluation360</div>
+
+          <div className="text-sm font-semibold text-slate-900 truncate max-w-[55%]">
+            {title || "Debacu Evaluation360"}
+          </div>
+
           <div className="w-10" />
         </header>
 
@@ -356,12 +354,19 @@ export default function AppShell({
 
         {/* HEADER DESKTOP */}
         <div className="hidden md:block border-b border-slate-200 bg-white">
-          <div className="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between">
-            <div>
-              <h1 className="text-lg font-semibold text-slate-900">{title}</h1>
-              {subtitle ? <p className="text-sm text-slate-500">{subtitle}</p> : null}
+          <div className="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              {headerLeft ? (
+                headerLeft
+              ) : (
+                <div>
+                  <h1 className="text-lg font-semibold text-slate-900">{title}</h1>
+                  {subtitle ? <p className="text-sm text-slate-500">{subtitle}</p> : null}
+                </div>
+              )}
             </div>
-            <div className="flex items-center gap-3">
+
+            <div className="flex items-center gap-3 shrink-0">
               <div className="text-sm text-slate-600 hidden lg:block">{userEmail || ""}</div>
 
               {showAccountActions && (

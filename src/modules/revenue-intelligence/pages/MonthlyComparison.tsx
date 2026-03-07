@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useRevenue } from '../context/RevenueContext';
+import { useRevenue } from '../context/RevenuePropertyContext';
 import { Download, X, FileDown, TrendingUp, Calendar, ArrowRight, Building2 } from 'lucide-react';
 import { DailyData, MonthlyData } from '../types';
 
