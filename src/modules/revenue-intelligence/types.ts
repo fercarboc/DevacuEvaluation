@@ -172,3 +172,14 @@ export type ReservationRow = {
 
   commissionPct: number;
 };
+
+export interface RoomType {
+  id: string;
+  propertyId: string;
+  code: string;
+  name: string;
+  capacity: number;
+  roomsCount: number;
+  basePrice: number;
+  isActive: boolean;
+}

@@ -9,26 +9,27 @@ import AppShell, { type AuthedView, type NavItem } from "@/components/layout/App
 import DashboardHome from "@/pages/DashboardHome";
 import { useEvalAuth } from "@/context/EvalAuthContext";
 
-// ✅ Revenue Intelligence
+// Revenue Intelligence
 import ChannelAnalysis from "@/views/ChannelAnalysis";
 import RiskAnalysis from "@/views/RiskAnalysis";
 import Leaks from "@/views/Leaks";
 import SettingsProperties from "@/modules/revenue-intelligence/pages/SettingsProperties";
+import RoomTypesPage from "@/modules/revenue-intelligence/pages/RoomTypesPage";
 import PropertySelector from "@/modules/revenue-intelligence/components/PropertySelector";
 import {
   getProperties,
   type RevenueProperty,
 } from "@/modules/revenue-intelligence/services/revenueProperties.service";
 
-// ✅ Demo/PAYWALL Revenue
+// Demo/PAYWALL Revenue
 import RevenueLockedDemo from "@/components/revenue/RevenueLockedDemo";
 
-// ✅ Auditoría
+// Auditoría
 import StatsViewAuditor from "@/views/StatsViewAuditor";
 import HistoryViewAuditor from "@/views/HistoryViewAuditor";
 import ExportsViewAuditor from "@/views/ExportsViewAuditor";
 
-// ✅ Screening CSV (página wrapper)
+// Screening CSV
 import ScreeningCsv from "@/pages/app/ScreeningCsv";
 
 import {
@@ -44,12 +45,11 @@ import {
   CreditCard,
   FileSpreadsheet,
   Building2,
+  BedDouble,
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
 import { PlanTier } from "../../../auditor";
-
-/* ---------------- utils ---------------- */
 
 function toPlanTier(planLike: any): PlanTier {
   const s = String(planLike ?? "").toUpperCase();
@@ -92,20 +92,17 @@ function isRevenueView(v: AuthedView) {
     v === "rev_channels" ||
     v === "rev_risk" ||
     v === "rev_leakage" ||
-    v === "rev_properties"
+    v === "rev_properties" ||
+    v === "rev_room_types"
   );
 }
-
-/* ---------------- component ---------------- */
 
 export default function AuthedApp() {
   const { user, loading, signOut } = useEvalAuth();
   const navigate = useNavigate();
 
-  // ✅ Vistas controladas por AppShell
   const [currentView, setCurrentView] = React.useState<AuthedView>("dashboard");
 
-  // ✅ Propiedad activa revenue
   const [revenueProperties, setRevenueProperties] = React.useState<RevenueProperty[]>([]);
   const [selectedPropertyId, setSelectedPropertyId] = React.useState<string | null>(null);
   const [propertiesLoading, setPropertiesLoading] = React.useState(false);
@@ -118,9 +115,6 @@ export default function AuthedApp() {
   if (loading) return null;
   if (!user) return <Navigate to="/login" replace />;
 
-  /* =========================================================
-   * PLATFORM ADMIN vs HOTEL OWNER/STAFF (NO MEZCLAR)
-   * ========================================================= */
   const email = String((user as any).email ?? "").toLowerCase();
   const isPlatformAdmin = email === "admin@debacu.com";
 
@@ -128,7 +122,6 @@ export default function AuthedApp() {
     return <Navigate to="/app/admin/solicitudes-acceso" replace />;
   }
 
-  /* ---------- plan ---------- */
   const planLike =
     (user as any).currentPlan ??
     (user as any).plan ??
@@ -139,7 +132,6 @@ export default function AuthedApp() {
   const currentPlanCode = toPlanCode(currentPlan);
   const canAccessRevenue = currentPlan === PlanTier.MEDIUM || currentPlan === PlanTier.PREMIUM;
 
-  /* ---------- carga de propiedades revenue ---------- */
   React.useEffect(() => {
     let cancelled = false;
 
@@ -152,7 +144,6 @@ export default function AuthedApp() {
 
       try {
         setPropertiesLoading(true);
-
         const rows = await getProperties();
 
         if (cancelled) return;
@@ -179,40 +170,37 @@ export default function AuthedApp() {
     }
 
     void loadRevenueProperties();
-
     return () => {
       cancelled = true;
     };
   }, [canAccessRevenue]);
 
-  /* ---------- navegación ---------- */
+  const selectedProperty = React.useMemo(() => {
+    return revenueProperties.find((p) => p.id === selectedPropertyId) ?? null;
+  }, [revenueProperties, selectedPropertyId]);
+
   const navItems: NavItem[] = React.useMemo(
     () => [
-      // OPERATIVA
       { view: "dashboard", label: "Dashboard", icon: LayoutDashboard, section: "OPERATIVA" },
-
       {
         view: "aud_screening_csv",
         label: "Consulta automática (CSV)",
         icon: FileSpreadsheet,
         section: "OPERATIVA",
       },
-
       { view: "search", label: "Consulta manual", icon: Search, section: "OPERATIVA" },
       { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
 
-      // Revenue Intelligence
       { view: "rev_channels", label: "Análisis por Canal", icon: BarChart3, section: "REVENUE" },
       { view: "rev_risk", label: "Nivel de Riesgo", icon: ShieldAlert, section: "REVENUE" },
       { view: "rev_leakage", label: "Fugas de Revenue", icon: TrendingDown, section: "REVENUE" },
       { view: "rev_properties", label: "Propiedades", icon: Building2, section: "REVENUE" },
+      { view: "rev_room_types", label: "Tipos de habitación", icon: BedDouble, section: "REVENUE" },
 
-      // Auditoría
       { view: "aud_stats", label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
       { view: "aud_history", label: "Histórico", icon: Clock, section: "AUDITORIA" },
       { view: "aud_exports", label: "Exportaciones", icon: Download, section: "AUDITORIA" },
 
-      // Cuenta
       { view: "account", label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
     ],
     []
@@ -220,7 +208,6 @@ export default function AuthedApp() {
 
   const title = React.useMemo(() => {
     switch (currentView) {
-      // Operativa
       case "dashboard":
         return "Dashboard";
       case "aud_screening_csv":
@@ -231,8 +218,6 @@ export default function AuthedApp() {
         return "Registrar incidencia";
       case "account":
         return "Mi cuenta";
-
-      // Revenue
       case "rev_channels":
         return "Análisis por Canal";
       case "rev_risk":
@@ -241,15 +226,14 @@ export default function AuthedApp() {
         return "Fugas de Revenue";
       case "rev_properties":
         return "Propiedades";
-
-      // Auditoría
+      case "rev_room_types":
+        return "Tipos de habitación";
       case "aud_stats":
         return "Estadísticas operativas";
       case "aud_history":
         return "Histórico";
       case "aud_exports":
         return "Exportaciones";
-
       default:
         return "Dashboard";
     }
@@ -265,8 +249,6 @@ export default function AuthedApp() {
         return "Consulta por documento, email, teléfono o nombre.";
       case "add":
         return "Registro estructurado de incidencias.";
-
-      // Revenue
       case "rev_channels":
         return "Comparativa por canal/plataforma y su impacto económico (net loss).";
       case "rev_risk":
@@ -275,15 +257,14 @@ export default function AuthedApp() {
         return "Ranking de fugas de margen: net loss y cuota sobre el total.";
       case "rev_properties":
         return "Gestiona las propiedades y la configuración base de Revenue Intelligence.";
-
-      // Auditoría
+      case "rev_room_types":
+        return "Gestiona el inventario base por categoría dentro de la propiedad activa.";
       case "aud_stats":
         return "KPIs operativos y métricas agregadas.";
       case "aud_history":
         return "Trazabilidad y registro de acciones.";
       case "aud_exports":
         return "Exportación de informes y descargas.";
-
       default:
         return "";
     }
@@ -300,11 +281,11 @@ export default function AuthedApp() {
     if (!revenueProperties.length) return null;
 
     return (
-     <PropertySelector
-      properties={revenueProperties}
-      selectedId={selectedPropertyId}
-      onSelect={setSelectedPropertyId}
-    />
+      <PropertySelector
+        properties={revenueProperties}
+        selectedId={selectedPropertyId}
+        onSelect={setSelectedPropertyId}
+      />
     );
   }, [canAccessRevenue, currentView, propertiesLoading, revenueProperties, selectedPropertyId]);
 
@@ -321,7 +302,6 @@ export default function AuthedApp() {
       currentPlanCode={currentPlanCode}
       headerLeft={headerLeft}
     >
-      {/* 1) Dashboard */}
       {currentView === "dashboard" && (
         <DashboardHome
           onNavigate={(v) => {
@@ -330,13 +310,8 @@ export default function AuthedApp() {
         />
       )}
 
-      {/* 2) Consulta automática (CSV) */}
       {currentView === "aud_screening_csv" && <ScreeningCsv />}
-
-      {/* 3) Consulta manual */}
       {currentView === "search" && <SearchRatings currentUser={user as any} />}
-
-      {/* 4) Registrar incidencia (manual) */}
       {currentView === "add" && (
         <RatingForm
           currentCustomerId={(user as any).id}
@@ -344,32 +319,25 @@ export default function AuthedApp() {
         />
       )}
 
-      {/* Mi cuenta */}
       {currentView === "account" && <MiCuenta user={user as any} />}
 
-      {/* Revenue Intelligence bloqueado por plan */}
       {isRevenueView(currentView) && !canAccessRevenue && (
         <RevenueLockedDemo currentPlan={currentPlan} onGoPlans={() => setCurrentView("account")} />
       )}
 
-      {/* Revenue Intelligence */}
-      {currentView === "rev_channels" && canAccessRevenue && (
-        <ChannelAnalysis />
-      )}
-
-      {currentView === "rev_risk" && canAccessRevenue && (
-        <RiskAnalysis />
-      )}
-
-      {currentView === "rev_leakage" && canAccessRevenue && (
-        <Leaks />
-      )}
-
+      {currentView === "rev_channels" && canAccessRevenue && <ChannelAnalysis />}
+      {currentView === "rev_risk" && canAccessRevenue && <RiskAnalysis />}
+      {currentView === "rev_leakage" && canAccessRevenue && <Leaks />}
       {currentView === "rev_properties" && canAccessRevenue && (
         <SettingsProperties user={user as any} />
       )}
+      {currentView === "rev_room_types" && canAccessRevenue && (
+        <RoomTypesPage
+          selectedPropertyId={selectedPropertyId}
+          selectedPropertyName={selectedProperty?.name ?? null}
+        />
+      )}
 
-      {/* Auditoría */}
       {currentView === "aud_stats" && <StatsViewAuditor currentPlan={currentPlan} />}
       {currentView === "aud_history" && <HistoryViewAuditor />}
       {currentView === "aud_exports" && <ExportsViewAuditor currentPlan={currentPlan} />}

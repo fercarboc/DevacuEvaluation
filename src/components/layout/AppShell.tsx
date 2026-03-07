@@ -17,11 +17,9 @@ import {
   Settings,
   Lock,
   Building2,
+  BedDouble,
 } from "lucide-react";
 
-/**
- * ✅ Views de la app.
- */
 export type AuthedView =
   | "dashboard"
   | "search"
@@ -32,6 +30,7 @@ export type AuthedView =
   | "rev_risk"
   | "rev_leakage"
   | "rev_properties"
+  | "rev_room_types"
   | "aud_summary"
   | "aud_risk"
   | "aud_stats"
@@ -163,6 +162,7 @@ export default function AppShell({
       { view: "rev_risk", label: "Nivel de Riesgo", icon: ShieldAlert, section: "REVENUE", locked: !canAccessRevenue },
       { view: "rev_leakage", label: "Fugas de Revenue", icon: TrendingDown, section: "REVENUE", locked: !canAccessRevenue },
       { view: "rev_properties", label: "Propiedades", icon: Building2, section: "REVENUE", locked: !canAccessRevenue },
+      { view: "rev_room_types", label: "Tipos de habitación", icon: BedDouble, section: "REVENUE", locked: !canAccessRevenue },
 
       { view: "aud_screening_csv", label: "Screening CSV", icon: FileText, section: "AUDITORIA" },
       { view: "aud_summary", label: "Resumen", icon: FileText, section: "AUDITORIA" },
@@ -193,11 +193,9 @@ export default function AppShell({
 
   useEffect(() => {
     if (!mobileMenuOpen) return;
-
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") setMobileMenuOpen(false);
     };
-
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [mobileMenuOpen]);
@@ -226,7 +224,6 @@ export default function AppShell({
 
   return (
     <div className="flex h-screen bg-slate-50">
-      {/* SIDEBAR DESKTOP */}
       <aside className="hidden md:flex flex-col w-72 bg-white border-r border-slate-200">
         <div className="p-6 border-b border-slate-100">
           <div className="flex items-center gap-3">
@@ -278,9 +275,7 @@ export default function AppShell({
         </div>
       </aside>
 
-      {/* MAIN */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        {/* HEADER MOBILE */}
         <header className="md:hidden bg-white border-b border-slate-200 px-4 py-3 flex justify-between items-center">
           <button
             type="button"
@@ -298,7 +293,6 @@ export default function AppShell({
           <div className="w-10" />
         </header>
 
-        {/* MOBILE DRAWER */}
         {mobileMenuOpen && (
           <div
             className="md:hidden fixed inset-0 z-50 bg-black/30"
@@ -352,7 +346,6 @@ export default function AppShell({
           </div>
         )}
 
-        {/* HEADER DESKTOP */}
         <div className="hidden md:block border-b border-slate-200 bg-white">
           <div className="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between gap-4">
             <div className="min-w-0 flex-1">
