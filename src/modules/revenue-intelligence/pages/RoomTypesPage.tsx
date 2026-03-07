@@ -423,7 +423,7 @@ const RoomTypesPage: React.FC<RoomTypesPageProps> = ({
         </div>
       )}
     </div>
-  );
+  ); 
 };
 
 export default RoomTypesPage;

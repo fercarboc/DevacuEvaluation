@@ -18,6 +18,7 @@ import {
   Lock,
   Building2,
   BedDouble,
+  CalendarRange,
 } from "lucide-react";
 
 export type AuthedView =
@@ -31,6 +32,7 @@ export type AuthedView =
   | "rev_leakage"
   | "rev_properties"
   | "rev_room_types"
+  | "rev_price_calendar"
   | "aud_summary"
   | "aud_risk"
   | "aud_stats"
@@ -158,11 +160,48 @@ export default function AppShell({
       { view: "search", label: "Consultar", icon: Search, section: "OPERATIVA" },
       { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
 
-      { view: "rev_channels", label: "Análisis por Canal", icon: BarChart3, section: "REVENUE", locked: !canAccessRevenue },
-      { view: "rev_risk", label: "Nivel de Riesgo", icon: ShieldAlert, section: "REVENUE", locked: !canAccessRevenue },
-      { view: "rev_leakage", label: "Fugas de Revenue", icon: TrendingDown, section: "REVENUE", locked: !canAccessRevenue },
-      { view: "rev_properties", label: "Propiedades", icon: Building2, section: "REVENUE", locked: !canAccessRevenue },
-      { view: "rev_room_types", label: "Tipos de habitación", icon: BedDouble, section: "REVENUE", locked: !canAccessRevenue },
+      {
+        view: "rev_channels",
+        label: "Análisis por Canal",
+        icon: BarChart3,
+        section: "REVENUE",
+        locked: !canAccessRevenue,
+      },
+      {
+        view: "rev_risk",
+        label: "Nivel de Riesgo",
+        icon: ShieldAlert,
+        section: "REVENUE",
+        locked: !canAccessRevenue,
+      },
+      {
+        view: "rev_leakage",
+        label: "Fugas de Revenue",
+        icon: TrendingDown,
+        section: "REVENUE",
+        locked: !canAccessRevenue,
+      },
+      {
+        view: "rev_properties",
+        label: "Propiedades",
+        icon: Building2,
+        section: "REVENUE",
+        locked: !canAccessRevenue,
+      },
+      {
+        view: "rev_room_types",
+        label: "Tipos de habitación",
+        icon: BedDouble,
+        section: "REVENUE",
+        locked: !canAccessRevenue,
+      },
+      {
+        view: "rev_price_calendar",
+        label: "Calendario de precios",
+        icon: CalendarRange,
+        section: "REVENUE",
+        locked: !canAccessRevenue,
+      },
 
       { view: "aud_screening_csv", label: "Screening CSV", icon: FileText, section: "AUDITORIA" },
       { view: "aud_summary", label: "Resumen", icon: FileText, section: "AUDITORIA" },

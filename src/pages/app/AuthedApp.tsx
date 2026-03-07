@@ -15,6 +15,7 @@ import RiskAnalysis from "@/views/RiskAnalysis";
 import Leaks from "@/views/Leaks";
 import SettingsProperties from "@/modules/revenue-intelligence/pages/SettingsProperties";
 import RoomTypesPage from "@/modules/revenue-intelligence/pages/RoomTypesPage";
+import PriceCalendarPage from "@/modules/revenue-intelligence/pages/PriceCalendarPage";
 import PropertySelector from "@/modules/revenue-intelligence/components/PropertySelector";
 import {
   getProperties,
@@ -46,6 +47,7 @@ import {
   FileSpreadsheet,
   Building2,
   BedDouble,
+  CalendarRange,
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
@@ -93,7 +95,8 @@ function isRevenueView(v: AuthedView) {
     v === "rev_risk" ||
     v === "rev_leakage" ||
     v === "rev_properties" ||
-    v === "rev_room_types"
+    v === "rev_room_types" ||
+    v === "rev_price_calendar"
   );
 }
 
@@ -170,10 +173,19 @@ export default function AuthedApp() {
     }
 
     void loadRevenueProperties();
+
     return () => {
       cancelled = true;
     };
   }, [canAccessRevenue]);
+
+  React.useEffect(() => {
+    if (selectedPropertyId) {
+      localStorage.setItem("revenue_active_property_id", selectedPropertyId);
+    } else {
+      localStorage.removeItem("revenue_active_property_id");
+    }
+  }, [selectedPropertyId]);
 
   const selectedProperty = React.useMemo(() => {
     return revenueProperties.find((p) => p.id === selectedPropertyId) ?? null;
@@ -196,6 +208,12 @@ export default function AuthedApp() {
       { view: "rev_leakage", label: "Fugas de Revenue", icon: TrendingDown, section: "REVENUE" },
       { view: "rev_properties", label: "Propiedades", icon: Building2, section: "REVENUE" },
       { view: "rev_room_types", label: "Tipos de habitación", icon: BedDouble, section: "REVENUE" },
+      {
+        view: "rev_price_calendar",
+        label: "Calendario de precios",
+        icon: CalendarRange,
+        section: "REVENUE",
+      },
 
       { view: "aud_stats", label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
       { view: "aud_history", label: "Histórico", icon: Clock, section: "AUDITORIA" },
@@ -228,6 +246,8 @@ export default function AuthedApp() {
         return "Propiedades";
       case "rev_room_types":
         return "Tipos de habitación";
+      case "rev_price_calendar":
+        return "Calendario de precios";
       case "aud_stats":
         return "Estadísticas operativas";
       case "aud_history":
@@ -259,6 +279,8 @@ export default function AuthedApp() {
         return "Gestiona las propiedades y la configuración base de Revenue Intelligence.";
       case "rev_room_types":
         return "Gestiona el inventario base por categoría dentro de la propiedad activa.";
+      case "rev_price_calendar":
+        return "Configura precio diario, estancia mínima y cierres por tipo de habitación.";
       case "aud_stats":
         return "KPIs operativos y métricas agregadas.";
       case "aud_history":
@@ -328,13 +350,23 @@ export default function AuthedApp() {
       {currentView === "rev_channels" && canAccessRevenue && <ChannelAnalysis />}
       {currentView === "rev_risk" && canAccessRevenue && <RiskAnalysis />}
       {currentView === "rev_leakage" && canAccessRevenue && <Leaks />}
+
       {currentView === "rev_properties" && canAccessRevenue && (
         <SettingsProperties user={user as any} />
       )}
+
       {currentView === "rev_room_types" && canAccessRevenue && (
         <RoomTypesPage
           selectedPropertyId={selectedPropertyId}
           selectedPropertyName={selectedProperty?.name ?? null}
+        />
+      )}
+
+      {currentView === "rev_price_calendar" && canAccessRevenue && (
+        <PriceCalendarPage
+          selectedPropertyId={selectedPropertyId}
+          selectedPropertyName={selectedProperty?.name ?? null}
+          selectedOrgId={selectedProperty?.orgId ?? null}
         />
       )}
 
