@@ -19,6 +19,7 @@ import {
   Building2,
   BedDouble,
   CalendarRange,
+  CalendarDays,
 } from "lucide-react";
 
 export type AuthedView =
@@ -33,6 +34,7 @@ export type AuthedView =
   | "rev_properties"
   | "rev_room_types"
   | "rev_price_calendar"
+  | "rev_events_seasons"
   | "aud_summary"
   | "aud_risk"
   | "aud_stats"
@@ -199,6 +201,13 @@ export default function AppShell({
         view: "rev_price_calendar",
         label: "Calendario de precios",
         icon: CalendarRange,
+        section: "REVENUE",
+        locked: !canAccessRevenue,
+      },
+      {
+        view: "rev_events_seasons",
+        label: "Eventos y temporadas",
+        icon: CalendarDays,
         section: "REVENUE",
         locked: !canAccessRevenue,
       },

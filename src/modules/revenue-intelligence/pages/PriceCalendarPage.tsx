@@ -2,9 +2,10 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   CalendarDays,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  CheckCircle2,
+  Copy,
   Hotel,
   Loader2,
   Lock,
@@ -13,6 +14,9 @@ import {
   RotateCcw,
   Save,
   Search,
+  SlidersHorizontal,
+  Wand2,
+  X,
 } from "lucide-react";
 
 import {
@@ -25,6 +29,13 @@ import {
   upsertRoomPrice,
   type RevenueRoomPrice,
 } from "../services/revenueRoomPrices.service";
+
+import {
+  getRevenueCalendarContext,
+  type RevenueCalendarContextRow,
+} from "../services/revenueCalendarContext.service";
+
+import { applyPricingRule } from "../services/revenuePricing.service";
 
 type PriceCalendarPageProps = {
   selectedPropertyId: string | null;
@@ -42,6 +53,10 @@ type EditableCell = {
 };
 
 type EditableMap = Record<string, EditableCell>;
+
+type BulkScope = "ONE" | "MULTIPLE" | "ALL_VISIBLE";
+type BulkDateMode = "VISIBLE_RANGE" | "CUSTOM_RANGE" | "WEEKENDS" | "WEEKDAYS";
+type BulkStateMode = "NO_CHANGE" | "OPEN" | "CLOSED";
 
 const DEFAULT_VISIBLE_DAYS = 15;
 
@@ -109,6 +124,67 @@ function cloneMap<T>(obj: Record<string, T>): Record<string, T> {
   return JSON.parse(JSON.stringify(obj));
 }
 
+function normalizePriceInput(raw: string): string {
+  const normalized = raw.replace(",", ".").replace(/[^\d.]/g, "");
+  const firstDot = normalized.indexOf(".");
+  if (firstDot === -1) return normalized;
+  const intPart = normalized.slice(0, firstDot + 1);
+  const decimals = normalized.slice(firstDot + 1).replace(/\./g, "");
+  return intPart + decimals;
+}
+
+function isValidPriceInput(raw: string): boolean {
+  if (!raw.trim()) return false;
+  const n = Number(raw.replace(",", "."));
+  return Number.isFinite(n) && n >= 0;
+}
+
+function toDbPrice(raw: string): number {
+  return Number(Number(raw.replace(",", ".")).toFixed(2));
+}
+
+function toVisualPrice(value: number | null | undefined): string {
+  const n = Number(value ?? 0);
+  if (!Number.isFinite(n)) return "0";
+  if (Number.isInteger(n)) return String(n);
+  return String(n);
+}
+
+function toSafeMinStay(raw: string): boolean {
+  if (!raw.trim()) return false;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1;
+}
+
+function unique<T>(arr: T[]) {
+  return Array.from(new Set(arr));
+}
+
+function markerLabel(row: RevenueCalendarContextRow) {
+  if (row.source_type === "EVENT") return row.name;
+  if (row.item_type === "HIGH" || row.item_type === "PEAK") return "Temporada alta";
+  if (row.item_type === "LOW") return "Temporada baja";
+  if (row.item_type === "MID") return "Temporada media";
+  return row.name;
+}
+
+function getContextPricingLabel(row?: RevenueCalendarContextRow | null) {
+  if (!row) return "";
+  const operation = (row as any).pricing_operation ?? null;
+  const adjustmentType = (row as any).pricing_adjustment_type ?? null;
+  const adjustmentValue = (row as any).pricing_adjustment_value ?? null;
+
+  if (!operation || !adjustmentType || adjustmentValue == null) return "";
+
+  const value =
+    adjustmentType === "PERCENT" ? `${adjustmentValue}%` : `${adjustmentValue}€`;
+
+  if (operation === "INCREASE") return `+${value}`;
+  if (operation === "DECREASE") return `-${value}`;
+  if (operation === "SET") return `=${value}`;
+  return "";
+}
+
 const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
   selectedPropertyId,
   selectedPropertyName,
@@ -126,6 +202,9 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
   const [prices, setPrices] = useState<EditableMap>({});
   const [serverSnapshot, setServerSnapshot] = useState<EditableMap>({});
 
+  const [calendarContext, setCalendarContext] = useState<RevenueCalendarContextRow[]>([]);
+  const [loadingCalendarContext, setLoadingCalendarContext] = useState(false);
+
   const [loadingRoomTypes, setLoadingRoomTypes] = useState(false);
   const [loadingPrices, setLoadingPrices] = useState(false);
   const [savingAll, setSavingAll] = useState(false);
@@ -133,6 +212,25 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
   const [pageError, setPageError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [roomTypeFilter, setRoomTypeFilter] = useState("");
+
+  const [bulkDrawerOpen, setBulkDrawerOpen] = useState(false);
+
+  const [bulkScope, setBulkScope] = useState<BulkScope>("ALL_VISIBLE");
+  const [bulkDateMode, setBulkDateMode] = useState<BulkDateMode>("VISIBLE_RANGE");
+
+  const [bulkOneRoomTypeId, setBulkOneRoomTypeId] = useState<string>("");
+  const [bulkMultipleRoomTypeIds, setBulkMultipleRoomTypeIds] = useState<string[]>([]);
+
+  const [bulkCustomFrom, setBulkCustomFrom] = useState(initialRange.from);
+  const [bulkCustomTo, setBulkCustomTo] = useState(initialRange.to);
+
+  const [bulkApplyPrice, setBulkApplyPrice] = useState(false);
+  const [bulkPrice, setBulkPrice] = useState("");
+
+  const [bulkApplyMinStay, setBulkApplyMinStay] = useState(false);
+  const [bulkMinStay, setBulkMinStay] = useState("1");
+
+  const [bulkStateMode, setBulkStateMode] = useState<BulkStateMode>("NO_CHANGE");
 
   const dates = useMemo(() => buildDateRange(appliedFrom, appliedTo), [appliedFrom, appliedTo]);
 
@@ -151,12 +249,30 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
     if (!q) return roomTypes;
 
     return roomTypes.filter((rt) => {
-      const hay =
-        rt.name.toLowerCase().includes(q) ||
-        rt.code.toLowerCase().includes(q);
-      return hay;
+      return rt.name.toLowerCase().includes(q) || rt.code.toLowerCase().includes(q);
     });
   }, [roomTypes, roomTypeFilter]);
+
+  const calendarContextByDate = useMemo(() => {
+    const map = new Map<string, RevenueCalendarContextRow>();
+    calendarContext.forEach((row) => {
+      map.set(row.calendar_date, row);
+    });
+    return map;
+  }, [calendarContext]);
+
+  const visibleLegend = useMemo(() => {
+    const map = new Map<string, RevenueCalendarContextRow>();
+
+    calendarContext.forEach((row) => {
+      const key = `${row.source_type}__${row.name}__${row.color}`;
+      if (!map.has(key)) {
+        map.set(key, row);
+      }
+    });
+
+    return Array.from(map.values()).sort((a, b) => a.priority - b.priority);
+  }, [calendarContext]);
 
   const loadRoomTypes = useCallback(async () => {
     if (!selectedPropertyId) {
@@ -169,6 +285,11 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
       setPageError(null);
       const rows = await getRoomTypes(selectedPropertyId);
       setRoomTypes(rows);
+
+      if (rows.length > 0) {
+        setBulkOneRoomTypeId((prev) => prev || rows[0].id);
+        setBulkMultipleRoomTypeIds((prev) => (prev.length ? prev : [rows[0].id]));
+      }
     } catch (e: any) {
       setPageError(e?.message ?? "No se pudieron cargar los tipos de habitación");
       setRoomTypes([]);
@@ -193,7 +314,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
 
       rows.forEach((row: RevenueRoomPrice) => {
         map[cellKey(row.roomTypeId, row.date)] = {
-          price: String(row.price ?? 0),
+          price: toVisualPrice(row.price),
           minStay: String(row.minStay ?? 1),
           closed: row.closed,
           dirty: false,
@@ -213,6 +334,30 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
     }
   }, [selectedPropertyId, appliedFrom, appliedTo]);
 
+  const loadCalendarContext = useCallback(async () => {
+    if (!selectedPropertyId) {
+      setCalendarContext([]);
+      return;
+    }
+
+    try {
+      setLoadingCalendarContext(true);
+
+      const rows = await getRevenueCalendarContext({
+        propertyId: selectedPropertyId,
+        from: appliedFrom,
+        to: appliedTo,
+      });
+
+      setCalendarContext(rows);
+    } catch (e: any) {
+      setPageError(e?.message ?? "No se pudo cargar el contexto del calendario");
+      setCalendarContext([]);
+    } finally {
+      setLoadingCalendarContext(false);
+    }
+  }, [selectedPropertyId, appliedFrom, appliedTo]);
+
   useEffect(() => {
     void loadRoomTypes();
   }, [loadRoomTypes, refreshTick]);
@@ -221,13 +366,32 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
     void loadPrices();
   }, [loadPrices, refreshTick]);
 
+  useEffect(() => {
+    void loadCalendarContext();
+  }, [loadCalendarContext, refreshTick]);
+
+  const getCalculatedDefaultPrice = useCallback(
+    (roomType: RevenueRoomType, date: string): string => {
+      const context = calendarContextByDate.get(date);
+
+      const calculated = applyPricingRule(roomType.basePrice ?? 0, {
+        pricingOperation: (context as any)?.pricing_operation ?? null,
+        pricingAdjustmentType: (context as any)?.pricing_adjustment_type ?? null,
+        pricingAdjustmentValue: (context as any)?.pricing_adjustment_value ?? null,
+      });
+
+      return toVisualPrice(calculated ?? roomType.basePrice ?? 0);
+    },
+    [calendarContextByDate]
+  );
+
   const getCell = useCallback(
     (roomType: RevenueRoomType, date: string): EditableCell => {
       const key = cellKey(roomType.id, date);
 
       return (
         prices[key] ?? {
-          price: String(roomType.basePrice ?? 0),
+          price: getCalculatedDefaultPrice(roomType, date),
           minStay: "1",
           closed: false,
           dirty: false,
@@ -236,7 +400,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
         }
       );
     },
-    [prices]
+    [prices, getCalculatedDefaultPrice]
   );
 
   const updateCell = useCallback(
@@ -275,21 +439,21 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
 
       const key = cellKey(roomType.id, date);
       const current = prices[key] ?? {
-        price: String(roomType.basePrice ?? 0),
+        price: getCalculatedDefaultPrice(roomType, date),
         minStay: "1",
         closed: false,
       };
 
-      const parsedPrice = Number(current.price);
-      const parsedMinStay = Number(current.minStay);
-
-      if (Number.isNaN(parsedPrice) || parsedPrice < 0) {
+      if (!isValidPriceInput(current.price)) {
         throw new Error(`Precio inválido en ${roomType.name} (${date}).`);
       }
 
-      if (!Number.isInteger(parsedMinStay) || parsedMinStay < 1) {
+      if (!toSafeMinStay(current.minStay)) {
         throw new Error(`Min stay inválido en ${roomType.name} (${date}).`);
       }
+
+      const parsedPrice = toDbPrice(current.price);
+      const parsedMinStay = Number(current.minStay);
 
       setPrices((prev) => ({
         ...prev,
@@ -311,7 +475,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
       });
 
       const nextCell: EditableCell = {
-        price: String(saved.price ?? 0),
+        price: toVisualPrice(saved.price),
         minStay: String(saved.minStay ?? 1),
         closed: saved.closed,
         dirty: false,
@@ -341,9 +505,90 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
             },
           };
         });
-      }, 1000);
+      }, 900);
     },
-    [prices, selectedOrgId, selectedPropertyId]
+    [prices, selectedOrgId, selectedPropertyId, getCalculatedDefaultPrice]
+  );
+
+  const saveClosedState = useCallback(
+    async (roomType: RevenueRoomType, date: string, nextClosed: boolean) => {
+      if (!selectedPropertyId || !selectedOrgId) {
+        throw new Error("Falta la propiedad o la organización seleccionada.");
+      }
+
+      const key = cellKey(roomType.id, date);
+      const current = prices[key] ?? {
+        price: getCalculatedDefaultPrice(roomType, date),
+        minStay: "1",
+        closed: false,
+      };
+
+      if (!isValidPriceInput(current.price)) {
+        throw new Error(`Precio inválido en ${roomType.name} (${date}).`);
+      }
+
+      if (!toSafeMinStay(current.minStay)) {
+        throw new Error(`Min stay inválido en ${roomType.name} (${date}).`);
+      }
+
+      const parsedPrice = toDbPrice(current.price);
+      const parsedMinStay = Number(current.minStay);
+
+      setPrices((prev) => ({
+        ...prev,
+        [key]: {
+          ...(prev[key] ?? current),
+          closed: nextClosed,
+          dirty: true,
+          saving: true,
+          saved: false,
+        },
+      }));
+
+      const saved = await upsertRoomPrice({
+        org_id: selectedOrgId,
+        property_id: selectedPropertyId,
+        room_type_id: roomType.id,
+        date,
+        price: parsedPrice,
+        min_stay: parsedMinStay,
+        closed: nextClosed,
+      });
+
+      const nextCell: EditableCell = {
+        price: toVisualPrice(saved.price),
+        minStay: String(saved.minStay ?? 1),
+        closed: saved.closed,
+        dirty: false,
+        saving: false,
+        saved: true,
+      };
+
+      setPrices((prev) => ({
+        ...prev,
+        [key]: nextCell,
+      }));
+
+      setServerSnapshot((prev) => ({
+        ...prev,
+        [key]: nextCell,
+      }));
+
+      window.setTimeout(() => {
+        setPrices((prev) => {
+          const existing = prev[key];
+          if (!existing) return prev;
+          return {
+            ...prev,
+            [key]: {
+              ...existing,
+              saved: false,
+            },
+          };
+        });
+      }, 900);
+    },
+    [prices, selectedOrgId, selectedPropertyId, getCalculatedDefaultPrice]
   );
 
   const handleSaveAll = useCallback(async () => {
@@ -396,8 +641,8 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
       return;
     }
 
-    if (diffDays > 45) {
-      alert("No conviene cargar más de 45 días de golpe en esta versión.");
+    if (diffDays > 60) {
+      alert("No conviene cargar más de 60 días de golpe en esta versión.");
       return;
     }
 
@@ -408,13 +653,17 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
 
   const shiftRange = useCallback(
     (days: number) => {
-      const nextFrom = formatDate(addDays(parseLocalDate(appliedFrom), days));
-      const nextTo = formatDate(addDays(parseLocalDate(appliedTo), days));
+      const fromDate = parseLocalDate(appliedFrom);
+      const toDate = parseLocalDate(appliedTo);
+
+      const nextFrom = formatDate(addDays(fromDate, days));
+      const nextTo = formatDate(addDays(toDate, days));
 
       setDateFrom(nextFrom);
       setDateTo(nextTo);
       setAppliedFrom(nextFrom);
       setAppliedTo(nextTo);
+      setRefreshTick((v) => v + 1);
     },
     [appliedFrom, appliedTo]
   );
@@ -425,7 +674,106 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
     setDateTo(next.to);
     setAppliedFrom(next.from);
     setAppliedTo(next.to);
+    setRefreshTick((v) => v + 1);
   }, []);
+
+  const handleCopyRowBase = useCallback(
+    (roomType: RevenueRoomType) => {
+      dates.forEach((date) => {
+        updateCell(roomType.id, date, {
+          price: toVisualPrice(roomType.basePrice ?? 0),
+          minStay: "1",
+          closed: false,
+        });
+      });
+    },
+    [dates, updateCell]
+  );
+
+  const handleCopyCalculatedRow = useCallback(
+    (roomType: RevenueRoomType) => {
+      dates.forEach((date) => {
+        updateCell(roomType.id, date, {
+          price: getCalculatedDefaultPrice(roomType, date),
+          minStay: "1",
+          closed: false,
+        });
+      });
+    },
+    [dates, updateCell, getCalculatedDefaultPrice]
+  );
+
+  const bulkTargetRoomTypeIds = useMemo(() => {
+    if (bulkScope === "ALL_VISIBLE") {
+      return filteredRoomTypes.map((rt) => rt.id);
+    }
+
+    if (bulkScope === "ONE") {
+      return bulkOneRoomTypeId ? [bulkOneRoomTypeId] : [];
+    }
+
+    return unique(bulkMultipleRoomTypeIds).filter(Boolean);
+  }, [bulkScope, filteredRoomTypes, bulkOneRoomTypeId, bulkMultipleRoomTypeIds]);
+
+  const bulkTargetDates = useMemo(() => {
+    if (bulkDateMode === "VISIBLE_RANGE") return dates;
+    if (bulkDateMode === "WEEKENDS") return dates.filter(isWeekend);
+    if (bulkDateMode === "WEEKDAYS") return dates.filter((d) => !isWeekend(d));
+
+    if (!bulkCustomFrom || !bulkCustomTo || bulkCustomFrom > bulkCustomTo) return [];
+    return buildDateRange(bulkCustomFrom, bulkCustomTo);
+  }, [bulkCustomFrom, bulkCustomTo, bulkDateMode, dates]);
+
+  const handleApplyBulk = useCallback(() => {
+    if (!bulkTargetRoomTypeIds.length) {
+      alert("No hay tipos de habitación seleccionados.");
+      return;
+    }
+
+    if (!bulkTargetDates.length) {
+      alert("No hay fechas válidas seleccionadas para la edición masiva.");
+      return;
+    }
+
+    if (!bulkApplyPrice && !bulkApplyMinStay && bulkStateMode === "NO_CHANGE") {
+      alert("No has definido ningún cambio para aplicar.");
+      return;
+    }
+
+    if (bulkApplyPrice && !isValidPriceInput(bulkPrice)) {
+      alert("El precio masivo no es válido.");
+      return;
+    }
+
+    if (bulkApplyMinStay && !toSafeMinStay(bulkMinStay)) {
+      alert("La estancia mínima masiva no es válida.");
+      return;
+    }
+
+    bulkTargetRoomTypeIds.forEach((roomTypeId) => {
+      bulkTargetDates.forEach((date) => {
+        const patch: Partial<EditableCell> = {};
+
+        if (bulkApplyPrice) patch.price = normalizePriceInput(bulkPrice);
+        if (bulkApplyMinStay) patch.minStay = bulkMinStay.replace(/[^\d]/g, "");
+        if (bulkStateMode === "OPEN") patch.closed = false;
+        if (bulkStateMode === "CLOSED") patch.closed = true;
+
+        updateCell(roomTypeId, date, patch);
+      });
+    });
+
+    setBulkDrawerOpen(false);
+  }, [
+    bulkApplyMinStay,
+    bulkApplyPrice,
+    bulkMinStay,
+    bulkPrice,
+    bulkStateMode,
+    bulkTargetDates,
+    bulkTargetRoomTypeIds,
+    updateCell,
+  ]);
 
   if (!selectedPropertyId) {
     return (
@@ -436,12 +784,12 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div className="bg-white rounded-3xl border border-gray-100 shadow-sm">
-        <div className="px-5 py-4 border-b border-gray-100 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Calendario de Precios</h1>
-            <p className="text-sm text-gray-500 mt-1">
+        <div className="px-4 py-3 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 border-b border-gray-100">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold text-gray-900">Calendario de Precios</h1>
+            <p className="text-xs text-gray-500 mt-0.5">
               Pricing diario, estancia mínima y cierres para {propertyTitle}
             </p>
           </div>
@@ -450,300 +798,425 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
             <button
               type="button"
               onClick={() => shiftRange(-1)}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-all"
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
             >
-              <ChevronLeft size={16} />
+              <ChevronLeft size={13} />
               Día anterior
             </button>
 
             <button
               type="button"
               onClick={handleGoToday}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-all"
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
             >
-              <CalendarDays size={16} />
+              <CalendarDays size={13} />
               Hoy
             </button>
 
             <button
               type="button"
               onClick={() => shiftRange(1)}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-all"
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
             >
               Día siguiente
-              <ChevronRight size={16} />
+              <ChevronRight size={13} />
             </button>
 
             <button
               type="button"
               onClick={() => setRefreshTick((v) => v + 1)}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-all"
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
             >
-              <RefreshCcw size={16} />
+              <RefreshCcw size={13} />
               Recargar
             </button>
           </div>
         </div>
 
-        <div className="px-5 py-4 flex flex-col 2xl:flex-row 2xl:items-end 2xl:justify-between gap-4">
-          <div className="flex flex-wrap items-end gap-3">
-            <div>
-              <label className="block text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2 ml-1">
-                Desde
-              </label>
-              <input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                className="px-4 py-2.5 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-              />
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2 ml-1">
-                Hasta
-              </label>
-              <input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                className="px-4 py-2.5 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-              />
-            </div>
-
-            <button
-              type="button"
-              onClick={handleApplyRange}
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-gray-900 text-white rounded-xl font-bold hover:bg-gray-800 transition-all shadow-sm"
-            >
-              Aplicar rango
-            </button>
+        <div className="px-4 py-3 flex flex-wrap items-end gap-2">
+          <div>
+            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1 ml-1">
+              Desde
+            </label>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="px-3 py-1.5 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+            />
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="px-4 py-2 rounded-xl bg-slate-50 border border-slate-200 text-sm">
-              <span className="font-semibold text-slate-900">Desde:</span>{" "}
-              <span className="text-slate-600">{appliedFrom}</span>
+          <div>
+            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1 ml-1">
+              Hasta
+            </label>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="px-3 py-1.5 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+          </div>
+
+          <button
+            type="button"
+            onClick={handleApplyRange}
+            className="inline-flex items-center gap-2 px-4 py-1.5 bg-gray-900 text-white rounded-xl text-sm font-bold hover:bg-gray-800"
+          >
+            Aplicar rango
+          </button>
+
+          <div className="flex flex-wrap items-center gap-2 ml-auto">
+            <div className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+              <span className="font-semibold text-slate-900">Desde:</span> {appliedFrom}
             </div>
-            <div className="px-4 py-2 rounded-xl bg-slate-50 border border-slate-200 text-sm">
-              <span className="font-semibold text-slate-900">Hasta:</span>{" "}
-              <span className="text-slate-600">{appliedTo}</span>
+            <div className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+              <span className="font-semibold text-slate-900">Hasta:</span> {appliedTo}
             </div>
-            <div className="px-4 py-2 rounded-xl bg-slate-50 border border-slate-200 text-sm">
-              <span className="font-semibold text-slate-900">Días:</span>{" "}
-              <span className="text-slate-600">{dates.length}</span>
+            <div className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+              <span className="font-semibold text-slate-900">Días:</span> {dates.length}
             </div>
           </div>
         </div>
       </div>
 
       {pageError && (
-        <div className="flex items-center gap-3 bg-rose-50 text-rose-700 px-4 py-3 rounded-2xl border border-rose-100">
-          <AlertTriangle size={18} />
-          <span className="text-sm font-semibold">{pageError}</span>
+        <div className="flex items-center gap-3 bg-rose-50 text-rose-700 px-4 py-2.5 rounded-2xl border border-rose-100">
+          <AlertTriangle size={14} />
+          <span className="text-xs font-semibold">{pageError}</span>
         </div>
       )}
 
-      <div className="bg-white rounded-3xl border border-gray-100 shadow-sm px-5 py-4">
-        <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
-          <div className="flex items-center gap-3 flex-wrap">
-            <div
-              className={`inline-flex items-center gap-2 px-4 py-2 rounded-2xl border text-sm font-semibold ${
-                hasPendingChanges
-                  ? "bg-amber-50 text-amber-700 border-amber-200"
-                  : "bg-emerald-50 text-emerald-700 border-emerald-200"
-              }`}
-            >
-              {hasPendingChanges ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
-              {hasPendingChanges
-                ? `${pendingCount} cambio${pendingCount === 1 ? "" : "s"} pendiente${pendingCount === 1 ? "" : "s"}`
-                : "Sin cambios pendientes"}
+      <div className="bg-white rounded-3xl border border-gray-100 shadow-sm px-4 py-3">
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setBulkDrawerOpen(true)}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                <SlidersHorizontal size={13} />
+                Edición masiva
+              </button>
+
+              <div
+                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-2xl border text-xs font-semibold ${
+                  hasPendingChanges
+                    ? "bg-amber-50 text-amber-700 border-amber-200"
+                    : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                }`}
+              >
+                {hasPendingChanges ? <AlertTriangle size={13} /> : <CheckCircle2 size={13} />}
+                {hasPendingChanges
+                  ? `${pendingCount} pendiente${pendingCount === 1 ? "" : "s"}`
+                  : "Sin cambios"}
+              </div>
+
+              <div className="relative">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  value={roomTypeFilter}
+                  onChange={(e) => setRoomTypeFilter(e.target.value)}
+                  placeholder="Filtrar tipo..."
+                  className="pl-8 pr-3 py-1.5 rounded-xl border border-gray-200 text-xs w-[170px] focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
             </div>
 
-            <div className="relative">
-              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                value={roomTypeFilter}
-                onChange={(e) => setRoomTypeFilter(e.target.value)}
-                placeholder="Filtrar tipo de habitación..."
-                className="pl-9 pr-3 py-2.5 rounded-xl border border-gray-200 text-sm w-[260px] focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-              />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleDiscardChanges}
+                disabled={!hasPendingChanges || savingAll}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                <RotateCcw size={13} />
+                Descartar
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleSaveAll()}
+                disabled={!hasPendingChanges || savingAll}
+                className="inline-flex items-center gap-2 px-4 py-1.5 bg-blue-600 text-white rounded-xl text-xs font-bold hover:bg-blue-700 disabled:opacity-60"
+              >
+                {savingAll ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" />
+                    Guardando...
+                  </>
+                ) : (
+                  <>
+                    <Save size={13} />
+                    Guardar cambios
+                  </>
+                )}
+              </button>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handleDiscardChanges}
-              disabled={!hasPendingChanges || savingAll}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-gray-200 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-all disabled:opacity-50"
-            >
-              <RotateCcw size={16} />
-              Descartar cambios
-            </button>
-
-            <button
-              type="button"
-              onClick={() => void handleSaveAll()}
-              disabled={!hasPendingChanges || savingAll}
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-sm disabled:opacity-60"
-            >
-              {savingAll ? (
-                <>
-                  <Loader2 size={16} className="animate-spin" />
-                  Guardando...
-                </>
-              ) : (
-                <>
-                  <Save size={16} />
-                  Guardar cambios
-                </>
-              )}
-            </button>
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+            {visibleLegend.length === 0 ? (
+              <div className="text-slate-400">Sin eventos o temporadas en el rango visible</div>
+            ) : (
+              visibleLegend.map((item) => (
+                <div
+                  key={`${item.source_type}-${(item as any).source_id ?? item.calendar_date}-${item.color}`}
+                  className="inline-flex items-center gap-2"
+                  title={`${item.name} · ${item.item_type}`}
+                >
+                  <span
+                    className="w-3 h-3 rounded-full border border-slate-200"
+                    style={{ backgroundColor: item.color }}
+                  />
+                  <span>
+                    {markerLabel(item)}
+                    {getContextPricingLabel(item) ? ` · ${getContextPricingLabel(item)}` : ""}
+                  </span>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>
 
       <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
-        {(loadingRoomTypes || loadingPrices) && (
-          <div className="flex items-center justify-center gap-2 py-8 text-sm text-gray-500 border-b border-gray-100">
+        {(loadingRoomTypes || loadingPrices || loadingCalendarContext) && (
+          <div className="flex items-center justify-center gap-2 py-5 text-xs text-gray-500 border-b border-gray-100">
             <Loader2 className="h-4 w-4 animate-spin" />
             Cargando datos…
           </div>
         )}
 
         {!loadingRoomTypes && filteredRoomTypes.length === 0 ? (
-          <div className="px-8 py-12 text-center text-gray-400">
-            <Hotel size={42} className="mx-auto mb-4 opacity-20" />
-            <p className="font-bold">
+          <div className="px-8 py-8 text-center text-gray-400">
+            <Hotel size={32} className="mx-auto mb-3 opacity-20" />
+            <p className="font-bold text-sm">
               {roomTypeFilter
                 ? "No hay tipos que coincidan con el filtro"
                 : "No hay tipos de habitación configurados"}
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-max border-collapse">
+          <div className="max-h-[68vh] overflow-auto">
+            <table className="w-full text-xs min-w-max border-collapse">
               <thead className="sticky top-0 z-20">
                 <tr className="bg-gray-50 border-b border-gray-100">
-                  <th className="sticky left-0 z-30 bg-gray-50 text-left px-4 py-3 min-w-[220px] border-r border-gray-100">
-                    <div className="text-[11px] font-black uppercase tracking-widest text-gray-500">
-                      Tipo de habitación
+                  <th className="sticky left-0 z-30 bg-gray-50 text-left px-2 py-2 min-w-[160px] border-r border-gray-100">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-gray-500">
+                      Tipo habitación
                     </div>
                   </th>
 
-                  {dates.map((date) => (
-                    <th
-                      key={date}
-                      className={`px-1.5 py-2 text-center min-w-[88px] border-l border-gray-100 ${
-                        isWeekend(date) ? "bg-slate-100" : "bg-gray-50"
-                      }`}
-                    >
-                      <div className="text-sm font-bold text-gray-900 leading-tight">
-                        {prettyDayLabel(date)}
-                      </div>
-                      <div className="text-[10px] lowercase text-gray-500 font-semibold leading-tight">
-                        {weekdayLabel(date)}
-                      </div>
-                    </th>
-                  ))}
+                  {dates.map((date) => {
+                    const context = calendarContextByDate.get(date);
+
+                    return (
+                      <th
+                        key={date}
+                        className={`px-0.5 py-1 text-center min-w-[48px] border-l border-gray-100 ${
+                          isWeekend(date) ? "bg-slate-100" : "bg-gray-50"
+                        }`}
+                      >
+                        <div className="text-[12px] font-bold text-gray-900 leading-none">
+                          {prettyDayLabel(date)}
+                        </div>
+                        <div className="text-[9px] lowercase text-gray-500 font-semibold leading-none mt-0.5">
+                          {weekdayLabel(date)}
+                        </div>
+                        <div className="mt-1 flex items-center justify-center gap-1">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full border border-slate-200"
+                            style={{ backgroundColor: context?.color ?? "#CBD5E1" }}
+                            title={
+                              context
+                                ? `${context.name} · ${context.item_type} · ${context.source_type}`
+                                : "Sin evento/temporada"
+                            }
+                          />
+                        </div>
+                        {context && (
+                          <div
+                            className="mt-0.5 text-[8px] font-bold text-slate-500 leading-none"
+                            title={getContextPricingLabel(context)}
+                          >
+                            {getContextPricingLabel(context)}
+                          </div>
+                        )}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
 
               <tbody>
                 {filteredRoomTypes.map((roomType, rowIndex) => (
-                  <tr
-                    key={roomType.id}
-                    className={rowIndex % 2 === 0 ? "bg-white" : "bg-slate-50/40"}
-                  >
-                    <td className="sticky left-0 z-10 px-4 py-3 align-middle border-r border-b border-gray-100 bg-inherit">
-                      <div className="font-bold text-gray-900 text-[15px] leading-tight">
+                  <tr key={roomType.id} className={rowIndex % 2 === 0 ? "bg-white" : "bg-slate-50/40"}>
+                    <td className="sticky left-0 z-10 px-2 py-2 align-middle border-r border-b border-gray-100 bg-inherit">
+                      <div className="font-bold text-gray-900 text-[11px] leading-tight">
                         {roomType.name}
                       </div>
-                      <div className="mt-1 text-sm text-gray-500 leading-tight">
-                        {roomType.code} · {roomType.capacity ?? 0} pax · {roomType.roomsCount ?? 0} hab.
+                      <div className="mt-0.5 text-[9px] text-gray-500 leading-tight">
+                        {roomType.code} · {roomType.capacity ?? 0}p · {roomType.roomsCount ?? 0}h
                       </div>
-                      <div className="mt-1 text-sm font-bold text-gray-700 leading-tight">
-                        Base {Number(roomType.basePrice ?? 0).toFixed(2)} €
+                      <div className="mt-0.5 text-[10px] font-bold text-gray-700 leading-tight">
+                        Base {Number(roomType.basePrice ?? 0).toFixed(0)}€
+                      </div>
+
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleCopyRowBase(roomType)}
+                          className="inline-flex items-center gap-1 text-[9px] text-blue-600 font-bold hover:text-blue-700"
+                          title="Copiar precio base a todos los días visibles"
+                        >
+                          <Copy size={10} />
+                          Base
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleCopyCalculatedRow(roomType)}
+                          className="inline-flex items-center gap-1 text-[9px] text-emerald-600 font-bold hover:text-emerald-700"
+                          title="Copiar precio calculado por contexto a todos los días visibles"
+                        >
+                          <Wand2 size={10} />
+                          Regla
+                        </button>
                       </div>
                     </td>
 
                     {dates.map((date) => {
                       const cell = getCell(roomType, date);
                       const closed = cell.closed;
+                      const context = calendarContextByDate.get(date);
+                      const suggestedPrice = getCalculatedDefaultPrice(roomType, date);
+                      const isSuggested =
+                        !prices[cellKey(roomType.id, date)] && cell.price === suggestedPrice;
 
                       return (
                         <td
                           key={date}
-                          className={`px-1.5 py-1.5 align-middle border-l border-b border-gray-100 ${
+                          className={`px-0 py-0 align-middle border-l border-b border-gray-100 ${
                             closed
-                              ? "bg-slate-200/70"
+                              ? "bg-slate-300/70"
                               : isWeekend(date)
                               ? "bg-slate-50/70"
                               : "bg-white"
                           }`}
                         >
                           <div
-                            className={`rounded-xl border px-2 py-1.5 transition-all ${
+                            className={`px-0.5 py-0.5 min-h-[56px] ${
                               closed
-                                ? "border-slate-300 bg-slate-200/80"
+                                ? "bg-slate-300/70"
                                 : cell.dirty
-                                ? "border-amber-300 bg-amber-50/60"
+                                ? "bg-amber-50/70"
                                 : cell.saved
-                                ? "border-emerald-300 bg-emerald-50/60"
-                                : "border-gray-100 bg-white"
+                                ? "bg-emerald-50/70"
+                                : "bg-transparent"
                             }`}
                           >
                             <input
-                              type="number"
-                              min="0"
-                              step="0.01"
+                              type="text"
+                              inputMode="decimal"
                               value={cell.price}
-                              onChange={(e) =>
+                              onChange={(e) => {
                                 updateCell(roomType.id, date, {
-                                  price: e.target.value,
-                                })
-                              }
-                              className={`w-full bg-transparent text-center text-[18px] leading-none font-bold outline-none ${
-                                closed ? "text-slate-500" : "text-gray-900"
+                                  price: normalizePriceInput(e.target.value),
+                                });
+                              }}
+                              onBlur={() => {
+                                const current = getCell(roomType, date);
+                                if (isValidPriceInput(current.price) && toSafeMinStay(current.minStay)) {
+                                  void saveOneCell(roomType, date).catch(() => {});
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.currentTarget.blur();
+                                }
+                              }}
+                              className={`w-full bg-transparent text-center text-[10px] leading-none font-bold outline-none ${
+                                closed ? "text-slate-600" : "text-gray-900"
                               }`}
                               title={`Precio ${date}`}
                             />
 
-                            <div className="mt-1 flex items-center justify-center gap-1 text-[10px] font-semibold text-gray-500">
+                            <div className="mt-0.5 flex items-center justify-center gap-1 text-[8px] font-semibold leading-none">
+                              {isSuggested ? (
+                                <span className="text-emerald-700" title="Precio calculado por regla">
+                                  auto
+                                </span>
+                              ) : (
+                                <span className="text-gray-400" title="Precio grabado manualmente">
+                                  fijo
+                                </span>
+                              )}
+
+                              {context ? (
+                                <span
+                                  className="truncate max-w-[34px] text-slate-500"
+                                  title={`${context.name}${getContextPricingLabel(context) ? ` · ${getContextPricingLabel(context)}` : ""}`}
+                                >
+                                  {context.source_type === "EVENT" ? "evt" : "tmp"}
+                                </span>
+                              ) : null}
+                            </div>
+
+                            <div className="mt-0.5 flex items-center justify-center gap-0.5 text-[9px] font-semibold text-gray-500 leading-none">
                               <span>MS</span>
                               <input
-                                type="number"
-                                min="1"
-                                step="1"
+                                type="text"
+                                inputMode="numeric"
                                 value={cell.minStay}
-                                onChange={(e) =>
+                                onChange={(e) => {
                                   updateCell(roomType.id, date, {
-                                    minStay: e.target.value,
-                                  })
-                                }
-                                className={`w-8 bg-transparent text-center font-bold outline-none border-b border-dashed ${
-                                  closed
-                                    ? "text-slate-500 border-slate-400"
-                                    : "text-gray-700 border-gray-300"
+                                    minStay: e.target.value.replace(/[^\d]/g, ""),
+                                  });
+                                }}
+                                onBlur={() => {
+                                  const current = getCell(roomType, date);
+                                  if (isValidPriceInput(current.price) && toSafeMinStay(current.minStay)) {
+                                    void saveOneCell(roomType, date).catch(() => {});
+                                  }
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.currentTarget.blur();
+                                  }
+                                }}
+                                className={`w-4 bg-transparent text-center font-bold outline-none ${
+                                  closed ? "text-slate-600" : "text-gray-700"
                                 }`}
                                 title={`Estancia mínima ${date}`}
                               />
                             </div>
 
-                            <div className="mt-1.5 flex items-center justify-center">
+                            <div className="mt-0.5 flex items-center justify-center">
                               <button
                                 type="button"
-                                onClick={() =>
-                                  updateCell(roomType.id, date, {
-                                    closed: !cell.closed,
-                                  })
-                                }
-                                className={`inline-flex items-center justify-center rounded-md p-1 transition-all ${
+                                onClick={async () => {
+                                  const nextClosed = !cell.closed;
+                                  const actionLabel = nextClosed ? "cerrar" : "abrir";
+
+                                  const confirmed = window.confirm(
+                                    `¿Quieres ${actionLabel} el día ${date} para "${roomType.name}"?`
+                                  );
+
+                                  if (!confirmed) return;
+
+                                  try {
+                                    await saveClosedState(roomType, date, nextClosed);
+                                  } catch (e: any) {
+                                    alert(e?.message ?? `No se pudo ${actionLabel} el día.`);
+                                  }
+                                }}
+                                className={`inline-flex items-center justify-center rounded-md p-1.5 ${
                                   closed
-                                    ? "text-slate-700 hover:bg-slate-300/60"
-                                    : "text-slate-400 hover:bg-slate-100"
+                                    ? "text-slate-800 hover:bg-slate-400/40"
+                                    : "text-slate-500 hover:text-slate-700 hover:bg-slate-100"
                                 }`}
                                 title={
                                   closed
@@ -751,17 +1224,17 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                                     : `Día abierto (${date}). Pulsa para cerrar.`
                                 }
                               >
-                                {closed ? <Lock size={14} /> : <LockOpen size={14} />}
+                                {closed ? <Lock size={16} /> : <LockOpen size={16} />}
                               </button>
                             </div>
 
-                            <div className="mt-1 h-[12px] flex items-center justify-center">
+                            <div className="mt-0.5 h-[8px] flex items-center justify-center">
                               {cell.saving ? (
-                                <Loader2 size={11} className="animate-spin text-blue-600" />
+                                <Loader2 size={8} className="animate-spin text-blue-600" />
                               ) : cell.saved ? (
-                                <CheckCircle2 size={11} className="text-emerald-600" />
+                                <CheckCircle2 size={8} className="text-emerald-600" />
                               ) : cell.dirty ? (
-                                <AlertTriangle size={11} className="text-amber-600" />
+                                <AlertTriangle size={8} className="text-amber-600" />
                               ) : null}
                             </div>
                           </div>
@@ -775,6 +1248,262 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
           </div>
         )}
       </div>
+
+      {bulkDrawerOpen && (
+        <div className="fixed inset-0 z-[120]">
+          <div
+            className="absolute inset-0 bg-slate-900/30 backdrop-blur-[1px]"
+            onClick={() => setBulkDrawerOpen(false)}
+          />
+
+          <div className="absolute right-0 top-0 h-full w-full max-w-[460px] bg-white shadow-2xl border-l border-slate-200 flex flex-col">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Edición masiva</h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Aplica cambios a una fila, varias o todas las visibles.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setBulkDrawerOpen(false)}
+                className="inline-flex items-center justify-center w-9 h-9 rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto px-5 py-4 space-y-4">
+              <div className="rounded-2xl border border-slate-100 bg-slate-50/60 px-4 py-3">
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
+                  Alcance
+                </div>
+
+                <div className="space-y-2 text-sm">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={bulkScope === "ONE"}
+                      onChange={() => setBulkScope("ONE")}
+                    />
+                    Una fila
+                  </label>
+
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={bulkScope === "MULTIPLE"}
+                      onChange={() => setBulkScope("MULTIPLE")}
+                    />
+                    Varias filas
+                  </label>
+
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={bulkScope === "ALL_VISIBLE"}
+                      onChange={() => setBulkScope("ALL_VISIBLE")}
+                    />
+                    Todas las visibles
+                  </label>
+                </div>
+
+                {bulkScope === "ONE" && (
+                  <div className="mt-3">
+                    <select
+                      value={bulkOneRoomTypeId}
+                      onChange={(e) => setBulkOneRoomTypeId(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                    >
+                      {roomTypes.map((rt) => (
+                        <option key={rt.id} value={rt.id}>
+                          {rt.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {bulkScope === "MULTIPLE" && (
+                  <div className="mt-3 max-h-40 overflow-auto rounded-xl border border-slate-200 bg-white p-3 space-y-2">
+                    {roomTypes.map((rt) => {
+                      const checked = bulkMultipleRoomTypeIds.includes(rt.id);
+                      return (
+                        <label key={rt.id} className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              setBulkMultipleRoomTypeIds((prev) => {
+                                if (e.target.checked) return unique([...prev, rt.id]);
+                                return prev.filter((x) => x !== rt.id);
+                              });
+                            }}
+                          />
+                          <span>{rt.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-slate-100 bg-slate-50/60 px-4 py-3">
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
+                  Fechas
+                </div>
+
+                <div className="space-y-2 text-sm">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={bulkDateMode === "VISIBLE_RANGE"}
+                      onChange={() => setBulkDateMode("VISIBLE_RANGE")}
+                    />
+                    Rango visible actual
+                  </label>
+
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={bulkDateMode === "CUSTOM_RANGE"}
+                      onChange={() => setBulkDateMode("CUSTOM_RANGE")}
+                    />
+                    Rango personalizado
+                  </label>
+
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={bulkDateMode === "WEEKENDS"}
+                      onChange={() => setBulkDateMode("WEEKENDS")}
+                    />
+                    Fines de semana
+                  </label>
+
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={bulkDateMode === "WEEKDAYS"}
+                      onChange={() => setBulkDateMode("WEEKDAYS")}
+                    />
+                    Laborables
+                  </label>
+                </div>
+
+                {bulkDateMode === "CUSTOM_RANGE" && (
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <input
+                      type="date"
+                      value={bulkCustomFrom}
+                      onChange={(e) => setBulkCustomFrom(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                    <input
+                      type="date"
+                      value={bulkCustomTo}
+                      onChange={(e) => setBulkCustomTo(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-slate-100 bg-slate-50/60 px-4 py-3">
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
+                  Cambios a aplicar
+                </div>
+
+                <div className="space-y-3">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={bulkApplyPrice}
+                      onChange={(e) => setBulkApplyPrice(e.target.checked)}
+                    />
+                    Aplicar precio
+                  </label>
+
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bulkPrice}
+                    onChange={(e) => setBulkPrice(normalizePriceInput(e.target.value))}
+                    placeholder="120"
+                    disabled={!bulkApplyPrice}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-100"
+                  />
+
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={bulkApplyMinStay}
+                      onChange={(e) => setBulkApplyMinStay(e.target.checked)}
+                    />
+                    Aplicar estancia mínima
+                  </label>
+
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={bulkMinStay}
+                    onChange={(e) => setBulkMinStay(e.target.value.replace(/[^\d]/g, ""))}
+                    disabled={!bulkApplyMinStay}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-100"
+                  />
+
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
+                      Estado
+                    </label>
+                    <select
+                      value={bulkStateMode}
+                      onChange={(e) => setBulkStateMode(e.target.value as BulkStateMode)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                    >
+                      <option value="NO_CHANGE">No tocar</option>
+                      <option value="OPEN">Abrir</option>
+                      <option value="CLOSED">Cerrar</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-3">
+                <div className="text-[10px] font-black uppercase tracking-widest text-blue-700/70 mb-2">
+                  Aviso
+                </div>
+                <p className="text-xs text-slate-700 leading-relaxed">
+                  Si una celda no tiene precio grabado, el sistema muestra el precio calculado
+                  desde la tarifa base del tipo de habitación y la regla activa de temporada o
+                  evento. Cuando grabas manualmente una celda, ese precio pasa a mandar sobre la
+                  sugerencia.
+                </p>
+              </div>
+            </div>
+
+            <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setBulkDrawerOpen(false)}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="button"
+                onClick={handleApplyBulk}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gray-900 text-white text-sm font-bold hover:bg-gray-800"
+              >
+                <Wand2 size={14} />
+                Aplicar cambios
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

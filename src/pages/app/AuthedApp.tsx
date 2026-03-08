@@ -16,6 +16,7 @@ import Leaks from "@/views/Leaks";
 import SettingsProperties from "@/modules/revenue-intelligence/pages/SettingsProperties";
 import RoomTypesPage from "@/modules/revenue-intelligence/pages/RoomTypesPage";
 import PriceCalendarPage from "@/modules/revenue-intelligence/pages/PriceCalendarPage";
+import EventsSeasonsPage from "@/modules/revenue-intelligence/pages/EventsSeasonsPage";
 import PropertySelector from "@/modules/revenue-intelligence/components/PropertySelector";
 import {
   getProperties,
@@ -48,6 +49,7 @@ import {
   Building2,
   BedDouble,
   CalendarRange,
+  CalendarDays,
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
@@ -96,7 +98,8 @@ function isRevenueView(v: AuthedView) {
     v === "rev_leakage" ||
     v === "rev_properties" ||
     v === "rev_room_types" ||
-    v === "rev_price_calendar"
+    v === "rev_price_calendar" ||
+    v === "rev_events_seasons"
   );
 }
 
@@ -214,6 +217,12 @@ export default function AuthedApp() {
         icon: CalendarRange,
         section: "REVENUE",
       },
+      {
+        view: "rev_events_seasons",
+        label: "Eventos y temporadas",
+        icon: CalendarDays,
+        section: "REVENUE",
+      },
 
       { view: "aud_stats", label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
       { view: "aud_history", label: "Histórico", icon: Clock, section: "AUDITORIA" },
@@ -248,6 +257,8 @@ export default function AuthedApp() {
         return "Tipos de habitación";
       case "rev_price_calendar":
         return "Calendario de precios";
+      case "rev_events_seasons":
+        return "Eventos y temporadas";
       case "aud_stats":
         return "Estadísticas operativas";
       case "aud_history":
@@ -281,6 +292,8 @@ export default function AuthedApp() {
         return "Gestiona el inventario base por categoría dentro de la propiedad activa.";
       case "rev_price_calendar":
         return "Configura precio diario, estancia mínima y cierres por tipo de habitación.";
+      case "rev_events_seasons":
+        return "Gestiona temporadas y eventos que contextualizan el calendario y el pricing.";
       case "aud_stats":
         return "KPIs operativos y métricas agregadas.";
       case "aud_history":
@@ -369,6 +382,13 @@ export default function AuthedApp() {
           selectedOrgId={selectedProperty?.orgId ?? null}
         />
       )}
+
+      {currentView === "rev_events_seasons" && canAccessRevenue && (
+          <EventsSeasonsPage
+            selectedPropertyId={selectedPropertyId}
+            selectedPropertyName={selectedProperty?.name ?? null}
+          />
+        )}
 
       {currentView === "aud_stats" && <StatsViewAuditor currentPlan={currentPlan} />}
       {currentView === "aud_history" && <HistoryViewAuditor />}

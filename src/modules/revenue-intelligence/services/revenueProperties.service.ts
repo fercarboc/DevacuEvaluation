@@ -1,5 +1,7 @@
 import { supabase } from "@/services/supabaseClient";
 
+const sb: any = supabase;
+
 export type RevenuePropertyRow = {
   id: string;
   org_id: string;
@@ -27,7 +29,7 @@ export type RevenueProperty = {
 };
 
 export type CreatePropertyInput = {
-  org_id?: string | null; // opcional, tu UI puede no mandarlo
+  org_id?: string | null;
   code: string;
   name: string;
   category?: number | null;
@@ -89,7 +91,7 @@ function mapRow(row: RevenuePropertyRow): RevenueProperty {
 }
 
 export async function getProperties(orgId?: string | null): Promise<RevenueProperty[]> {
-  let query = supabase
+  let query = sb
     .from("debacu_eval_properties")
     .select("id, org_id, code, name, category, address, city, country, timezone, is_active")
     .order("name", { ascending: true });
@@ -101,69 +103,71 @@ export async function getProperties(orgId?: string | null): Promise<RevenuePrope
   const { data, error } = await query;
 
   if (error) throw error;
-  return (data ?? []).map(mapRow);
+
+  const rows = (data ?? []) as RevenuePropertyRow[];
+  return rows.map(mapRow);
 }
 
 export async function createProperty(input: CreatePropertyInput) {
-  const { data, error } = await supabase.functions.invoke<PropertiesManageResponse>(
+  const { data, error } = await sb.functions.invoke(
     "debacu_eval_revenue_properties_manage",
     {
       body: {
         action: "CREATE",
         ...input,
       },
-    },
+    }
   );
 
   if (error) throw error;
   if (!data?.ok) throw new Error(data?.detail || data?.error || "create_property_failed");
-  return data;
+  return data as PropertiesManageResponse;
 }
 
 export async function updateProperty(input: UpdatePropertyInput) {
-  const { data, error } = await supabase.functions.invoke<PropertiesManageResponse>(
+  const { data, error } = await sb.functions.invoke(
     "debacu_eval_revenue_properties_manage",
     {
       body: {
         action: "UPDATE",
         ...input,
       },
-    },
+    }
   );
 
   if (error) throw error;
   if (!data?.ok) throw new Error(data?.detail || data?.error || "update_property_failed");
-  return data;
+  return data as PropertiesManageResponse;
 }
 
 export async function togglePropertyActive(input: TogglePropertyInput) {
-  const { data, error } = await supabase.functions.invoke<PropertiesManageResponse>(
+  const { data, error } = await sb.functions.invoke(
     "debacu_eval_revenue_properties_manage",
     {
       body: {
         action: "TOGGLE_ACTIVE",
         ...input,
       },
-    },
+    }
   );
 
   if (error) throw error;
   if (!data?.ok) throw new Error(data?.detail || data?.error || "toggle_property_failed");
-  return data;
+  return data as PropertiesManageResponse;
 }
 
 export async function deleteProperty(input: DeletePropertyInput) {
-  const { data, error } = await supabase.functions.invoke<PropertiesManageResponse>(
+  const { data, error } = await sb.functions.invoke(
     "debacu_eval_revenue_properties_manage",
     {
       body: {
         action: "DELETE",
         ...input,
       },
-    },
+    }
   );
 
   if (error) throw error;
   if (!data?.ok) throw new Error(data?.detail || data?.error || "delete_property_failed");
-  return data;
+  return data as PropertiesManageResponse;
 }
