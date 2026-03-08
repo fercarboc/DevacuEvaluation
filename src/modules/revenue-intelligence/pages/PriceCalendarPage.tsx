@@ -4,14 +4,15 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  CheckCircle2,
   Hotel,
   Loader2,
+  Lock,
+  LockOpen,
   RefreshCcw,
   RotateCcw,
   Save,
-  CheckCircle2,
-  Lock,
-  Unlock,
+  Search,
 } from "lucide-react";
 
 import {
@@ -131,6 +132,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
 
   const [pageError, setPageError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [roomTypeFilter, setRoomTypeFilter] = useState("");
 
   const dates = useMemo(() => buildDateRange(appliedFrom, appliedTo), [appliedFrom, appliedTo]);
 
@@ -143,6 +145,18 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
   }, [prices]);
 
   const hasPendingChanges = pendingCount > 0;
+
+  const filteredRoomTypes = useMemo(() => {
+    const q = roomTypeFilter.trim().toLowerCase();
+    if (!q) return roomTypes;
+
+    return roomTypes.filter((rt) => {
+      const hay =
+        rt.name.toLowerCase().includes(q) ||
+        rt.code.toLowerCase().includes(q);
+      return hay;
+    });
+  }, [roomTypes, roomTypeFilter]);
 
   const loadRoomTypes = useCallback(async () => {
     if (!selectedPropertyId) {
@@ -327,7 +341,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
             },
           };
         });
-      }, 1200);
+      }, 1000);
     },
     [prices, selectedOrgId, selectedPropertyId]
   );
@@ -382,8 +396,8 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
       return;
     }
 
-    if (diffDays > 31) {
-      alert("No conviene cargar más de 31 días de golpe en esta primera versión.");
+    if (diffDays > 45) {
+      alert("No conviene cargar más de 45 días de golpe en esta versión.");
       return;
     }
 
@@ -422,9 +436,9 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div className="bg-white rounded-3xl border border-gray-100 shadow-sm">
-        <div className="px-6 py-5 border-b border-gray-100 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
+        <div className="px-5 py-4 border-b border-gray-100 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Calendario de Precios</h1>
             <p className="text-sm text-gray-500 mt-1">
@@ -471,7 +485,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
           </div>
         </div>
 
-        <div className="px-6 py-4 flex flex-col 2xl:flex-row 2xl:items-end 2xl:justify-between gap-4">
+        <div className="px-5 py-4 flex flex-col 2xl:flex-row 2xl:items-end 2xl:justify-between gap-4">
           <div className="flex flex-wrap items-end gap-3">
             <div>
               <label className="block text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2 ml-1">
@@ -530,77 +544,90 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
         </div>
       )}
 
-      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-        <div className="flex items-center gap-3 flex-wrap">
-          <div
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-2xl border text-sm font-semibold ${
-              hasPendingChanges
-                ? "bg-amber-50 text-amber-700 border-amber-200"
-                : "bg-emerald-50 text-emerald-700 border-emerald-200"
-            }`}
-          >
-            {hasPendingChanges ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
-            {hasPendingChanges
-              ? `${pendingCount} cambio${pendingCount === 1 ? "" : "s"} pendiente${pendingCount === 1 ? "" : "s"}`
-              : "Sin cambios pendientes"}
+      <div className="bg-white rounded-3xl border border-gray-100 shadow-sm px-5 py-4">
+        <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <div
+              className={`inline-flex items-center gap-2 px-4 py-2 rounded-2xl border text-sm font-semibold ${
+                hasPendingChanges
+                  ? "bg-amber-50 text-amber-700 border-amber-200"
+                  : "bg-emerald-50 text-emerald-700 border-emerald-200"
+              }`}
+            >
+              {hasPendingChanges ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+              {hasPendingChanges
+                ? `${pendingCount} cambio${pendingCount === 1 ? "" : "s"} pendiente${pendingCount === 1 ? "" : "s"}`
+                : "Sin cambios pendientes"}
+            </div>
+
+            <div className="relative">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                type="text"
+                value={roomTypeFilter}
+                onChange={(e) => setRoomTypeFilter(e.target.value)}
+                placeholder="Filtrar tipo de habitación..."
+                className="pl-9 pr-3 py-2.5 rounded-xl border border-gray-200 text-sm w-[260px] focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+              />
+            </div>
           </div>
 
-          <div className="text-sm text-gray-500">
-            Edición compacta para ver más días y guardar de forma más limpia.
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleDiscardChanges}
+              disabled={!hasPendingChanges || savingAll}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-gray-200 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-all disabled:opacity-50"
+            >
+              <RotateCcw size={16} />
+              Descartar cambios
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void handleSaveAll()}
+              disabled={!hasPendingChanges || savingAll}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-sm disabled:opacity-60"
+            >
+              {savingAll ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  Guardando...
+                </>
+              ) : (
+                <>
+                  <Save size={16} />
+                  Guardar cambios
+                </>
+              )}
+            </button>
           </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={handleDiscardChanges}
-            disabled={!hasPendingChanges || savingAll}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-gray-200 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-all disabled:opacity-50"
-          >
-            <RotateCcw size={16} />
-            Descartar cambios
-          </button>
-
-          <button
-            type="button"
-            onClick={() => void handleSaveAll()}
-            disabled={!hasPendingChanges || savingAll}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-sm disabled:opacity-60"
-          >
-            {savingAll ? (
-              <>
-                <Loader2 size={16} className="animate-spin" />
-                Guardando...
-              </>
-            ) : (
-              <>
-                <Save size={16} />
-                Guardar cambios
-              </>
-            )}
-          </button>
         </div>
       </div>
 
       <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
         {(loadingRoomTypes || loadingPrices) && (
-          <div className="flex items-center justify-center gap-2 py-10 text-sm text-gray-500 border-b border-gray-100">
+          <div className="flex items-center justify-center gap-2 py-8 text-sm text-gray-500 border-b border-gray-100">
             <Loader2 className="h-4 w-4 animate-spin" />
             Cargando datos…
           </div>
         )}
 
-        {!loadingRoomTypes && roomTypes.length === 0 ? (
+        {!loadingRoomTypes && filteredRoomTypes.length === 0 ? (
           <div className="px-8 py-12 text-center text-gray-400">
-            <Hotel size={48} className="mx-auto mb-4 opacity-20" />
-            <p className="font-bold">No hay tipos de habitación configurados</p>
+            <Hotel size={42} className="mx-auto mb-4 opacity-20" />
+            <p className="font-bold">
+              {roomTypeFilter
+                ? "No hay tipos que coincidan con el filtro"
+                : "No hay tipos de habitación configurados"}
+            </p>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm min-w-max border-collapse">
               <thead className="sticky top-0 z-20">
                 <tr className="bg-gray-50 border-b border-gray-100">
-                  <th className="sticky left-0 z-30 bg-gray-50 text-left px-6 py-4 min-w-[260px] border-r border-gray-100">
+                  <th className="sticky left-0 z-30 bg-gray-50 text-left px-4 py-3 min-w-[220px] border-r border-gray-100">
                     <div className="text-[11px] font-black uppercase tracking-widest text-gray-500">
                       Tipo de habitación
                     </div>
@@ -609,12 +636,14 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                   {dates.map((date) => (
                     <th
                       key={date}
-                      className={`px-2 py-3 text-center min-w-[110px] border-l border-gray-100 ${
+                      className={`px-1.5 py-2 text-center min-w-[88px] border-l border-gray-100 ${
                         isWeekend(date) ? "bg-slate-100" : "bg-gray-50"
                       }`}
                     >
-                      <div className="text-sm font-bold text-gray-900">{prettyDayLabel(date)}</div>
-                      <div className="text-[10px] lowercase text-gray-500 font-semibold">
+                      <div className="text-sm font-bold text-gray-900 leading-tight">
+                        {prettyDayLabel(date)}
+                      </div>
+                      <div className="text-[10px] lowercase text-gray-500 font-semibold leading-tight">
                         {weekdayLabel(date)}
                       </div>
                     </th>
@@ -623,36 +652,46 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
               </thead>
 
               <tbody>
-                {roomTypes.map((roomType) => (
-                  <tr key={roomType.id} className="border-b border-gray-100">
-                    <td className="sticky left-0 z-10 bg-white px-6 py-4 align-top border-r border-gray-100">
-                      <div className="font-bold text-gray-900 text-base leading-tight">
+                {filteredRoomTypes.map((roomType, rowIndex) => (
+                  <tr
+                    key={roomType.id}
+                    className={rowIndex % 2 === 0 ? "bg-white" : "bg-slate-50/40"}
+                  >
+                    <td className="sticky left-0 z-10 px-4 py-3 align-middle border-r border-b border-gray-100 bg-inherit">
+                      <div className="font-bold text-gray-900 text-[15px] leading-tight">
                         {roomType.name}
                       </div>
-                      <div className="mt-2 text-sm text-gray-500">
+                      <div className="mt-1 text-sm text-gray-500 leading-tight">
                         {roomType.code} · {roomType.capacity ?? 0} pax · {roomType.roomsCount ?? 0} hab.
                       </div>
-                      <div className="mt-1 text-sm font-bold text-gray-700">
+                      <div className="mt-1 text-sm font-bold text-gray-700 leading-tight">
                         Base {Number(roomType.basePrice ?? 0).toFixed(2)} €
                       </div>
                     </td>
 
                     {dates.map((date) => {
                       const cell = getCell(roomType, date);
+                      const closed = cell.closed;
 
                       return (
                         <td
                           key={date}
-                          className={`px-2 py-3 align-top border-l border-gray-100 ${
-                            isWeekend(date) ? "bg-slate-50/70" : "bg-white"
+                          className={`px-1.5 py-1.5 align-middle border-l border-b border-gray-100 ${
+                            closed
+                              ? "bg-slate-200/70"
+                              : isWeekend(date)
+                              ? "bg-slate-50/70"
+                              : "bg-white"
                           }`}
                         >
                           <div
-                            className={`rounded-2xl border p-2.5 transition-all ${
-                              cell.dirty
-                                ? "border-amber-300 bg-amber-50/50"
+                            className={`rounded-xl border px-2 py-1.5 transition-all ${
+                              closed
+                                ? "border-slate-300 bg-slate-200/80"
+                                : cell.dirty
+                                ? "border-amber-300 bg-amber-50/60"
                                 : cell.saved
-                                ? "border-emerald-300 bg-emerald-50/50"
+                                ? "border-emerald-300 bg-emerald-50/60"
                                 : "border-gray-100 bg-white"
                             }`}
                           >
@@ -666,10 +705,13 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                                   price: e.target.value,
                                 })
                               }
-                              className="w-full bg-transparent text-center text-lg font-bold text-gray-900 outline-none"
+                              className={`w-full bg-transparent text-center text-[18px] leading-none font-bold outline-none ${
+                                closed ? "text-slate-500" : "text-gray-900"
+                              }`}
+                              title={`Precio ${date}`}
                             />
 
-                            <div className="mt-2 flex items-center justify-center gap-1 text-[11px] text-gray-500 font-semibold">
+                            <div className="mt-1 flex items-center justify-center gap-1 text-[10px] font-semibold text-gray-500">
                               <span>MS</span>
                               <input
                                 type="number"
@@ -681,45 +723,47 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                                     minStay: e.target.value,
                                   })
                                 }
-                                className="w-10 bg-transparent text-center font-bold text-gray-700 outline-none border-b border-dashed border-gray-300"
+                                className={`w-8 bg-transparent text-center font-bold outline-none border-b border-dashed ${
+                                  closed
+                                    ? "text-slate-500 border-slate-400"
+                                    : "text-gray-700 border-gray-300"
+                                }`}
+                                title={`Estancia mínima ${date}`}
                               />
                             </div>
 
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateCell(roomType.id, date, {
-                                  closed: !cell.closed,
-                                })
-                              }
-                              className={`mt-2 w-full inline-flex items-center justify-center gap-1 rounded-xl px-2 py-1.5 text-[11px] font-bold transition-all ${
-                                cell.closed
-                                  ? "bg-rose-50 text-rose-700 border border-rose-200"
-                                  : "bg-slate-50 text-slate-600 border border-slate-200"
-                              }`}
-                            >
-                              {cell.closed ? <Lock size={12} /> : <Unlock size={12} />}
-                              {cell.closed ? "Cerrado" : "Abierto"}
-                            </button>
+                            <div className="mt-1.5 flex items-center justify-center">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateCell(roomType.id, date, {
+                                    closed: !cell.closed,
+                                  })
+                                }
+                                className={`inline-flex items-center justify-center rounded-md p-1 transition-all ${
+                                  closed
+                                    ? "text-slate-700 hover:bg-slate-300/60"
+                                    : "text-slate-400 hover:bg-slate-100"
+                                }`}
+                                title={
+                                  closed
+                                    ? `Día cerrado (${date}). Pulsa para abrir.`
+                                    : `Día abierto (${date}). Pulsa para cerrar.`
+                                }
+                              >
+                                {closed ? <Lock size={14} /> : <LockOpen size={14} />}
+                              </button>
+                            </div>
 
-                            {cell.saving ? (
-                              <div className="mt-2 flex items-center justify-center gap-1 text-[10px] text-blue-600 font-semibold">
-                                <Loader2 size={12} className="animate-spin" />
-                                Guardando
-                              </div>
-                            ) : cell.saved ? (
-                              <div className="mt-2 flex items-center justify-center gap-1 text-[10px] text-emerald-600 font-semibold">
-                                <CheckCircle2 size={12} />
-                                Guardado
-                              </div>
-                            ) : cell.dirty ? (
-                              <div className="mt-2 flex items-center justify-center gap-1 text-[10px] text-amber-600 font-semibold">
-                                <AlertTriangle size={12} />
-                                Pendiente
-                              </div>
-                            ) : (
-                              <div className="mt-2 h-[16px]" />
-                            )}
+                            <div className="mt-1 h-[12px] flex items-center justify-center">
+                              {cell.saving ? (
+                                <Loader2 size={11} className="animate-spin text-blue-600" />
+                              ) : cell.saved ? (
+                                <CheckCircle2 size={11} className="text-emerald-600" />
+                              ) : cell.dirty ? (
+                                <AlertTriangle size={11} className="text-amber-600" />
+                              ) : null}
+                            </div>
                           </div>
                         </td>
                       );
