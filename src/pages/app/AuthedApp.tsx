@@ -425,8 +425,29 @@ export default function AuthedApp() {
       {currentView === "rev_channels" && canAccessRevenue && <ChannelAnalysis />}
       {currentView === "rev_risk" && canAccessRevenue && <RiskAnalysis />}
       {currentView === "rev_leakage" && canAccessRevenue && <Leaks />}
-      {currentView === "rev_day_by_day" && canAccessRevenue && <DayByDay />}
-      {currentView === "rev_monthly" && canAccessRevenue && <MonthlyComparison />}
+            {currentView === "rev_day_by_day" && canAccessRevenue && (
+        <DayByDay
+          orgId={selectedProperty?.orgId ?? null}
+          selectedPropertyId={selectedPropertyId}
+          properties={revenueProperties.map((p) => ({
+            id: p.id,
+            name: p.name,
+            roomsCount: (p as any).roomsCount ?? (p as any).rooms_total ?? 0,
+          }))}
+        />
+      )}
+
+      {currentView === "rev_monthly" && canAccessRevenue && (
+        <MonthlyComparison
+          orgId={selectedProperty?.orgId ?? null}
+          selectedPropertyId={selectedPropertyId}
+          properties={revenueProperties.map((p) => ({
+            id: p.id,
+            name: p.name,
+            roomsCount: (p as any).roomsCount ?? (p as any).rooms_total ?? 0,
+          }))}
+        />
+      )}
 
      {currentView === "rev_channels_segments" && canAccessRevenue && (
   <RevenueChannelsSegments

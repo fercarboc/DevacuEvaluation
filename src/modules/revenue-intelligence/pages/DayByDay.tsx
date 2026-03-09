@@ -1,5 +1,4 @@
-import React, { useMemo, useState } from "react";
-import { useRevenueProperty } from "../context/RevenuePropertyContext";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Calendar,
   Download,
@@ -9,289 +8,144 @@ import {
   X,
 } from "lucide-react";
 
+import { useRevenueDayByDaySummary } from "../hooks/useRevenueDayByDaySummary";
+import { useRevenueDayBreakdown } from "../hooks/useRevenueDayBreakdown";
+
 type RevenuePropertyLite = {
   id: string;
   name: string;
   roomsCount: number;
 };
 
-type RevenueEventRow = {
-  id: string;
-  name: string;
-  type: string;
-  startDate: string;
-  endDate: string;
-};
-
-type DailyDataRow = {
-  propertyId: string;
-  date: string;
-  occ: number;
-  roomsSold: number;
-  adr: number;
-  revenue: number;
-  pvp: number;
-};
-
-type DailyChannelSegmentRow = {
-  propertyId: string;
-  date: string;
-  channel: string;
-  segment: string;
-  roomsSold: number;
-  revenue: number;
-};
-
 type DayByDayProps = {
+  orgId: string | null;
+  selectedPropertyId: string | null;
   properties?: RevenuePropertyLite[];
-  events?: RevenueEventRow[];
-  dailyData?: DailyDataRow[];
-  dailyByChannelSegment?: DailyChannelSegmentRow[];
 };
 
-const FALLBACK_PROPERTIES: RevenuePropertyLite[] = [
-  {
-    id: "26bff2d1-2072-480f-a7c3-e90ea4373a8e",
-    name: "DEMOHOTEL",
-    roomsCount: 22,
-  },
-  {
-    id: "146a504b-e6fe-4c4f-8a84-40b24ff179c7",
-    name: "HOTEL_4",
-    roomsCount: 20,
-  },
-];
+function formatMoney(value: number) {
+  return `${value.toLocaleString("es-ES", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}€`;
+}
 
-const FALLBACK_EVENTS: RevenueEventRow[] = [
-  {
-    id: "1",
-    name: "Semana Santa",
-    type: "EVENTO",
-    startDate: "2026-04-01",
-    endDate: "2026-04-05",
-  },
-  {
-    id: "2",
-    name: "Temporada Verano",
-    type: "HIGH",
-    startDate: "2026-06-30",
-    endDate: "2026-08-29",
-  },
-];
+function toISODate(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
 
-const FALLBACK_DAILY_DATA: DailyDataRow[] = [
-  {
-    propertyId: "26bff2d1-2072-480f-a7c3-e90ea4373a8e",
-    date: "2026-08-07",
-    occ: 95.0,
-    roomsSold: 19,
-    adr: 141.2,
-    revenue: 2682.8,
-    pvp: 149.0,
-  },
-  {
-    propertyId: "26bff2d1-2072-480f-a7c3-e90ea4373a8e",
-    date: "2026-08-06",
-    occ: 90.0,
-    roomsSold: 18,
-    adr: 138.5,
-    revenue: 2493.0,
-    pvp: 147.0,
-  },
-  {
-    propertyId: "26bff2d1-2072-480f-a7c3-e90ea4373a8e",
-    date: "2026-08-05",
-    occ: 85.0,
-    roomsSold: 17,
-    adr: 136.0,
-    revenue: 2312.0,
-    pvp: 145.0,
-  },
-  {
-    propertyId: "26bff2d1-2072-480f-a7c3-e90ea4373a8e",
-    date: "2026-08-04",
-    occ: 75.0,
-    roomsSold: 15,
-    adr: 132.4,
-    revenue: 1986.0,
-    pvp: 142.0,
-  },
-  {
-    propertyId: "26bff2d1-2072-480f-a7c3-e90ea4373a8e",
-    date: "2026-08-03",
-    occ: 70.0,
-    roomsSold: 14,
-    adr: 130.0,
-    revenue: 1820.0,
-    pvp: 140.0,
-  },
-  {
-    propertyId: "146a504b-e6fe-4c4f-8a84-40b24ff179c7",
-    date: "2026-08-07",
-    occ: 60.0,
-    roomsSold: 12,
-    adr: 84.0,
-    revenue: 1008.0,
-    pvp: 86.0,
-  },
-  {
-    propertyId: "146a504b-e6fe-4c4f-8a84-40b24ff179c7",
-    date: "2026-08-06",
-    occ: 55.0,
-    roomsSold: 11,
-    adr: 82.5,
-    revenue: 907.5,
-    pvp: 85.0,
-  },
-  {
-    propertyId: "146a504b-e6fe-4c4f-8a84-40b24ff179c7",
-    date: "2026-08-05",
-    occ: 50.0,
-    roomsSold: 10,
-    adr: 81.0,
-    revenue: 810.0,
-    pvp: 84.0,
-  },
-];
+function getCurrentMonthRange() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
-const FALLBACK_DAILY_BY_CHANNEL_SEGMENT: DailyChannelSegmentRow[] = [
-  {
-    propertyId: "26bff2d1-2072-480f-a7c3-e90ea4373a8e",
-    date: "2026-08-07",
-    channel: "WEB",
-    segment: "Leisure",
-    roomsSold: 8,
-    revenue: 1180,
-  },
-  {
-    propertyId: "26bff2d1-2072-480f-a7c3-e90ea4373a8e",
-    date: "2026-08-07",
-    channel: "BOOKING",
-    segment: "Leisure",
-    roomsSold: 7,
-    revenue: 945,
-  },
-  {
-    propertyId: "26bff2d1-2072-480f-a7c3-e90ea4373a8e",
-    date: "2026-08-07",
-    channel: "EXPEDIA",
-    segment: "Corporate",
-    roomsSold: 4,
-    revenue: 557.8,
-  },
-  {
-    propertyId: "146a504b-e6fe-4c4f-8a84-40b24ff179c7",
-    date: "2026-08-07",
-    channel: "WEB",
-    segment: "Leisure",
-    roomsSold: 5,
-    revenue: 430,
-  },
-  {
-    propertyId: "146a504b-e6fe-4c4f-8a84-40b24ff179c7",
-    date: "2026-08-07",
-    channel: "BOOKING",
-    segment: "Corporate",
-    roomsSold: 4,
-    revenue: 332,
-  },
-  {
-    propertyId: "146a504b-e6fe-4c4f-8a84-40b24ff179c7",
-    date: "2026-08-07",
-    channel: "EXPEDIA",
-    segment: "OTA",
-    roomsSold: 3,
-    revenue: 246,
-  },
-];
+  return {
+    from: toISODate(start),
+    to: toISODate(end),
+  };
+}
+
+function getPreviousMonthRange() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const end = new Date(now.getFullYear(), now.getMonth(), 0);
+
+  return {
+    from: toISODate(start),
+    to: toISODate(end),
+  };
+}
+
+function getLastNDaysRange(days: number) {
+  const now = new Date();
+  const start = new Date();
+  start.setDate(now.getDate() - days);
+
+  return {
+    from: toISODate(start),
+    to: toISODate(now),
+  };
+}
 
 const DayByDay: React.FC<DayByDayProps> = ({
-  properties = FALLBACK_PROPERTIES,
-  events = FALLBACK_EVENTS,
-  dailyData = FALLBACK_DAILY_DATA,
-  dailyByChannelSegment = FALLBACK_DAILY_BY_CHANNEL_SEGMENT,
+  orgId,
+  selectedPropertyId,
+  properties = [],
 }) => {
-  const { propertyId } = useRevenueProperty();
-
-  const activeProperty =
-    properties.find((p) => p.id === propertyId) ?? properties[0] ?? null;
-
-  const activePropertyId = propertyId ?? activeProperty?.id ?? null;
-
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
   const [quickFilter, setQuickFilter] = useState("Últimos 30 días");
+  const [startDate, setStartDate] = useState<string>(getLastNDaysRange(30).from);
+  const [endDate, setEndDate] = useState<string>(getLastNDaysRange(30).to);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
-  const propertyDailyData = useMemo(() => {
-    if (!activePropertyId) return [];
-    return dailyData.filter((d) => d.propertyId === activePropertyId);
-  }, [dailyData, activePropertyId]);
-
-  const propertyDailyByChannelSegment = useMemo(() => {
-    if (!activePropertyId) return [];
-    return dailyByChannelSegment.filter((d) => d.propertyId === activePropertyId);
-  }, [dailyByChannelSegment, activePropertyId]);
-
-  const breakdownData = useMemo(() => {
-    if (!selectedDate) return [];
-    return propertyDailyByChannelSegment.filter((d) => d.date === selectedDate);
-  }, [selectedDate, propertyDailyByChannelSegment]);
-
-  const filteredData = useMemo(() => {
-    let data = [...propertyDailyData];
-    const now = new Date();
-
+  useEffect(() => {
     if (quickFilter === "Mes actual") {
-      const start = new Date(now.getFullYear(), now.getMonth(), 1);
-      data = data.filter((d) => new Date(d.date) >= start);
+      const range = getCurrentMonthRange();
+      setStartDate(range.from);
+      setEndDate(range.to);
     } else if (quickFilter === "Mes anterior") {
-      const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const end = new Date(now.getFullYear(), now.getMonth(), 0);
-      data = data.filter((d) => {
-        const date = new Date(d.date);
-        return date >= start && date <= end;
-      });
+      const range = getPreviousMonthRange();
+      setStartDate(range.from);
+      setEndDate(range.to);
     } else if (quickFilter === "Últimos 7 días") {
-      const start = new Date();
-      start.setDate(now.getDate() - 7);
-      data = data.filter((d) => new Date(d.date) >= start);
+      const range = getLastNDaysRange(7);
+      setStartDate(range.from);
+      setEndDate(range.to);
     } else if (quickFilter === "Últimos 30 días") {
-      const start = new Date();
-      start.setDate(now.getDate() - 30);
-      data = data.filter((d) => new Date(d.date) >= start);
-    } else if (quickFilter === "Personalizado" && startDate && endDate) {
-      data = data.filter((d) => d.date >= startDate && d.date <= endDate);
+      const range = getLastNDaysRange(30);
+      setStartDate(range.from);
+      setEndDate(range.to);
     }
+  }, [quickFilter]);
 
-    return data.sort((a, b) => b.date.localeCompare(a.date));
-  }, [propertyDailyData, quickFilter, startDate, endDate]);
+  const activeProperty =
+    properties.find((p) => p.id === selectedPropertyId) ?? null;
 
-  const totals = useMemo(() => {
-    const count = filteredData.length;
-    if (count === 0 || !activeProperty) {
-      return { occ: 0, adr: 0, revenue: 0, revpar: 0 };
+  const isInvalidRange = !!startDate && !!endDate && startDate > endDate;
+
+  const {
+    property,
+    totals,
+    daily,
+    loading,
+    error,
+  } = useRevenueDayByDaySummary({
+    orgId,
+    propertyId: selectedPropertyId,
+    from: startDate,
+    to: endDate,
+  });
+
+  const {
+    totals: breakdownTotals,
+    rows: breakdownRows,
+    loading: breakdownLoading,
+    error: breakdownError,
+  } = useRevenueDayBreakdown({
+    orgId,
+    propertyId: selectedPropertyId,
+    date: selectedDate,
+    enabled: !!selectedDate,
+  });
+
+  const headerPropertyName =
+    property?.name ?? activeProperty?.name ?? "Sin propiedad";
+
+  const tableRows = useMemo(() => {
+    return daily ?? [];
+  }, [daily]);
+
+  const safeRoomsCount = useMemo(() => {
+    if (property?.roomsCount && property.roomsCount > 0) return property.roomsCount;
+    if (activeProperty?.roomsCount && activeProperty.roomsCount > 0) {
+      return activeProperty.roomsCount;
     }
+    return 0;
+  }, [property, activeProperty]);
 
-    const revenue = filteredData.reduce((acc, curr) => acc + curr.revenue, 0);
-    const roomsSold = filteredData.reduce((acc, curr) => acc + curr.roomsSold, 0);
-
-    return {
-      occ: filteredData.reduce((acc, curr) => acc + curr.occ, 0) / count,
-      adr: roomsSold > 0 ? revenue / roomsSold : 0,
-      revenue,
-      revpar:
-        activeProperty.roomsCount > 0
-          ? revenue / (count * activeProperty.roomsCount)
-          : 0,
-    };
-  }, [filteredData, activeProperty]);
-
-  const getEventForDate = (date: string) => {
-    return events.find((e) => date >= e.startDate && date <= e.endDate);
-  };
-
-  if (!activeProperty) {
+  if (!selectedPropertyId) {
     return (
       <div className="space-y-6">
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 text-gray-500">
@@ -309,11 +163,13 @@ const DayByDay: React.FC<DayByDayProps> = ({
             <h1 className="text-2xl font-bold text-gray-900">
               Producción Día x Día
             </h1>
+
             <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-md text-[10px] font-bold flex items-center gap-1">
               <Building2 size={10} />
-              {activeProperty.name}
+              {headerPropertyName}
             </span>
           </div>
+
           <p className="text-gray-500">Detalle granular de rendimiento diario</p>
         </div>
 
@@ -321,6 +177,7 @@ const DayByDay: React.FC<DayByDayProps> = ({
           <button
             type="button"
             className="p-2.5 bg-white border border-gray-200 rounded-xl text-gray-500 hover:bg-gray-50 transition-colors shadow-sm"
+            title="Exportación pendiente"
           >
             <Download size={20} />
           </button>
@@ -333,6 +190,7 @@ const DayByDay: React.FC<DayByDayProps> = ({
             <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
               Rápido:
             </div>
+
             <div className="flex bg-gray-100 p-1 rounded-xl flex-wrap">
               {[
                 "Mes actual",
@@ -360,6 +218,7 @@ const DayByDay: React.FC<DayByDayProps> = ({
           {quickFilter === "Personalizado" && (
             <div className="flex items-center gap-3 animate-in fade-in slide-in-from-left-2">
               <div className="h-8 w-px bg-gray-100"></div>
+
               <div className="flex items-center gap-2">
                 <input
                   type="date"
@@ -383,13 +242,25 @@ const DayByDay: React.FC<DayByDayProps> = ({
           <div className="bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-100 flex items-center gap-2">
             <Info size={14} className="text-blue-600" />
             <span className="text-[11px] font-bold text-blue-700">
-              Mostrando {filteredData.length} días
-              {filteredData.length > 0 &&
-                ` (${filteredData[filteredData.length - 1].date} → ${filteredData[0].date})`}
+              Mostrando {tableRows.length} días
+              {tableRows.length > 0 &&
+                ` (${tableRows[tableRows.length - 1].date} → ${tableRows[0].date})`}
             </span>
           </div>
         </div>
       </div>
+
+      {isInvalidRange && (
+        <div className="bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3 text-sm text-amber-700">
+          El rango de fechas no es válido.
+        </div>
+      )}
+
+      {error && !isInvalidRange && (
+        <div className="bg-red-50 border border-red-100 rounded-2xl px-4 py-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
@@ -427,88 +298,108 @@ const DayByDay: React.FC<DayByDayProps> = ({
             </thead>
 
             <tbody className="divide-y divide-gray-100">
-              {filteredData.map((row, idx) => {
-                const event = getEventForDate(row.date);
-
-                return (
-                  <tr
-                    key={`${row.date}-${idx}`}
-                    className="hover:bg-blue-50/30 transition-colors group"
-                  >
-                    <td className="px-6 py-3 font-bold text-gray-900">
-                      {row.date}
-                    </td>
-
-                    <td className="px-4 py-3 text-center">
-                      {event && (
-                        <span
-                          className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded-md text-[9px] font-bold uppercase tracking-tighter"
-                          title={event.name}
-                        >
-                          {event.type}
-                        </span>
-                      )}
-                    </td>
-
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <div className="w-12 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full ${
-                              row.occ > 80
-                                ? "bg-emerald-500"
-                                : row.occ < 40
-                                ? "bg-rose-500"
-                                : "bg-blue-500"
-                            }`}
-                            style={{ width: `${row.occ}%` }}
-                          ></div>
-                        </div>
-                        <span className="font-mono font-semibold text-gray-600 w-12">
-                          {row.occ.toFixed(1)}%
-                        </span>
-                      </div>
-                    </td>
-
-                    <td className="px-4 py-3 text-right font-medium">
-                      {row.roomsSold}
-                    </td>
-
-                    <td className="px-4 py-3 text-right font-semibold text-gray-700">
-                      {row.adr.toFixed(2)}€
-                    </td>
-
-                    <td className="px-4 py-3 text-right font-bold text-gray-900">
-                      {row.revenue.toLocaleString()}€
-                    </td>
-
-                    <td className="px-4 py-3 text-right text-gray-500">
-                      {(row.revenue / activeProperty.roomsCount).toFixed(2)}€
-                    </td>
-
-                    <td className="px-4 py-3 text-right">
-                      <span className="px-2 py-1 bg-gray-100 rounded text-[10px] font-bold text-gray-500">
-                        {row.pvp.toFixed(2)}€
-                      </span>
-                    </td>
-
-                    <td className="px-6 py-3 text-center">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedDate(row.date)}
-                        className="p-1.5 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors"
-                        title="Ver desglose"
-                      >
-                        <Eye size={16} />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-
-              {filteredData.length === 0 && (
+              {loading && (
                 <tr>
-                  <td colSpan={9} className="px-6 py-10 text-center text-gray-400">
+                  <td
+                    colSpan={9}
+                    className="px-6 py-10 text-center text-gray-400"
+                  >
+                    Cargando...
+                  </td>
+                </tr>
+              )}
+
+              {!loading &&
+                tableRows.map((row, idx) => {
+                  const event = row.event;
+
+                  return (
+                    <tr
+                      key={`${row.date}-${idx}`}
+                      className="hover:bg-blue-50/30 transition-colors group"
+                    >
+                      <td className="px-6 py-3 font-bold text-gray-900">
+                        {row.date}
+                      </td>
+
+                      <td className="px-4 py-3 text-center">
+                        {event && (
+                          <span
+                            className="px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-tighter"
+                            style={{
+                              backgroundColor: event.color || "#FEF3C7",
+                              color: "#1F2937",
+                            }}
+                            title={event.name}
+                          >
+                            {event.type}
+                          </span>
+                        )}
+                      </td>
+
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <div className="w-12 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full ${
+                                row.occ > 80
+                                  ? "bg-emerald-500"
+                                  : row.occ < 40
+                                  ? "bg-rose-500"
+                                  : "bg-blue-500"
+                              }`}
+                              style={{ width: `${Math.min(row.occ, 100)}%` }}
+                            ></div>
+                          </div>
+
+                          <span className="font-mono font-semibold text-gray-600 w-12">
+                            {row.occ.toFixed(1)}%
+                          </span>
+                        </div>
+                      </td>
+
+                      <td className="px-4 py-3 text-right font-medium">
+                        {row.roomsSold}
+                      </td>
+
+                      <td className="px-4 py-3 text-right font-semibold text-gray-700">
+                        {formatMoney(row.adr)}
+                      </td>
+
+                      <td className="px-4 py-3 text-right font-bold text-gray-900">
+                        {formatMoney(row.revenue)}
+                      </td>
+
+                      <td className="px-4 py-3 text-right text-gray-500">
+                        {formatMoney(row.revpar)}
+                      </td>
+
+                      <td className="px-4 py-3 text-right">
+                        <span className="px-2 py-1 bg-gray-100 rounded text-[10px] font-bold text-gray-500">
+                          {formatMoney(row.pvp)}
+                        </span>
+                      </td>
+
+                      <td className="px-6 py-3 text-center">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedDate(row.date)}
+                          className="p-1.5 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors"
+                          title="Ver desglose"
+                        >
+                          <Eye size={16} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+
+              {!loading && tableRows.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={9}
+                    className="px-6 py-10 text-center text-gray-400"
+                  >
                     Sin datos diarios para esta propiedad
                   </td>
                 </tr>
@@ -522,15 +413,15 @@ const DayByDay: React.FC<DayByDayProps> = ({
                 <td className="px-4 py-4 text-right text-blue-400">
                   {totals.occ.toFixed(1)}%
                 </td>
+                <td className="px-4 py-4 text-right">{totals.roomsSold}</td>
                 <td className="px-4 py-4 text-right">
-                  {filteredData.reduce((acc, curr) => acc + curr.roomsSold, 0)}
+                  {formatMoney(totals.adr)}
                 </td>
-                <td className="px-4 py-4 text-right">{totals.adr.toFixed(2)}€</td>
                 <td className="px-4 py-4 text-right text-emerald-400">
-                  {totals.revenue.toLocaleString()}€
+                  {formatMoney(totals.revenue)}
                 </td>
                 <td className="px-4 py-4 text-right opacity-60">
-                  {totals.revpar.toFixed(2)}€
+                  {formatMoney(totals.revpar)}
                 </td>
                 <td className="px-4 py-4"></td>
                 <td className="px-6 py-4"></td>
@@ -563,7 +454,17 @@ const DayByDay: React.FC<DayByDayProps> = ({
             </div>
 
             <div className="p-6 overflow-y-auto max-h-[70vh]">
-              {breakdownData.length > 0 ? (
+              {breakdownError && (
+                <div className="bg-red-50 border border-red-100 rounded-2xl px-4 py-3 text-sm text-red-700 mb-4">
+                  {breakdownError}
+                </div>
+              )}
+
+              {breakdownLoading ? (
+                <div className="text-center py-12">
+                  <p className="text-gray-400 font-medium italic">Cargando...</p>
+                </div>
+              ) : breakdownRows.length > 0 ? (
                 <div className="space-y-6">
                   <div className="grid grid-cols-3 gap-4">
                     <div className="bg-blue-50 p-4 rounded-2xl">
@@ -571,7 +472,7 @@ const DayByDay: React.FC<DayByDayProps> = ({
                         Total RN
                       </p>
                       <p className="text-xl font-black text-blue-700">
-                        {breakdownData.reduce((acc, r) => acc + r.roomsSold, 0)}
+                        {breakdownTotals.roomsSold}
                       </p>
                     </div>
 
@@ -580,10 +481,7 @@ const DayByDay: React.FC<DayByDayProps> = ({
                         Total Revenue
                       </p>
                       <p className="text-xl font-black text-emerald-700">
-                        {breakdownData
-                          .reduce((acc, r) => acc + r.revenue, 0)
-                          .toLocaleString()}
-                        €
+                        {formatMoney(breakdownTotals.revenue)}
                       </p>
                     </div>
 
@@ -592,11 +490,7 @@ const DayByDay: React.FC<DayByDayProps> = ({
                         ADR Medio
                       </p>
                       <p className="text-xl font-black text-amber-700">
-                        {(
-                          breakdownData.reduce((acc, r) => acc + r.revenue, 0) /
-                            breakdownData.reduce((acc, r) => acc + r.roomsSold, 0) || 0
-                        ).toFixed(2)}
-                        €
+                        {formatMoney(breakdownTotals.adr)}
                       </p>
                     </div>
                   </div>
@@ -614,8 +508,11 @@ const DayByDay: React.FC<DayByDayProps> = ({
                       </thead>
 
                       <tbody className="divide-y divide-gray-50">
-                        {breakdownData.map((row, i) => (
-                          <tr key={`${row.channel}-${row.segment}-${i}`} className="hover:bg-gray-50/50">
+                        {breakdownRows.map((row, i) => (
+                          <tr
+                            key={`${row.channel}-${row.segment}-${i}`}
+                            className="hover:bg-gray-50/50"
+                          >
                             <td className="px-4 py-3 font-bold text-gray-900">
                               {row.channel}
                             </td>
@@ -626,10 +523,10 @@ const DayByDay: React.FC<DayByDayProps> = ({
                               {row.roomsSold}
                             </td>
                             <td className="px-4 py-3 text-right font-black text-gray-900">
-                              {row.revenue.toLocaleString()}€
+                              {formatMoney(row.revenue)}
                             </td>
                             <td className="px-4 py-3 text-right text-gray-500">
-                              {(row.revenue / row.roomsSold).toFixed(2)}€
+                              {formatMoney(row.adr)}
                             </td>
                           </tr>
                         ))}
