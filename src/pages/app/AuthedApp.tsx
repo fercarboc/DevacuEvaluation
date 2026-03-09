@@ -3,7 +3,6 @@ import { Navigate, useNavigate } from "react-router-dom";
 
 import { SearchRatings } from "@/components/SearchRatings";
 import { RatingForm } from "@/components/RatingForm";
-
 import { MiCuenta } from "@/components/account/MiCuenta";
 import AppShell, { type AuthedView, type NavItem } from "@/components/layout/AppShell";
 import DashboardHome from "@/pages/DashboardHome";
@@ -13,6 +12,9 @@ import { useEvalAuth } from "@/context/EvalAuthContext";
 import ChannelAnalysis from "@/views/ChannelAnalysis";
 import RiskAnalysis from "@/views/RiskAnalysis";
 import Leaks from "@/views/Leaks";
+import DayByDay from "@/modules/revenue-intelligence/pages/DayByDay";
+import MonthlyComparison from "@/modules/revenue-intelligence/pages/MonthlyComparison";
+import RevenueChannelsSegments from "@/modules/revenue-intelligence/pages/revenueChannelsSegments";
 import SettingsProperties from "@/modules/revenue-intelligence/pages/SettingsProperties";
 import RoomTypesPage from "@/modules/revenue-intelligence/pages/RoomTypesPage";
 import PriceCalendarPage from "@/modules/revenue-intelligence/pages/PriceCalendarPage";
@@ -50,6 +52,9 @@ import {
   BedDouble,
   CalendarRange,
   CalendarDays,
+  LineChart,
+  CalendarClock,
+  Layers3,
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
@@ -96,6 +101,9 @@ function isRevenueView(v: AuthedView) {
     v === "rev_channels" ||
     v === "rev_risk" ||
     v === "rev_leakage" ||
+    v === "rev_day_by_day" ||
+    v === "rev_monthly" ||
+    v === "rev_channels_segments" ||
     v === "rev_properties" ||
     v === "rev_room_types" ||
     v === "rev_price_calendar" ||
@@ -108,7 +116,6 @@ export default function AuthedApp() {
   const navigate = useNavigate();
 
   const [currentView, setCurrentView] = React.useState<AuthedView>("dashboard");
-
   const [revenueProperties, setRevenueProperties] = React.useState<RevenueProperty[]>([]);
   const [selectedPropertyId, setSelectedPropertyId] = React.useState<string | null>(null);
   const [propertiesLoading, setPropertiesLoading] = React.useState(false);
@@ -206,11 +213,54 @@ export default function AuthedApp() {
       { view: "search", label: "Consulta manual", icon: Search, section: "OPERATIVA" },
       { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
 
-      { view: "rev_channels", label: "Análisis por Canal", icon: BarChart3, section: "REVENUE" },
-      { view: "rev_risk", label: "Nivel de Riesgo", icon: ShieldAlert, section: "REVENUE" },
-      { view: "rev_leakage", label: "Fugas de Revenue", icon: TrendingDown, section: "REVENUE" },
-      { view: "rev_properties", label: "Propiedades", icon: Building2, section: "REVENUE" },
-      { view: "rev_room_types", label: "Tipos de habitación", icon: BedDouble, section: "REVENUE" },
+      {
+        view: "rev_channels",
+        label: "Análisis por Canal",
+        icon: BarChart3,
+        section: "REVENUE",
+      },
+      {
+        view: "rev_risk",
+        label: "Nivel de Riesgo",
+        icon: ShieldAlert,
+        section: "REVENUE",
+      },
+      {
+        view: "rev_leakage",
+        label: "Fugas de Revenue",
+        icon: TrendingDown,
+        section: "REVENUE",
+      },
+      {
+        view: "rev_day_by_day",
+        label: "Día x Día",
+        icon: CalendarClock,
+        section: "REVENUE",
+      },
+      {
+        view: "rev_monthly",
+        label: "Mensual",
+        icon: LineChart,
+        section: "REVENUE",
+      },
+      {
+        view: "rev_channels_segments",
+        label: "Canales & Segmentos",
+        icon: Layers3,
+        section: "REVENUE",
+      },
+      {
+        view: "rev_properties",
+        label: "Propiedades",
+        icon: Building2,
+        section: "REVENUE",
+      },
+      {
+        view: "rev_room_types",
+        label: "Tipos de habitación",
+        icon: BedDouble,
+        section: "REVENUE",
+      },
       {
         view: "rev_price_calendar",
         label: "Calendario de precios",
@@ -251,6 +301,12 @@ export default function AuthedApp() {
         return "Análisis por Nivel de Riesgo";
       case "rev_leakage":
         return "Fugas de Revenue";
+      case "rev_day_by_day":
+        return "Día x Día";
+      case "rev_monthly":
+        return "Mensual";
+      case "rev_channels_segments":
+        return "Canales & Segmentos";
       case "rev_properties":
         return "Propiedades";
       case "rev_room_types":
@@ -281,11 +337,17 @@ export default function AuthedApp() {
       case "add":
         return "Registro estructurado de incidencias.";
       case "rev_channels":
-        return "Comparativa por canal/plataforma y su impacto económico (net loss).";
+        return "Identifica cómo se reparte el riesgo por canal/plataforma.";
       case "rev_risk":
-        return "Segmentación del impacto económico real (net loss) y volumen de incidencias por nivel.";
+        return "Segmentación del impacto económico real y volumen de incidencias por nivel.";
       case "rev_leakage":
-        return "Ranking de fugas de margen: net loss y cuota sobre el total.";
+        return "Ranking de fugas de margen y desvíos sobre precio esperado.";
+      case "rev_day_by_day":
+        return "Detalle diario de ocupación, ADR, revenue y eventos operativos.";
+      case "rev_monthly":
+        return "Comparativa mensual de revenue, ADR, RN y evolución.";
+      case "rev_channels_segments":
+        return "Análisis de producción comercial por canal y estructura de ventas disponible.";
       case "rev_properties":
         return "Gestiona las propiedades y la configuración base de Revenue Intelligence.";
       case "rev_room_types":
@@ -363,6 +425,19 @@ export default function AuthedApp() {
       {currentView === "rev_channels" && canAccessRevenue && <ChannelAnalysis />}
       {currentView === "rev_risk" && canAccessRevenue && <RiskAnalysis />}
       {currentView === "rev_leakage" && canAccessRevenue && <Leaks />}
+      {currentView === "rev_day_by_day" && canAccessRevenue && <DayByDay />}
+      {currentView === "rev_monthly" && canAccessRevenue && <MonthlyComparison />}
+
+     {currentView === "rev_channels_segments" && canAccessRevenue && (
+  <RevenueChannelsSegments
+    orgId={selectedProperty?.orgId ?? null}
+    selectedPropertyId={selectedPropertyId}
+    properties={revenueProperties.map((p) => ({
+      id: p.id,
+      name: p.name,
+    }))}
+  />
+)}
 
       {currentView === "rev_properties" && canAccessRevenue && (
         <SettingsProperties user={user as any} />
@@ -384,11 +459,11 @@ export default function AuthedApp() {
       )}
 
       {currentView === "rev_events_seasons" && canAccessRevenue && (
-          <EventsSeasonsPage
-            selectedPropertyId={selectedPropertyId}
-            selectedPropertyName={selectedProperty?.name ?? null}
-          />
-        )}
+        <EventsSeasonsPage
+          selectedPropertyId={selectedPropertyId}
+          selectedPropertyName={selectedProperty?.name ?? null}
+        />
+      )}
 
       {currentView === "aud_stats" && <StatsViewAuditor currentPlan={currentPlan} />}
       {currentView === "aud_history" && <HistoryViewAuditor />}

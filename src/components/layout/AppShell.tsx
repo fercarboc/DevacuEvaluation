@@ -20,6 +20,9 @@ import {
   BedDouble,
   CalendarRange,
   CalendarDays,
+  LineChart,
+  CalendarClock,
+  Layers3,
 } from "lucide-react";
 
 export type AuthedView =
@@ -31,6 +34,9 @@ export type AuthedView =
   | "rev_channels"
   | "rev_risk"
   | "rev_leakage"
+  | "rev_day_by_day"
+  | "rev_monthly"
+  | "rev_channels_segments"
   | "rev_properties"
   | "rev_room_types"
   | "rev_price_calendar"
@@ -180,6 +186,27 @@ export default function AppShell({
         view: "rev_leakage",
         label: "Fugas de Revenue",
         icon: TrendingDown,
+        section: "REVENUE",
+        locked: !canAccessRevenue,
+      },
+      {
+        view: "rev_day_by_day",
+        label: "Día x Día",
+        icon: CalendarClock,
+        section: "REVENUE",
+        locked: !canAccessRevenue,
+      },
+      {
+        view: "rev_monthly",
+        label: "Mensual",
+        icon: LineChart,
+        section: "REVENUE",
+        locked: !canAccessRevenue,
+      },
+      {
+        view: "rev_channels_segments",
+        label: "Canales & Segmentos",
+        icon: Layers3,
         section: "REVENUE",
         locked: !canAccessRevenue,
       },
