@@ -223,14 +223,20 @@ const DayByDay: React.FC<DayByDayProps> = ({
                 <input
                   type="date"
                   value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
+                 onChange={(e) => {
+                    setQuickFilter("Personalizado");
+                    setStartDate(e.target.value);
+                  }}
                   className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 <span className="text-gray-400 text-xs">→</span>
                 <input
                   type="date"
                   value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
+                  onChange={(e) => {
+                    setQuickFilter("Personalizado");
+                    setEndDate(e.target.value);
+                  }}
                   className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>

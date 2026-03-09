@@ -7,6 +7,9 @@ import {
   Calendar,
   ArrowRight,
   Building2,
+  BarChart3,
+  Hotel,
+  Euro,
 } from "lucide-react";
 
 import { useRevenueMonthlySummary } from "../hooks/useRevenueMonthlySummary";
@@ -24,6 +27,12 @@ type MonthlyComparisonProps = {
   properties?: RevenuePropertyLite[];
 };
 
+type QuickFilter =
+  | "Año actual"
+  | "Año anterior"
+  | "Últimos 12 meses"
+  | "Personalizado";
+
 function formatMoney(value: number) {
   return `${value.toLocaleString("es-ES", {
     minimumFractionDigits: 2,
@@ -31,10 +40,80 @@ function formatMoney(value: number) {
   })}€`;
 }
 
-function getDefaultRange() {
+function formatDeltaPct(value: number) {
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(1)}%`;
+}
+
+function formatDeltaAbs(value: number, isMoney = false) {
+  const sign = value > 0 ? "+" : "";
+  if (isMoney) {
+    return `${sign}${value.toLocaleString("es-ES", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}€`;
+  }
+  return `${sign}${value.toFixed(1)}`;
+}
+
+function deltaClass(value: number) {
+  if (value > 0) return "text-emerald-600";
+  if (value < 0) return "text-rose-600";
+  return "text-gray-500";
+}
+
+function toISODate(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function shiftYearRange(from: string, to: string, targetYear: number) {
+  const fromMonthDay = from.slice(4);
+  const toMonthDay = to.slice(4);
+
   return {
-    from: "2026-01-01",
-    to: "2026-12-31",
+    from: `${targetYear}${fromMonthDay}`,
+    to: `${targetYear}${toMonthDay}`,
+  };
+}
+
+function getCurrentYearRange() {
+  const now = new Date();
+  const year = now.getFullYear();
+
+  return {
+    from: `${year}-01-01`,
+    to: `${year}-12-31`,
+  };
+}
+
+function getPreviousYearRange() {
+  const now = new Date();
+  const year = now.getFullYear() - 1;
+
+  return {
+    from: `${year}-01-01`,
+    to: `${year}-12-31`,
+  };
+}
+
+function getYearRange(year: number) {
+  return {
+    from: `${year}-01-01`,
+    to: `${year}-12-31`,
+  };
+}
+
+function getLast12MonthsRange() {
+  const now = new Date();
+  const to = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const from = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+
+  return {
+    from: toISODate(from),
+    to: toISODate(to),
   };
 }
 
@@ -50,29 +129,55 @@ function getMonthRange(month: string) {
   return { from, to };
 }
 
+function getYearFromDate(value: string) {
+  return Number(value.slice(0, 4));
+}
+
 const MonthlyComparison: React.FC<MonthlyComparisonProps> = ({
   orgId,
   selectedPropertyId,
   properties = [],
 }) => {
-  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+  const currentYear = new Date().getFullYear();
 
-  const defaultRange = getDefaultRange();
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>("Año actual");
+  const [selectedYear, setSelectedYear] = useState<number>(currentYear);
+  const [compareYear, setCompareYear] = useState<number>(currentYear - 1);
+
+  const initialRange = getCurrentYearRange();
+  const [startDate, setStartDate] = useState<string>(initialRange.from);
+  const [endDate, setEndDate] = useState<string>(initialRange.to);
+
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   const activeProperty =
     properties.find((p) => p.id === selectedPropertyId) ?? null;
+
+  const isInvalidRange = !!startDate && !!endDate && startDate > endDate;
+
+  const compareRange = useMemo(() => {
+    if (!startDate || !endDate) {
+      return { from: "", to: "" };
+    }
+    return shiftYearRange(startDate, endDate, compareYear);
+  }, [startDate, endDate, compareYear]);
 
   const {
     property,
     totals,
     months,
+    compareTotals,
+    compareMonths,
+    comparisonRows,
     loading,
     error,
   } = useRevenueMonthlySummary({
     orgId,
     propertyId: selectedPropertyId,
-    from: defaultRange.from,
-    to: defaultRange.to,
+    from: startDate,
+    to: endDate,
+    compareFrom: compareRange.from,
+    compareTo: compareRange.to,
   });
 
   const selectedMonthRange = useMemo(() => {
@@ -94,13 +199,61 @@ const MonthlyComparison: React.FC<MonthlyComparisonProps> = ({
   const headerPropertyName =
     property?.name ?? activeProperty?.name ?? "Sin propiedad";
 
-  const safeRoomsCount = useMemo(() => {
-    if (property?.roomsCount && property.roomsCount > 0) return property.roomsCount;
-    if (activeProperty?.roomsCount && activeProperty.roomsCount > 0) {
-      return activeProperty.roomsCount;
+  const availableYears = useMemo(() => {
+    const start = 2025;
+    const end = currentYear + 1;
+    const years: number[] = [];
+
+    for (let year = end; year >= start; year -= 1) {
+      years.push(year);
     }
-    return 0;
-  }, [property, activeProperty]);
+
+    return years;
+  }, [currentYear]);
+
+  const selectedMonthLabel = useMemo(() => {
+    if (!selectedMonth) return "";
+    return selectedMonth;
+  }, [selectedMonth]);
+
+  function applyQuickFilter(next: QuickFilter) {
+    setQuickFilter(next);
+
+    if (next === "Año actual") {
+      const range = getCurrentYearRange();
+      setSelectedYear(getYearFromDate(range.from));
+      setStartDate(range.from);
+      setEndDate(range.to);
+      setSelectedMonth(null);
+      return;
+    }
+
+    if (next === "Año anterior") {
+      const range = getPreviousYearRange();
+      setSelectedYear(getYearFromDate(range.from));
+      setStartDate(range.from);
+      setEndDate(range.to);
+      setSelectedMonth(null);
+      return;
+    }
+
+    if (next === "Últimos 12 meses") {
+      const range = getLast12MonthsRange();
+      setStartDate(range.from);
+      setEndDate(range.to);
+      setSelectedMonth(null);
+      return;
+    }
+  }
+
+  function handleYearChange(year: number) {
+    setSelectedYear(year);
+    setQuickFilter("Personalizado");
+    const range = getYearRange(year);
+    setStartDate(range.from);
+    setEndDate(range.to);
+    setSelectedMonth(null);
+  }
 
   const handleExportCSV = () => {
     if (!selectedMonth || drillDownData.length === 0) return;
@@ -168,7 +321,7 @@ const MonthlyComparison: React.FC<MonthlyComparisonProps> = ({
           </div>
 
           <p className="text-gray-500">
-            Resumen ejecutivo mensual y comparativa YoY
+            Resumen ejecutivo mensual de producción y comparativa YoY
           </p>
         </div>
 
@@ -183,9 +336,174 @@ const MonthlyComparison: React.FC<MonthlyComparisonProps> = ({
         </div>
       </div>
 
-      {error && (
+      <div className="bg-white p-4 rounded-3xl shadow-sm border border-gray-100 space-y-4">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+              Rápido:
+            </div>
+
+            <div className="flex bg-gray-100 p-1 rounded-xl flex-wrap">
+              {[
+                "Año actual",
+                "Año anterior",
+                "Últimos 12 meses",
+                "Personalizado",
+              ].map((filter) => (
+                <button
+                  key={filter}
+                  type="button"
+                  onClick={() => applyQuickFilter(filter as QuickFilter)}
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all ${
+                    quickFilter === filter
+                      ? "bg-white text-blue-600 shadow-sm"
+                      : "text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  {filter}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                Año
+              </span>
+              <select
+                value={selectedYear}
+                onChange={(e) => handleYearChange(Number(e.target.value))}
+                className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {availableYears.map((year) => (
+                  <option key={year} value={year}>
+                    {year}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                Comparar
+              </span>
+              <select
+                value={compareYear}
+                onChange={(e) => setCompareYear(Number(e.target.value))}
+                className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {availableYears.map((year) => (
+                  <option key={year} value={year}>
+                    {year}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => {
+                  setQuickFilter("Personalizado");
+                  setStartDate(e.target.value);
+                  setSelectedMonth(null);
+                }}
+                className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <span className="text-gray-400 text-xs">→</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => {
+                  setQuickFilter("Personalizado");
+                  setEndDate(e.target.value);
+                  setSelectedMonth(null);
+                }}
+                className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-blue-50 px-3 py-2 rounded-xl border border-blue-100 inline-flex items-center gap-2">
+          <Calendar size={14} className="text-blue-600" />
+          <span className="text-[11px] font-bold text-blue-700">
+            Rango: {startDate} → {endDate} · Comparando contra {compareRange.from} → {compareRange.to}
+          </span>
+        </div>
+      </div>
+
+      {isInvalidRange && (
+        <div className="bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3 text-sm text-amber-700">
+          El rango de fechas no es válido.
+        </div>
+      )}
+
+      {error && !isInvalidRange && (
         <div className="bg-red-50 border border-red-100 rounded-2xl px-4 py-3 text-sm text-red-700">
           {error}
+        </div>
+      )}
+
+      {!isInvalidRange && (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+          <div className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl">
+                <Euro size={20} />
+              </div>
+              <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                Revenue Total
+              </span>
+            </div>
+            <p className="text-2xl font-black text-gray-900">
+              {formatMoney(totals.revenue)}
+            </p>
+          </div>
+
+          <div className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+                <TrendingUp size={20} />
+              </div>
+              <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                ADR Medio
+              </span>
+            </div>
+            <p className="text-2xl font-black text-gray-900">
+              {formatMoney(totals.adr)}
+            </p>
+          </div>
+
+          <div className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="p-2 bg-purple-50 text-purple-600 rounded-xl">
+                <BarChart3 size={20} />
+              </div>
+              <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                RevPAR Medio
+              </span>
+            </div>
+            <p className="text-2xl font-black text-gray-900">
+              {formatMoney(totals.revpar)}
+            </p>
+          </div>
+
+          <div className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="p-2 bg-amber-50 text-amber-600 rounded-xl">
+                <Hotel size={20} />
+              </div>
+              <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                OCC Media
+              </span>
+            </div>
+            <p className="text-2xl font-black text-gray-900">
+              {totals.occ.toFixed(1)}%
+            </p>
+          </div>
         </div>
       )}
 
@@ -234,7 +552,7 @@ const MonthlyComparison: React.FC<MonthlyComparisonProps> = ({
                     </td>
 
                     <td className="px-6 py-5 text-right font-medium">
-                      {row.roomsSold}
+                      {row.rn}
                     </td>
 
                     <td className="px-6 py-5 text-right font-semibold text-gray-700">
@@ -276,7 +594,7 @@ const MonthlyComparison: React.FC<MonthlyComparisonProps> = ({
                   <td className="px-6 py-4 text-right text-blue-400">
                     {totals.occ.toFixed(1)}%
                   </td>
-                  <td className="px-6 py-4 text-right">{totals.roomsSold}</td>
+                  <td className="px-6 py-4 text-right">{totals.rn}</td>
                   <td className="px-6 py-4 text-right">{formatMoney(totals.adr)}</td>
                   <td className="px-6 py-4 text-right text-emerald-400">
                     {formatMoney(totals.revenue)}
@@ -292,6 +610,105 @@ const MonthlyComparison: React.FC<MonthlyComparisonProps> = ({
         </div>
       </div>
 
+      <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="p-5 border-b border-gray-100">
+          <h3 className="text-lg font-bold text-gray-900">
+            Comparativa mes a mes vs {compareYear}
+          </h3>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="bg-gray-50 text-gray-500 font-bold uppercase tracking-wider text-[10px]">
+              <tr>
+                <th className="px-6 py-4">Mes</th>
+                <th className="px-4 py-4 text-right">Revenue actual</th>
+                <th className="px-4 py-4 text-right">Revenue comp.</th>
+                <th className="px-4 py-4 text-right">Δ Revenue</th>
+                <th className="px-4 py-4 text-right">Δ Revenue %</th>
+                <th className="px-4 py-4 text-right">ADR actual</th>
+                <th className="px-4 py-4 text-right">ADR comp.</th>
+                <th className="px-4 py-4 text-right">Δ ADR %</th>
+                <th className="px-4 py-4 text-right">RevPAR actual</th>
+                <th className="px-4 py-4 text-right">RevPAR comp.</th>
+                <th className="px-4 py-4 text-right">Δ RevPAR %</th>
+                <th className="px-4 py-4 text-right">OCC actual</th>
+                <th className="px-4 py-4 text-right">OCC comp.</th>
+                <th className="px-4 py-4 text-right">Δ OCC pts</th>
+              </tr>
+            </thead>
+
+            <tbody className="divide-y divide-gray-100">
+              {loading && (
+                <tr>
+                  <td colSpan={14} className="px-6 py-10 text-center text-gray-400">
+                    Cargando comparativa...
+                  </td>
+                </tr>
+              )}
+
+              {!loading &&
+                comparisonRows.map((row) => (
+                  <tr key={row.monthKey} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 font-bold text-gray-900">{row.label}</td>
+
+                    <td className="px-4 py-4 text-right font-bold text-gray-900">
+                      {formatMoney(row.current.revenue)}
+                    </td>
+                    <td className="px-4 py-4 text-right text-gray-500">
+                      {formatMoney(row.compare.revenue)}
+                    </td>
+                    <td className={`px-4 py-4 text-right font-bold ${deltaClass(row.delta.revenueAbs)}`}>
+                      {formatDeltaAbs(row.delta.revenueAbs, true)}
+                    </td>
+                    <td className={`px-4 py-4 text-right font-bold ${deltaClass(row.delta.revenuePct)}`}>
+                      {formatDeltaPct(row.delta.revenuePct)}
+                    </td>
+
+                    <td className="px-4 py-4 text-right font-semibold text-gray-900">
+                      {formatMoney(row.current.adr)}
+                    </td>
+                    <td className="px-4 py-4 text-right text-gray-500">
+                      {formatMoney(row.compare.adr)}
+                    </td>
+                    <td className={`px-4 py-4 text-right font-bold ${deltaClass(row.delta.adrPct)}`}>
+                      {formatDeltaPct(row.delta.adrPct)}
+                    </td>
+
+                    <td className="px-4 py-4 text-right font-semibold text-gray-900">
+                      {formatMoney(row.current.revpar)}
+                    </td>
+                    <td className="px-4 py-4 text-right text-gray-500">
+                      {formatMoney(row.compare.revpar)}
+                    </td>
+                    <td className={`px-4 py-4 text-right font-bold ${deltaClass(row.delta.revparPct)}`}>
+                      {formatDeltaPct(row.delta.revparPct)}
+                    </td>
+
+                    <td className="px-4 py-4 text-right font-semibold text-gray-900">
+                      {row.current.occ.toFixed(1)}%
+                    </td>
+                    <td className="px-4 py-4 text-right text-gray-500">
+                      {row.compare.occ.toFixed(1)}%
+                    </td>
+                    <td className={`px-4 py-4 text-right font-bold ${deltaClass(row.delta.occAbs)}`}>
+                      {formatDeltaAbs(row.delta.occAbs)}
+                    </td>
+                  </tr>
+                ))}
+
+              {!loading && comparisonRows.length === 0 && (
+                <tr>
+                  <td colSpan={14} className="px-6 py-10 text-center text-gray-400">
+                    Sin datos comparativos para el rango seleccionado
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       {selectedMonth && (
         <div className="animate-in slide-in-from-bottom-4 duration-300">
           <div className="bg-white rounded-3xl shadow-xl border border-blue-100 overflow-hidden">
@@ -303,10 +720,10 @@ const MonthlyComparison: React.FC<MonthlyComparisonProps> = ({
 
                 <div>
                   <h3 className="font-bold text-gray-900">
-                    Detalle Diario: {selectedMonth}
+                    Detalle Diario: {selectedMonthLabel}
                   </h3>
                   <p className="text-xs text-blue-600 font-bold uppercase tracking-wider">
-                    Análisis Pivot-Like
+                    Drill-down mensual
                   </p>
                 </div>
               </div>
@@ -339,7 +756,7 @@ const MonthlyComparison: React.FC<MonthlyComparisonProps> = ({
               </div>
             )}
 
-            <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
+            <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
               <table className="w-full text-xs text-left border-collapse">
                 <thead className="bg-gray-50 text-gray-400 font-bold uppercase tracking-wider text-[9px] sticky top-0 z-10 shadow-sm">
                   <tr>
@@ -348,7 +765,7 @@ const MonthlyComparison: React.FC<MonthlyComparisonProps> = ({
                       OCC %
                     </th>
                     <th className="px-4 py-3 text-right border-b border-gray-100">
-                      Oc
+                      RN
                     </th>
                     <th className="px-4 py-3 text-right border-b border-gray-100">
                       ADR
