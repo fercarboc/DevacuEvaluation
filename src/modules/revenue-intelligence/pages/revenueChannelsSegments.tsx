@@ -158,7 +158,7 @@ const RevenueChannelsSegments: React.FC<RevenueChannelsSegmentsProps> = ({
               onClick={() => setViewMode("segment")}
               className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
                 viewMode === "segment"
-                  ? "bg-blue-600 text-white shadow-md"
+                  ? "bg-blue-600 text-white shadow-md" 
                   : "text-gray-500 hover:bg-gray-50"
               }`}
             >
