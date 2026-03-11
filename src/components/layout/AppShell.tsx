@@ -23,6 +23,7 @@ import {
   LineChart,
   CalendarClock,
   Layers3,
+  Upload,
 } from "lucide-react";
 
 export type AuthedView =
@@ -34,6 +35,7 @@ export type AuthedView =
   | "rev_channels"
   | "rev_risk"
   | "rev_leakage"
+  | "rev_import"
   | "rev_day_by_day"
   | "rev_monthly"
   | "rev_channels_segments"
@@ -186,6 +188,13 @@ export default function AppShell({
         view: "rev_leakage",
         label: "Fugas de Revenue",
         icon: TrendingDown,
+        section: "REVENUE",
+        locked: !canAccessRevenue,
+      },
+      {
+        view: "rev_import",
+        label: "Importación Revenue",
+        icon: Upload,
         section: "REVENUE",
         locked: !canAccessRevenue,
       },

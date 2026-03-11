@@ -24,6 +24,7 @@ import {
   getProperties,
   type RevenueProperty,
 } from "@/modules/revenue-intelligence/services/revenueProperties.service";
+import RevenueImportData from "@/modules/revenue-intelligence/pages/RevenueImportData";
 
 // Demo/PAYWALL Revenue
 import RevenueLockedDemo from "@/components/revenue/RevenueLockedDemo";
@@ -55,6 +56,7 @@ import {
   LineChart,
   CalendarClock,
   Layers3,
+  Upload,
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
@@ -101,6 +103,7 @@ function isRevenueView(v: AuthedView) {
     v === "rev_channels" ||
     v === "rev_risk" ||
     v === "rev_leakage" ||
+    v === "rev_import" ||
     v === "rev_day_by_day" ||
     v === "rev_monthly" ||
     v === "rev_channels_segments" ||
@@ -232,6 +235,12 @@ export default function AuthedApp() {
         section: "REVENUE",
       },
       {
+        view: "rev_import",
+        label: "Importación Revenue",
+        icon: Upload,
+        section: "REVENUE",
+      },
+      {
         view: "rev_day_by_day",
         label: "Día x Día",
         icon: CalendarClock,
@@ -301,6 +310,8 @@ export default function AuthedApp() {
         return "Análisis por Nivel de Riesgo";
       case "rev_leakage":
         return "Fugas de Revenue";
+      case "rev_import":
+        return "Importación Revenue";
       case "rev_day_by_day":
         return "Día x Día";
       case "rev_monthly":
@@ -342,6 +353,8 @@ export default function AuthedApp() {
         return "Segmentación del impacto económico real y volumen de incidencias por nivel.";
       case "rev_leakage":
         return "Ranking de fugas de margen y desvíos sobre precio esperado.";
+      case "rev_import":
+        return "Valida e importa CSV reales del PMS a reservas, snapshots y stay nights.";
       case "rev_day_by_day":
         return "Detalle diario de ocupación, ADR, revenue y eventos operativos.";
       case "rev_monthly":
@@ -425,7 +438,17 @@ export default function AuthedApp() {
       {currentView === "rev_channels" && canAccessRevenue && <ChannelAnalysis />}
       {currentView === "rev_risk" && canAccessRevenue && <RiskAnalysis />}
       {currentView === "rev_leakage" && canAccessRevenue && <Leaks />}
-            {currentView === "rev_day_by_day" && canAccessRevenue && (
+      {currentView === "rev_import" && canAccessRevenue && (
+        <RevenueImportData
+          orgId={selectedProperty?.orgId ?? null}
+          selectedPropertyId={selectedPropertyId}
+          selectedPropertyName={selectedProperty?.name ?? null}
+        />
+      )}
+
+
+
+      {currentView === "rev_day_by_day" && canAccessRevenue && (
         <DayByDay
           orgId={selectedProperty?.orgId ?? null}
           selectedPropertyId={selectedPropertyId}

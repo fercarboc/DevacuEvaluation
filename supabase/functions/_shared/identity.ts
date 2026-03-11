@@ -71,10 +71,12 @@ export function pickNormalizedIdentifier(input: {
   phone?: string | null;
 }): { kind: "DOC" | "EMAIL" | "PHONE"; normalized: string } | null {
   const docRaw = String(input.document ?? "").trim();
-  if (docRaw) {
-    const d = normalizeDoc(docRaw);
-    if (d.length >= 5) return { kind: "DOC", normalized: `DOC:${d}` };
+if (docRaw) {
+  const d = normalizeDoc(docRaw);
+  if (looksLikeDoc(d)) {
+    return { kind: "DOC", normalized: `DOC:${d}` };
   }
+}
 
   const emailRaw = String(input.email ?? "").trim();
   if (emailRaw && looksLikeEmail(emailRaw)) {
