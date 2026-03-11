@@ -6,7 +6,7 @@ import { ChevronRight, Zap } from "lucide-react";
 import "@/styles/public.css";
 import WebNavbar from "@/pages/public/WebNavbar";
 import WebFooter from "@/pages/public/WebFooter";
-import fondoPantalla from "@/assets/fondopantalla.png";
+ 
 
 import {
   ProblemSection,
@@ -132,7 +132,7 @@ export default function PublicLanding() {
 
                   <div className="relative">
                     <img
-                      src={fondoPantalla}
+                      src="/img/fondopantalla.png"
                       alt="Debacu SaaS"
                       className="w-[720px] max-w-none opacity-80 blur-[1px]"
                     />
