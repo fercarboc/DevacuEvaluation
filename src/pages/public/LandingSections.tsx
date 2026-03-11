@@ -13,6 +13,10 @@ import {
   Layers,
   FileSpreadsheet,
   BrainCircuit,
+  Hotel,
+  Building2,
+  Home,
+  Landmark,
 } from "lucide-react";
 
 export const ProblemSection = () => (
@@ -64,7 +68,7 @@ export const ProblemSection = () => (
                 <FileSpreadsheet className="text-rose-500" />
               </div>
               <div>
-                <h4 className="font-bold text-white text-base">Datos Fragmentados</h4>
+                <h4 className="font-bold text-white text-base">Datos fragmentados</h4>
                 <p className="text-xs text-slate-500">
                   Pérdida de eficiencia operativa
                 </p>
@@ -230,7 +234,7 @@ export const TechSection = () => (
             <div className="glass-card p-4 bg-white/5">
               <Activity className="text-blue-500 mb-2" size={20} />
               <p className="text-[10px] text-slate-500 uppercase font-bold">
-                Análisis Real
+                Análisis real
               </p>
               <div className="h-12 flex items-end gap-1 mt-2">
                 {[40, 70, 45, 90, 60].map((h, i) => (
@@ -256,10 +260,10 @@ export const TechSection = () => (
           </div>
 
           <div className="mt-4 glass-card p-4 bg-white/5">
-            <p className="text-xs font-bold mb-2 text-white">Patrones Detectados</p>
+            <p className="text-xs font-bold mb-2 text-white">Patrones detectados</p>
             <div className="space-y-2">
               <div className="flex justify-between text-[10px] text-slate-400">
-                <span>Demanda Predictiva</span>
+                <span>Demanda predictiva</span>
                 <span className="text-emerald-400">98.2%</span>
               </div>
               <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
@@ -348,34 +352,95 @@ export const UseCases = () => (
   </section>
 );
 
-export const TargetAudience = () => (
-  <section className="py-20">
-    <div className="max-w-7xl mx-auto px-6">
-      <div className="glass-card p-8 md:p-12 bg-gradient-to-br from-blue-600/10 to-violet-600/10 border-white/[0.05] text-center">
-        <h2 className="text-2xl md:text-3xl font-display font-bold mb-8 text-white">
-          Diseñado para todo el ecosistema hospitality
-        </h2>
+export const TargetAudience = () => {
+  const audience = [
+    {
+      title: "Hoteles independientes",
+      desc: "Operativa centralizada y más visibilidad sin complejidad innecesaria.",
+      icon: Hotel,
+    },
+    {
+      title: "Cadenas pequeñas",
+      desc: "Control homogéneo entre propiedades y criterios más consistentes.",
+      icon: Building2,
+    },
+    {
+      title: "Apartamentos turísticos",
+      desc: "Más control sobre reservas, comportamiento y señales operativas.",
+      icon: Building2,
+    },
+    {
+      title: "Alojamientos rurales",
+      desc: "Tecnología útil para equipos pequeños con operación real del día a día.",
+      icon: Home,
+    },
+    {
+      title: "Grupos hoteleros",
+      desc: "Escalabilidad, trazabilidad y análisis consolidado por activo o unidad.",
+      icon: Landmark,
+    },
+  ];
 
-        <div className="flex flex-wrap justify-center gap-4">
-          {[
-            "Hoteles independientes",
-            "Cadenas pequeñas",
-            "Apartamentos turísticos",
-            "Alojamientos rurales",
-            "Grupos hoteleros",
-          ].map((item, i) => (
-            <span
-              key={i}
-              className="px-5 py-2 rounded-full bg-white/5 border border-white/10 text-sm font-medium text-slate-300"
-            >
-              {item}
-            </span>
-          ))}
+  return (
+    <section className="py-20">
+      <div className="max-w-7xl mx-auto px-6">
+        <div className="relative overflow-hidden rounded-[32px] border border-white/[0.06] bg-gradient-to-br from-blue-600/10 via-slate-950/70 to-violet-600/10 p-8 md:p-12">
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute left-1/2 top-0 h-40 w-40 -translate-x-1/2 rounded-full bg-blue-500/10 blur-3xl" />
+            <div className="absolute right-0 bottom-0 h-40 w-40 rounded-full bg-violet-500/10 blur-3xl" />
+          </div>
+
+          <div className="relative z-10 text-center mb-10">
+            <div className="inline-flex items-center gap-2 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-blue-400 mb-5">
+              <Zap size={12} />
+              Ecosistema hospitality
+            </div>
+
+            <h2 className="text-2xl md:text-3xl font-display font-bold mb-4 text-white">
+              Diseñado para todo el ecosistema hospitality
+            </h2>
+
+            <p className="mx-auto max-w-2xl text-sm md:text-base text-slate-400">
+              Una plataforma adaptable a distintos modelos de alojamiento, con una
+              base operativa y analítica común.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5">
+            {audience.map((item, i) => {
+              const Icon = item.icon;
+
+              return (
+                <motion.div
+                  key={item.title}
+                  initial={{ opacity: 0, y: 18 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ delay: i * 0.06 }}
+                  className="group relative rounded-2xl border border-white/[0.06] bg-white/[0.03] p-6 text-left transition-all duration-300 hover:-translate-y-1 hover:border-blue-500/30 hover:bg-white/[0.05]"
+                >
+                  <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl border border-blue-500/20 bg-blue-500/10 text-blue-400 transition-transform duration-300 group-hover:scale-105">
+                    <Icon size={22} />
+                  </div>
+
+                  <h3 className="mb-3 text-sm font-semibold text-white leading-snug">
+                    {item.title}
+                  </h3>
+
+                  <p className="text-xs leading-relaxed text-slate-400">
+                    {item.desc}
+                  </p>
+
+                  <div className="mt-5 h-px w-full bg-gradient-to-r from-blue-500/20 via-white/5 to-transparent" />
+                </motion.div>
+              );
+            })}
+          </div>
         </div>
       </div>
-    </div>
-  </section>
-);
+    </section>
+  );
+};
 
 export const InnovationSection = () => (
   <section className="py-20 bg-slate-950/30">

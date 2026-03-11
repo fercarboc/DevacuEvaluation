@@ -3,10 +3,21 @@ import React, { useEffect, useMemo, useState } from "react";
 import { EvalApiError, evalPostLogin } from "@/services/evalApi";
 import type { User } from "@/types/types";
 import { planCodeToPlanType, PlanType } from "@/types/types";
-import { Lock, User as UserIcon, Loader2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Mail,
+  Lock,
+  Eye,
+  EyeOff,
+  ShieldCheck,
+  TrendingUp,
+  Zap,
+  LayoutDashboard,
+  Loader2,
+} from "lucide-react";
 import { supabase } from "@/services/supabaseClient";
 import { useEvalAuth } from "@/context/EvalAuthContext";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import PaywallPlansModal from "./PaywallPlansModal";
 import { setEvalOrgId } from "@/services/callEvalFn";
@@ -19,21 +30,21 @@ type PaywallReason = "EXPIRED" | "NONE" | null;
 
 export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   const { signIn } = useEvalAuth();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  // Email + password
   const [emailInput, setEmailInput] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
 
   const [error, setError] = useState("");
   const [info, setInfo] = useState<string>("");
   const [loading, setLoading] = useState(false);
 
-  // Paywall
   const [paywallOpen, setPaywallOpen] = useState(false);
   const [paywallReason, setPaywallReason] = useState<PaywallReason>(null);
 
-  // evita spamear el mensaje
   const pwOk = useMemo(() => searchParams.get("pw") === "ok", [searchParams]);
 
   useEffect(() => {
@@ -49,20 +60,19 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
   function normalizeEmailOrThrow(v: string) {
     const email = String(v ?? "").trim().toLowerCase();
-    if (!email || !email.includes("@")) throw new Error("Introduce un email válido.");
+    if (!email || !email.includes("@")) {
+      throw new Error("Introduce un email válido.");
+    }
     return email;
   }
 
   function buildUserForUI(post: any): User {
-    // post = { user, customer, membership, entitlement }
     const authUser = post?.user ?? null;
     const customer = post?.customer ?? null;
     const membership = post?.membership ?? null;
     const entitlement = post?.entitlement ?? null;
 
-    // Si falta customer.id, tu UI se rompe porque User.id es customerId.
     if (!customer?.id) {
-      // En este caso, es inconsistencia (tu Edge debería devolver NO_CUSTOMER)
       throw new Error("Login incompleto: falta customer.id en postlogin");
     }
 
@@ -72,26 +82,25 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     const role = String(membership?.role ?? "");
     const isAdmin = role === "OWNER" || role === "ADMIN";
 
-    const email = String(authUser?.email ?? customer?.email ?? "").trim().toLowerCase();
-    if (!email) throw new Error("Login incompleto: falta email");
+    const email = String(authUser?.email ?? customer?.email ?? "")
+      .trim()
+      .toLowerCase();
 
-    // ⚠️ En tu postlogin actual NO viene customers.name ni service_username.
-    // Para no bloquear, ponemos placeholders razonables.
-    // Cuando amplíes el postlogin, sustituyes esto por los campos reales.
-    const fullName = String(customer?.name ?? email); // si algún día devuelves name, aquí lo aprovechas
+    if (!email) {
+      throw new Error("Login incompleto: falta email");
+    }
+
+    const fullName = String(customer?.name ?? email);
     const username = String(customer?.service_username ?? email);
 
     const u: User = {
-      id: String(customer.id), // ✅ customerId
-      customerId: String(customer.id), // opcional (duplicado)
+      id: String(customer.id),
+      customerId: String(customer.id),
       username,
       fullName,
       email,
       plan,
       isAdmin,
-      // Si más adelante postlogin devuelve start_date o monthlyFee, los rellenas aquí
-      // planStartDate: post?.subscription?.start_date ?? undefined,
-      // monthlyFee: post?.plan?.price_monthly ?? undefined,
     };
 
     return u;
@@ -106,7 +115,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     try {
       const email = normalizeEmailOrThrow(emailInput);
 
-      // 1) AUTH REAL: Supabase
       const { data, error: authError } = await supabase.auth.signInWithPassword({
         email,
         password,
@@ -119,11 +127,8 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       const accessToken = data.session.access_token ?? "";
       localStorage.setItem("debacu_eval_auth_token", accessToken);
 
-      // 2) Post-login AUTHZ (Edge Function): org/membership/plan/paywall
       const post = await evalPostLogin(accessToken);
 
-      // ✅ Guardar org_id para que callEvalFn lo inyecte en todas las Edge calls
-      // Estructura esperada de tu postlogin: { ok:true, data:{ membership:{org_id}... } }
       const orgId =
         (post as any)?.data?.membership?.org_id ??
         (post as any)?.membership?.org_id ??
@@ -135,13 +140,13 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
         setEvalOrgId(orgId.trim());
       }
 
-      // compat: si no existe session_token interno, guardamos ""
-      localStorage.setItem("debacu_eval_session_token", String((post as any)?.session_token ?? ""));
+      localStorage.setItem(
+        "debacu_eval_session_token",
+        String((post as any)?.session_token ?? "")
+      );
 
-      // 3) Construir User para TU UI (customer-centric)
       const userForApp = buildUserForUI(post);
 
-      // Extra: si tu guard decide por plan, aquí ya está.
       sessionStorage.removeItem("debacu_eval_is_admin");
 
       signIn(accessToken, userForApp);
@@ -165,8 +170,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
           return;
         }
 
-        // Si te llega NO_ORG_MEMBERSHIP, aquí NO deberías mandar a /solicitar-acceso desde Login.
-        // Deja el error visible.
         setError(err.message || "Acceso denegado");
         return;
       }
@@ -177,7 +180,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  // Recuperación contraseña vía Supabase (email-only)
   const handleForgotPassword = async () => {
     setError("");
     setInfo("");
@@ -200,14 +202,18 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     try {
       const redirectTo = `${window.location.origin}/reset-password`;
 
-      const { error: e } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+      const { error: e } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo,
+      });
       if (e) throw e;
 
-      // anti-enumeración
-      setInfo("Si el email existe, recibirás un enlace para restablecer la contraseña en unos minutos.");
+      setInfo(
+        "Si el email existe, recibirás un enlace para restablecer la contraseña en unos minutos."
+      );
     } catch (e: any) {
-      // anti-enumeración
-      setInfo("Si el email existe, recibirás un enlace para restablecer la contraseña en unos minutos.");
+      setInfo(
+        "Si el email existe, recibirás un enlace para restablecer la contraseña en unos minutos."
+      );
       console.warn("resetPasswordForEmail failed:", e?.message ?? e);
     } finally {
       setLoading(false);
@@ -217,109 +223,217 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   const showPlansButton = paywallReason !== null;
 
   return (
-    <div className="relative min-h-screen flex items-center justify-center overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-br from-[#06213f] via-[#0b3a6f] to-[#0e4f8a]" />
-      <div className="absolute -top-40 -right-40 w-[520px] h-[520px] rounded-full bg-white/5 blur-3xl" />
-      <div className="absolute -bottom-40 -left-40 w-[520px] h-[520px] rounded-full bg-black/10 blur-3xl" />
-
-      <div className="relative z-10 w-full max-w-md p-8 bg-white rounded-2xl shadow-2xl border border-slate-200">
-        <div className="text-center mb-8">
-          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-indigo-100 text-indigo-600">
-            <Lock className="h-7 w-7" />
-          </div>
-
-          <h1 className="text-2xl font-bold text-slate-900">DebacuEvaluation360</h1>
-
-          <p className="mt-2 text-sm text-slate-600">
-            Plataforma profesional de evaluación y control operativo
-          </p>
-
-          <p className="mt-3 text-xs text-slate-400">
-            Acceso restringido · Uso profesional · No es una plataforma pública
-          </p>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-6">
-          {info && (
-            <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-              {info}
-            </div>
-          )}
-
-          {error && (
-            <div className="rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-600">
-              {error}
-            </div>
-          )}
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">Email</label>
-            <div className="relative">
-              <UserIcon className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
-              <input
-                type="email"
-                required
-                value={emailInput}
-                onChange={(e) => setEmailInput(e.target.value)}
-                className="w-full rounded-lg border border-slate-300 py-2.5 pl-10 pr-3 text-sm focus:border-indigo-500 focus:ring-indigo-500"
-                placeholder="tuemail@dominio.com"
-                autoComplete="username"
-              />
-            </div>
-
-            <div className="mt-2 flex items-center justify-end">
-              <button
-                type="button"
-                onClick={handleForgotPassword}
-                disabled={loading}
-                className="text-xs font-semibold text-indigo-700 hover:text-indigo-800 disabled:opacity-50"
-                title="Envía un enlace de recuperación al email indicado"
-              >
-                ¿Olvidaste tu contraseña?
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">Contraseña</label>
-            <div className="relative">
-              <Lock className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded-lg border border-slate-300 py-2.5 pl-10 pr-3 text-sm focus:border-indigo-500 focus:ring-indigo-500"
-                placeholder="••••••••"
-                autoComplete="current-password"
-              />
-            </div>
-          </div>
-
+    <div className="min-h-screen bg-[#020617] flex flex-col lg:flex-row">
+      {/* Left Side: Login Form */}
+      <div className="flex-1 flex flex-col justify-center px-6 py-16 lg:px-24">
+        <div className="max-w-md w-full mx-auto">
           <button
-            type="submit"
-            disabled={loading}
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+            type="button"
+            onClick={() => navigate("/")}
+            className="flex items-center gap-2 text-slate-500 hover:text-white transition-colors mb-10 group"
           >
-            {loading && <Loader2 className="h-5 w-5 animate-spin" />}
-            Acceder
+            <ArrowLeft size={18} className="group-hover:-translate-x-1 transition-transform" />
+            Volver
           </button>
 
-          {showPlansButton && (
+          <div className="mb-10">
+            <h1 className="text-4xl font-display font-bold text-white mb-4">
+              Acceso a Debacu
+            </h1>
+            <p className="text-slate-400">
+              Inicia sesión para acceder a tu entorno de análisis e inteligencia operativa.
+            </p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-6">
+            {info && (
+              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+                {info}
+              </div>
+            )}
+
+            {error && (
+              <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                {error}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-500 uppercase">Email</label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">
+                  <Mail size={18} />
+                </div>
+                <input
+                  type="email"
+                  value={emailInput}
+                  onChange={(e) => setEmailInput(e.target.value)}
+                  required
+                  autoComplete="username"
+                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-10 pr-3 py-3 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50 transition-colors"
+                  placeholder="tu@email.com"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex justify-between items-center gap-4">
+                <label className="text-xs font-bold text-slate-500 uppercase">
+                  Contraseña
+                </label>
+                <button
+                  type="button"
+                  onClick={handleForgotPassword}
+                  disabled={loading}
+                  className="text-xs text-blue-500 hover:underline disabled:opacity-50"
+                >
+                  ¿Has olvidado tu contraseña?
+                </button>
+              </div>
+
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">
+                  <Lock size={18} />
+                </div>
+
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  autoComplete="current-password"
+                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-10 pr-10 py-3 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50 transition-colors"
+                  placeholder="••••••••"
+                />
+
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-300 transition-colors"
+                >
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center">
+              <label className="flex items-center gap-2 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="w-4 h-4 rounded border-white/10 bg-white/5 text-blue-600 focus:ring-0 focus:ring-offset-0"
+                />
+                <span className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">
+                  Recordarme
+                </span>
+              </label>
+            </div>
+
             <button
-              type="button"
-              onClick={() => setPaywallOpen(true)}
-              className="w-full rounded-lg border border-slate-200 bg-white py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              type="submit"
+              disabled={loading}
+              className="btn-primary w-full py-4 text-base flex items-center justify-center gap-2 disabled:opacity-60"
             >
-              Ver planes
+              {loading && <Loader2 className="h-5 w-5 animate-spin" />}
+              Iniciar sesión
             </button>
-          )}
-        </form>
+
+            {showPlansButton && (
+              <button
+                type="button"
+                onClick={() => setPaywallOpen(true)}
+                className="w-full rounded-lg border border-white/10 bg-white/5 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10 transition-colors"
+              >
+                Ver planes
+              </button>
+            )}
+          </form>
+
+          <div className="mt-10 text-center">
+            <p className="text-sm text-slate-500">
+              ¿Todavía no tienes acceso?{" "}
+              <button
+                type="button"
+                onClick={() => navigate("/solicitar-acceso")}
+                className="text-blue-500 font-bold hover:underline"
+              >
+                Solicitar acceso
+              </button>
+            </p>
+          </div>
+        </div>
       </div>
 
-      {/* Paywall Modal (JWT-only) */}
+      {/* Right Side: Visual Content */}
+      <div className="hidden lg:flex flex-1 bg-blue-600/5 border-l border-white/[0.05] relative overflow-hidden items-center justify-center p-12">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-600/10 via-transparent to-transparent" />
+
+        <div className="max-w-md w-full relative z-10">
+          <div className="mb-12">
+            <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center shadow-2xl shadow-blue-600/40 mb-8">
+              <div className="w-8 h-8 bg-white rounded-md" />
+            </div>
+
+            <h2 className="text-4xl font-display font-bold text-white mb-6 leading-tight">
+              Inteligencia operativa para hospitality
+            </h2>
+
+            <p className="text-slate-400 text-lg leading-relaxed">
+              La plataforma líder en análisis de riesgo, revenue intelligence y toma de decisiones basada en datos para el sector hotelero.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              { icon: <ShieldCheck size={20} />, label: "Análisis de riesgo" },
+              { icon: <TrendingUp size={20} />, label: "Revenue intelligence" },
+              { icon: <Zap size={20} />, label: "Alertas operativas" },
+              { icon: <LayoutDashboard size={20} />, label: "Decisiones con datos" },
+            ].map((item, i) => (
+              <div
+                key={i}
+                className="p-4 bg-white/[0.03] border border-white/[0.05] rounded-xl flex flex-col gap-3"
+              >
+                <div className="text-blue-500">{item.icon}</div>
+                <span className="text-xs font-bold text-slate-300 uppercase tracking-widest">
+                  {item.label}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-12 glass-card p-6 border-white/[0.05] bg-slate-950/50">
+            <div className="flex items-center justify-between mb-6">
+              <div className="h-2 w-24 bg-white/10 rounded-full" />
+              <div className="h-2 w-12 bg-blue-500/40 rounded-full" />
+            </div>
+
+            <div className="space-y-3">
+              <div className="h-1.5 w-full bg-white/5 rounded-full" />
+              <div className="h-1.5 w-4/5 bg-white/5 rounded-full" />
+              <div className="h-1.5 w-2/3 bg-white/5 rounded-full" />
+            </div>
+
+            <div className="mt-6 flex gap-2 items-end h-16">
+              {[40, 70, 45, 90, 65, 80].map((h, i) => (
+                <div
+                  key={i}
+                  style={{ height: `${h}%` }}
+                  className="flex-1 bg-blue-600/20 rounded-t-sm"
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
       {paywallOpen && (
-        <PaywallPlansModal open={paywallOpen} onClose={closePaywall} reason={paywallReason} />
+        <PaywallPlansModal
+          open={paywallOpen}
+          onClose={closePaywall}
+          reason={paywallReason}
+        />
       )}
     </div>
   );
