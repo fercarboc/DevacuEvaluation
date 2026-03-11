@@ -52,7 +52,7 @@ export const DashboardMockup = () => {
   return (
     <div className="w-full max-w-6xl mx-auto glass-card overflow-hidden shadow-2xl shadow-blue-900/30 border-white/[0.12] bg-[#020617]/90">
       {/* Sidebar & Main Layout */}
-      <div className="flex h-[520px]">
+      <div className="flex h-[600px]">
         {/* Sidebar */}
         <div className="w-16 md:w-56 border-r border-white/[0.08] flex flex-col p-4 gap-6">
           <div className="flex items-center gap-3 px-2 mb-4">
@@ -117,7 +117,7 @@ export const DashboardMockup = () => {
           </header>
 
           {/* Dashboard Scrollable Content */}
-          <div className="flex-1 overflow-hidden p-6 space-y-6">
+          <div className="flex-1 overflow-y-auto p-6 space-y-6">
             {/* KPI Row */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               {[

@@ -1,1005 +1,196 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
+import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
-import  { useState } from "react";
+import { ChevronRight, Zap } from "lucide-react";
 
+import "@/styles/public.css";
+import WebNavbar from "@/pages/public/WebNavbar";
+import WebFooter from "@/pages/public/WebFooter";
 import {
-  ShieldCheck,
-  ClipboardList,
-  Search,
-  Lock,
-  ArrowRight,
-  Building2,
-  Home,
-  Hotel,
-  BadgeCheck,
-  TrendingUp,
-  Users,
-  Sparkles,
-} from "lucide-react";
- import heroImg from "@/img/debacuevaluation.png";
+  ProblemSection,
+  FeaturesSection,
+  HowItWorks,
+  TechSection,
+  UseCases,
+  TargetAudience,
+  InnovationSection,
+} from "@/pages/public/LandingSections";
 
-import cardHotel from "@/img/hotel.png";
-import cardRural from "@/img/rural.png";
-import cardApartments from "@/img/apartments.png";
-import cardHostel from "@/img/hostel.png";
-
-import cardReception from "@/img/reception.png";
-import cardDirector from "@/img/director.png";
-import cardOperations from "@/img/operations.png";
-
-import cardFrontdesk from "@/img/frontdesk.png";
-import cardAudit from "@/img/audit.png";
-import cardSales from "@/img/sales.png";
- 
-import LegalFooter from "../legal/LegalFooter";
- 
-
-const cx = (...cls: Array<string | false | undefined | null>) =>
-  cls.filter(Boolean).join(" ");
-
-const Pill = ({ children }: { children: React.ReactNode }) => (
-  <span
-    className={cx(
-      "inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium",
-      "border border-white/15 bg-white/10 text-white/90",
-      "shadow-sm backdrop-blur hover:bg-white/15 transition-colors"
-    )}
-  >
-    {children}
-  </span>
-);
-
-const InfoCard = ({
-  icon,
-  title,
-  description,
-  tone = "blue",
-  imageSrc,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-  tone?: "blue" | "indigo" | "emerald";
-  imageSrc?: string;
-}) => {
-  const toneBorder =
-    tone === "emerald"
-      ? "border-emerald-200/40"
-      : tone === "indigo"
-        ? "border-indigo-200/40"
-        : "border-sky-200/40";
-
-  return (
-    <div
-      className={cx(
-        "group overflow-hidden rounded-2xl border bg-white/90 p-0 shadow-sm backdrop-blur",
-        "hover:shadow-md hover:-translate-y-0.5 transition-all",
-        toneBorder
-      )}
-    >
-      {imageSrc && (
-        <div className="relative h-36 w-full">
-          <img
-            src={imageSrc}
-            alt={title}
-            className="h-full w-full object-cover"
-            loading="lazy"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-white/70 via-white/10 to-transparent" />
-        </div>
-      )}
-
-      <div
-        className="p-5"
-        style={{
-          backgroundImage:
-            tone === "emerald"
-              ? "radial-gradient(circle at top, rgba(16,185,129,0.10), transparent 55%)"
-              : tone === "indigo"
-                ? "radial-gradient(circle at top, rgba(99,102,241,0.10), transparent 55%)"
-                : "radial-gradient(circle at top, rgba(59,130,246,0.10), transparent 55%)",
-        }}
-      >
-        <div className="flex items-start gap-3">
-          <div
-            className={cx(
-              "flex h-10 w-10 items-center justify-center rounded-xl",
-              "bg-slate-900 text-white shadow-sm",
-              "group-hover:scale-[1.03] transition-transform"
-            )}
-          >
-            {icon}
-          </div>
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-slate-900">{title}</div>
-            <div className="mt-1 text-sm leading-6 text-slate-600">{description}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const SectionTitle = ({
-  eyebrow,
-  title,
-  subtitle,
-  inverted,
-}: {
-  eyebrow?: string;
-  title: string;
-  subtitle?: string;
-  inverted?: boolean;
-}) => (
-  <div className="mx-auto max-w-3xl text-center">
-    {eyebrow && (
-      <div
-        className={cx(
-          "text-xs font-semibold uppercase tracking-wider",
-          inverted ? "text-white/70" : "text-slate-500"
-        )}
-      >
-        {eyebrow}
-      </div>
-    )}
-    <h2
-      className={cx(
-        "mt-2 text-2xl font-semibold tracking-tight sm:text-3xl",
-        inverted ? "text-white" : "text-slate-900"
-      )}
-    >
-      {title}
-    </h2>
-    {subtitle && (
-      <p
-        className={cx(
-          "mt-3 text-sm leading-6 sm:text-base",
-          inverted ? "text-white/75" : "text-slate-600"
-        )}
-      >
-        {subtitle}
-      </p>
-    )}
-  </div>
-);
-
-type PlanTone = "free" | "basic" | "medium" | "premium";
-
-const planToneStyles: Record<
-  PlanTone,
-  { border: string; ring: string; bg: string; badgeBg: string; badgeText: string }
-> = {
-  free: {
-    border: "border-sky-200/70",
-    ring: "ring-sky-200/70",
-    bg: "bg-gradient-to-b from-sky-50/95 to-white",
-    badgeBg: "bg-sky-900",
-    badgeText: "text-white",
-  },
-  basic: {
-    border: "border-emerald-200/70",
-    ring: "ring-emerald-200/70",
-    bg: "bg-gradient-to-b from-emerald-50/95 to-white",
-    badgeBg: "bg-emerald-900",
-    badgeText: "text-white",
-  },
-  medium: {
-    border: "border-indigo-200/70",
-    ring: "ring-indigo-200/70",
-    bg: "bg-gradient-to-b from-indigo-50/95 to-white",
-    badgeBg: "bg-indigo-900",
-    badgeText: "text-white",
-  },
-  premium: {
-    border: "border-amber-200/80",
-    ring: "ring-amber-200/70",
-    bg: "bg-gradient-to-b from-amber-50/95 to-white",
-    badgeBg: "bg-amber-900",
-    badgeText: "text-white",
-  },
-};
-
-const PlanCard = ({
-  title,
-  price,
-  subtitle,
-  bullets,
-  highlight,
-  ctaLabel,
-  onCta,
-  badge,
-  tone = "basic",
-}: {
-  title: string;
-  price: string;
-  subtitle: string;
-  bullets: string[];
-  highlight?: boolean;
-  ctaLabel: string;
-  onCta: () => void;
-  badge?: string;
-  tone?: PlanTone;
-}) => {
-  const t = planToneStyles[tone];
-
-  return (
-    <div
-      className={cx(
-        "relative rounded-2xl border p-6 shadow-sm backdrop-blur",
-        "transition-all hover:shadow-md hover:-translate-y-0.5",
-        t.border,
-        t.bg,
-        highlight ? cx("ring-1", t.ring) : "ring-0"
-      )}
-    >
-      {badge && (
-        <div
-          className={cx(
-            "absolute right-5 top-5 rounded-full px-3 py-1 text-xs font-semibold shadow-sm",
-            t.badgeBg,
-            t.badgeText
-          )}
-        >
-          {badge}
-        </div>
-      )}
-
-      <div className="flex items-center gap-2">
-        <div className="text-sm font-semibold text-slate-900">{title}</div>
-        {highlight && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-slate-900 px-2 py-0.5 text-[11px] font-semibold text-white">
-            <Sparkles className="h-3 w-3" /> recomendado
-          </span>
-        )}
-      </div>
-
-      <div className="mt-2 text-3xl font-semibold text-slate-900">{price}</div>
-      <div className="mt-2 text-sm text-slate-600">{subtitle}</div>
-
-      <ul className="mt-5 space-y-2 text-sm text-slate-700">
-        {bullets.map((b) => (
-          <li key={b} className="flex gap-2">
-            <span className="mt-0.5 text-slate-400">•</span>
-            <span>{b}</span>
-          </li>
-        ))}
-      </ul>
-
-      <button
-        onClick={onCta}
-        className={cx(
-          "mt-6 w-full rounded-xl px-4 py-2 text-sm font-semibold transition-colors",
-          highlight
-            ? "bg-slate-900 text-white hover:bg-black"
-            : "border border-slate-200 bg-white text-slate-900 hover:bg-slate-50"
-        )}
-      >
-        {ctaLabel}
-      </button>
-    </div>
-  );
-};
-
-const TargetCard = ({
-  icon,
-  title,
-  description,
-  imageSrc,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-  imageSrc?: string;
-}) => (
-  <div
-    className={cx(
-      "overflow-hidden rounded-2xl border border-white/10 bg-white/90 shadow-sm backdrop-blur",
-      "hover:shadow-md hover:-translate-y-0.5 transition-all"
-    )}
-  >
-    {imageSrc && (
-      <div className="relative h-28 w-full">
-        <img src={imageSrc} alt={title} className="h-full w-full object-cover" loading="lazy" />
-        <div className="absolute inset-0 bg-gradient-to-t from-white/70 via-white/10 to-transparent" />
-      </div>
-    )}
-
-    <div
-      className="p-5"
-      style={{
-        backgroundImage:
-          "radial-gradient(circle at top, rgba(59,130,246,0.10), transparent 55%)",
-      }}
-    >
-      <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 text-white shadow-sm">
-          {icon}
-        </div>
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-slate-900">{title}</div>
-          <div className="mt-1 text-sm leading-6 text-slate-600">{description}</div>
-        </div>
-      </div>
-    </div>
-  </div>
-);
-
-const PublicLanding: React.FC = () => {
-
+export default function PublicLanding() {
   const navigate = useNavigate();
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
-  type ModalKey = "FREE" | "BASIC" | "MEDIUM" | "PREMIUM" | "API" | "INTEGRACION";
-
-const [openModal, setOpenModal] = useState<ModalKey | null>(null);
-
-const modalContent: Record<
-  ModalKey,
-  { title: string; subtitle?: string; sections: Array<{ heading: string; bullets: string[] }> }
-> = {
-  FREE: {
-    title: "Plan FREE (30 días)",
-    subtitle: "Alta controlada para validar operativa. No es contratación automática.",
-    sections: [
-      {
-        heading: "Incluye",
-        bullets: [
-          "Acceso 30 días desde el alta",
-          "Consultas limitadas según política",
-          "Registro de incidencias estructurado",
-          "Auditoría básica (actividad y trazabilidad esencial)",
-        ],
-      },
-      {
-        heading: "No incluye",
-        bullets: [
-          "Exportaciones avanzadas (PDF/CSV) si no están en tu política",
-          "Soporte prioritario",
-          "API",
-          "Integración PMS",
-        ],
-      },
-    ],
-  },
-
-  BASIC: {
-    title: "Plan BÁSICO — 55 €/mes",
-    subtitle: "Para hoteles independientes o equipos pequeños.",
-    sections: [
-      {
-        heading: "Incluye",
-        bullets: [
-          "1 usuario incluido (ampliable cuando actives multi-usuario)",
-          "150 consultas/mes",
-          "Registro estructurado + auditoría",
-          "Soporte estándar",
-          "Facturación Stripe + facturas descargables",
-        ],
-      },
-      {
-        heading: "No incluye",
-        bullets: ["API", "Integración PMS", "SLA/soporte avanzado"],
-      },
-    ],
-  },
-
-  MEDIUM: {
-    title: "Plan MEDIO — 95 €/mes",
-    subtitle: "Para equipos operativos con más volumen.",
-    sections: [
-      {
-        heading: "Incluye (todo lo del Básico) +",
-        bullets: [
-          "2 usuarios incluidos (ampliable cuando actives multi-usuario)",
-          "500 consultas/mes",
-          "Exportación (PDF/CSV) de auditoría e informes (según módulo)",
-          "Soporte prioritario",
-        ],
-      },
-      {
-        heading: "No incluye",
-        bullets: ["API", "Integración PMS"],
-      },
-    ],
-  },
-
-  PREMIUM: {
-    title: "Plan PREMIUM — 145 €/mes",
-    subtitle: "SaaS completo para operación + auditoría avanzada (sin API ni integración).",
-    sections: [
-      {
-        heading: "Incluye (todo lo del Medio) +",
-        bullets: [
-          "4 usuarios incluidos (ampliable cuando actives multi-usuario)",
-          "2.000 consultas/mes",
-          "Auditoría y reporting extendido",
-          "Exportaciones completas (PDF/CSV) según módulos",
-          "Prioridad máxima de soporte (sin SLA contractual por defecto)",
-        ],
-      },
-      {
-        heading: "Muy importante",
-        bullets: [
-          "La API y la Integración PMS son servicios aparte (Enterprise).",
-          "Este precio es por hotel (si son 5 hoteles, son 5 licencias).",
-        ],
-      },
-    ],
-  },
-
-  API: {
-    title: "API Debacu (servicio adicional)",
-    subtitle: "Acceso técnico para consumir endpoints. No incluye desarrollo.",
-    sections: [
-      {
-        heading: "Precio orientativo",
-        bullets: ["Desde 95 €/mes por hotel (según uso y límites)."],
-      },
-      {
-        heading: "Incluye",
-        bullets: [
-          "Token/API key (según modelo)",
-          "Rate limit y límites definidos por contrato",
-          "Registro/auditoría de llamadas (si lo activas)",
-        ],
-      },
-      {
-        heading: "No incluye",
-        bullets: [
-          "Desarrollo a medida",
-          "Conectores PMS listos",
-          "Onboarding técnico completo (se cotiza aparte si hace falta)",
-        ],
-      },
-    ],
-  },
-
-  INTEGRACION: {
-    title: "Integración PMS (proyecto)",
-    subtitle: "Proyecto cerrado por hotel y por PMS.",
-    sections: [
-      {
-        heading: "Precio orientativo",
-        bullets: ["Desde 1.500 € a 4.500 € por hotel (según PMS y alcance)."],
-      },
-      {
-        heading: "Incluye",
-        bullets: [
-          "Análisis de PMS + mapping de datos",
-          "Desarrollo del conector",
-          "Pruebas + puesta en producción",
-          "Documentación mínima y handover",
-        ],
-      },
-      {
-        heading: "Condición clave",
-        bullets: [
-          "Cadena de 5 hoteles = 5 integraciones (salvo PMS centralizado con alcance claramente definido).",
-        ],
-      },
-    ],
-  },
-};
-
-
-  const goLogin = () => navigate("/login");
-  const goRequestAccess = () => navigate("/solicitar-acceso");
-
-  const scrollTo = (id: string) => {
-    const el = document.getElementById(id);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({ top: 0, behavior: "auto" });
+    }
+  }, []);
 
   return (
-    <div className="min-h-screen w-full overflow-x-hidden bg-[#123a63] flex flex-col">
-      {/* BACKGROUND */}
-      <div className="fixed inset-0 -z-10 bg-gradient-to-b from-[#06213f] via-[#0b3a6a] to-slate-50" />
+    <div className="public-page h-screen overflow-hidden bg-[#020617] text-white">
+      <WebNavbar />
+
       <div
-        className="fixed inset-0 -z-10 opacity-40"
-        style={{
-          backgroundImage:
-            "radial-gradient(circle at 20% 10%, rgba(59,130,246,0.35), transparent 45%), radial-gradient(circle at 80% 20%, rgba(14,165,233,0.25), transparent 45%), radial-gradient(circle at 50% 70%, rgba(99,102,241,0.18), transparent 50%)",
-        }}
-      />
-
-      {/* HEADER */}
-      <header className="sticky top-0 z-20 border-b border-white/10 bg-[#06213f]/60 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white text-slate-900 text-sm font-semibold shadow-sm">
-              D
+        id="public-page-scroll"
+        ref={scrollRef}
+        className="h-[calc(100vh-96px)] overflow-y-auto overflow-x-hidden"
+      >
+        <main className="pb-0">
+          {/* Hero Section */}
+          <section className="relative overflow-hidden px-6 pb-24 pt-8">
+            {/* Background glow */}
+            <div className="absolute top-0 left-1/2 -z-10 h-[700px] w-full max-w-6xl -translate-x-1/2 select-none overflow-hidden opacity-20 blur-[120px] pointer-events-none">
+              <div className="h-full w-full rounded-full bg-blue-600/20" />
             </div>
-            <div className="leading-tight">
-              <div className="text-sm font-semibold text-white">Debacu Evaluation360</div>
-              <div className="text-xs text-white/70">Uso profesional · Acceso restringido</div>
-            </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => scrollTo("planes")}
-              className="hidden rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15 sm:inline-flex"
-            >
-              Planes
-            </button>
-            <button
-              onClick={goLogin}
-              className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15"
-            >
-              Entrar
-            </button>
-            <button
-              onClick={goRequestAccess}
-              className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-100"
-              title="Alta controlada durante la fase inicial"
-            >
-              Solicitar acceso
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="flex-1">
-        {/* HERO */}
-        <section className="mx-auto max-w-6xl px-4 py-10 sm:px-6 sm:py-14">
-          <div className="grid items-center gap-10 lg:grid-cols-2">
-            <div>
-              <div className="flex flex-wrap gap-2">
-                <Pill>Privado</Pill>
-                <Pill>Trazabilidad</Pill>
-                <Pill>Auditoría</Pill>
-                <Pill>Control de acceso</Pill>
-              </div>
-
-              <h1 className="mt-5 text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-                Reduce incidencias. Aumenta control. Profesionaliza tu operación.
-              </h1>
-
-              <p className="mt-4 max-w-xl text-base leading-7 text-white/75 sm:text-lg">
-                Trazabilidad privada para alojamientos y equipos operativos.
-              </p>
-
-              <p className="mt-3 max-w-xl text-sm leading-6 text-white/70">
-                Consulta y registra incidencias con criterios estructurados, control de acceso y auditoría interna.
-                Diseñado para uso profesional. No es un servicio público.
-              </p>
-
-              <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
-                <button
-                  onClick={goLogin}
-                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-slate-900 hover:bg-slate-100"
-                >
-                  Acceso profesional <ArrowRight className="h-4 w-4" />
-                </button>
-
-                <button
-                  onClick={() => scrollTo("planes")}
-                  className="inline-flex items-center justify-center rounded-2xl border border-white/15 bg-white/10 px-5 py-3 text-sm font-semibold text-white hover:bg-white/15"
-                >
-                  Ver planes
-                </button>
-
-                <button
-                  onClick={() => scrollTo("legal")}
-                  className="text-sm font-medium text-white/75 hover:text-white text-left"
-                >
-                  Aviso legal
-                </button>
-              </div>
-
-              <div className="mt-8 grid gap-3 sm:grid-cols-3">
-                <div className="rounded-2xl border border-white/10 bg-white/10 p-4 text-white/80 backdrop-blur">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-white/60">
-                    Seguridad
-                  </div>
-                  <div className="mt-1 text-sm font-semibold text-white">Acceso restringido</div>
+            <div className="relative z-10 mx-auto max-w-7xl text-center">
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.6 }}
+              >
+                <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-xs font-bold uppercase tracking-widest text-blue-400">
+                  <Zap size={12} />
+                  Nueva Era Hospitality
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-white/10 p-4 text-white/80 backdrop-blur">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-white/60">
-                    Auditoría
-                  </div>
-                  <div className="mt-1 text-sm font-semibold text-white">Trazabilidad de acciones</div>
+
+                <h1 className="text-gradient mx-auto mb-8 max-w-5xl font-display text-4xl font-bold leading-[1.1] tracking-tight md:text-6xl lg:text-7xl">
+                  Inteligencia artificial para hoteles: riesgo, revenue y decisión
+                  operativa
+                </h1>
+
+                <p className="mx-auto mb-12 max-w-3xl text-lg text-slate-400 md:text-xl">
+                  Debacu es una plataforma SaaS que analiza datos operativos,
+                  incidencias y comportamiento para ayudar a los hoteles a detectar
+                  patrones, prevenir problemas y optimizar el revenue.
+                </p>
+
+                <div className="mb-20 flex flex-col items-center justify-center gap-4 sm:flex-row">
+                  <button
+                    onClick={() => navigate("/solicitar-acceso")}
+                    className="btn-primary w-full px-8 py-4 text-lg sm:w-auto"
+                    type="button"
+                  >
+                    Solicitar acceso <ChevronRight size={20} />
+                  </button>
+
+                  <button
+                    onClick={() => navigate("/tecnologia")}
+                    className="btn-secondary w-full px-8 py-4 text-lg sm:w-auto"
+                    type="button"
+                  >
+                    Ver cómo funciona <ChevronRight size={20} />
+                  </button>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-white/10 p-4 text-white/80 backdrop-blur">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-white/60">
-                    Operativa
+              </motion.div>
+
+              {/* Hero visual sin dashboard */}
+              <motion.div
+                initial={{ opacity: 0, scale: 0.96, y: 40 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                transition={{ duration: 0.8, delay: 0.2 }}
+                className="group relative mx-auto max-w-6xl"
+              >
+                <div className="absolute -inset-10 -z-10 rounded-full bg-blue-600/20 opacity-50 blur-[100px] transition-opacity group-hover:opacity-70" />
+
+                <div className="glass-card border-white/[0.08] p-6 md:p-8 lg:p-10">
+                  <div className="grid gap-6 lg:grid-cols-3">
+                    <div className="glass-card border-white/[0.05] bg-white/[0.03] p-6 text-left">
+                      <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl border border-blue-500/20 bg-blue-600/10 text-blue-500">
+                        <Zap size={20} />
+                      </div>
+                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                        Riesgo operativo
+                      </p>
+                      <h3 className="mb-3 text-xl font-bold text-white">
+                        Detecta señales antes de que escalen
+                      </h3>
+                      <p className="text-sm leading-relaxed text-slate-400">
+                        Incidencias, patrones repetitivos y alertas para actuar con
+                        más rapidez y menos improvisación.
+                      </p>
+                    </div>
+
+                    <div className="glass-card border-white/[0.05] bg-white/[0.03] p-6 text-left">
+                      <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl border border-emerald-500/20 bg-emerald-600/10 text-emerald-500">
+                        <Zap size={20} />
+                      </div>
+                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                        Revenue intelligence
+                      </p>
+                      <h3 className="mb-3 text-xl font-bold text-white">
+                        Visión comercial accionable
+                      </h3>
+                      <p className="text-sm leading-relaxed text-slate-400">
+                        Producción, canales, segmentos y comportamiento de reserva
+                        para entender dónde ganas y dónde pierdes margen.
+                      </p>
+                    </div>
+
+                    <div className="glass-card border-white/[0.05] bg-white/[0.03] p-6 text-left">
+                      <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl border border-violet-500/20 bg-violet-600/10 text-violet-500">
+                        <Zap size={20} />
+                      </div>
+                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                        Decisión operativa
+                      </p>
+                      <h3 className="mb-3 text-xl font-bold text-white">
+                        Menos intuición, más criterio
+                      </h3>
+                      <p className="text-sm leading-relaxed text-slate-400">
+                        Una base más clara para dirección, operativa y revenue en
+                        un único marco de análisis.
+                      </p>
+                    </div>
                   </div>
-                  <div className="mt-1 text-sm font-semibold text-white">Consulta y registro</div>
+
+                  <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    <div className="glass-card border-white/[0.05] bg-white/[0.03] p-5 text-left">
+                      <p className="mb-1 text-2xl font-bold text-white">1</p>
+                      <p className="text-sm text-slate-400">
+                        plataforma unificada
+                      </p>
+                    </div>
+
+                    <div className="glass-card border-white/[0.05] bg-white/[0.03] p-5 text-left">
+                      <p className="mb-1 text-2xl font-bold text-white">
+                        CSV + API
+                      </p>
+                      <p className="text-sm text-slate-400">
+                        según plan y madurez
+                      </p>
+                    </div>
+
+                    <div className="glass-card border-white/[0.05] bg-white/[0.03] p-5 text-left">
+                      <p className="mb-1 text-2xl font-bold text-white">
+                        Hotel-first
+                      </p>
+                      <p className="text-sm text-slate-400">
+                        pensado para operación real
+                      </p>
+                    </div>
+                  </div>
                 </div>
-              </div>
+
+                <p className="mt-12 text-sm font-medium text-slate-500">
+                  Para hoteles, apartamentos y alojamientos que buscan más control
+                  y mayor rentabilidad.
+                </p>
+              </motion.div>
             </div>
+          </section>
 
-            {/* Imagen hero */}
-            <div className="relative">
-              <div className="absolute -inset-6 rounded-[32px] bg-gradient-to-tr from-sky-500/30 via-indigo-500/20 to-transparent blur-2xl" />
-              <div className="relative rounded-3xl border border-white/10 bg-white/10 p-3 shadow-sm backdrop-blur">
-                <img
-                 src={heroImg}
-                  alt="Debacu Evaluation360"
-                  className="w-full rounded-2xl object-cover"
-                />
-              </div>
+          <ProblemSection />
+          <FeaturesSection />
+          <HowItWorks />
+          <TechSection />
+          <UseCases />
+          <TargetAudience />
+          <InnovationSection />
+        </main>
 
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Pill>
-                  <Lock className="h-4 w-4" /> Acceso restringido
-                </Pill>
-                <Pill>
-                  <ShieldCheck className="h-4 w-4" /> Auditoría
-                </Pill>
-                <Pill>
-                  <Search className="h-4 w-4" /> Consulta rápida
-                </Pill>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* QUÉ ES / QUÉ NO ES */}
-        <section id="que-es" className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-          <SectionTitle
-            inverted
-            eyebrow="Producto"
-            title="Qué es y qué no es Debacu Evaluation360"
-            subtitle="Mensajes claros y profesionales, sin exposición pública."
-          />
-
-          <div className="mt-8 grid gap-4 lg:grid-cols-2">
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                <BadgeCheck className="h-5 w-5 text-slate-700" />
-                Qué es
-              </div>
-              <ul className="mt-4 space-y-2 text-sm text-slate-700">
-                <li className="flex gap-2">
-                  <span className="mt-0.5 text-slate-400">•</span>
-                  <span>Un sistema privado para registrar incidencias operativas con trazabilidad.</span>
-                </li>
-                <li className="flex gap-2">
-                  <span className="mt-0.5 text-slate-400">•</span>
-                  <span>Herramienta de apoyo a decisiones internas (no pública).</span>
-                </li>
-                <li className="flex gap-2">
-                  <span className="mt-0.5 text-slate-400">•</span>
-                  <span>Control de acceso + auditoría + minimización de datos sensibles.</span>
-                </li>
-              </ul>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                <Lock className="h-5 w-5 text-slate-700" />
-                Qué no es
-              </div>
-              <ul className="mt-4 space-y-2 text-sm text-slate-700">
-                <li className="flex gap-2">
-                  <span className="mt-0.5 text-slate-400">•</span>
-                  <span>No es un registro público, ni indexable, ni “lista negra”.</span>
-                </li>
-                <li className="flex gap-2">
-                  <span className="mt-0.5 text-slate-400">•</span>
-                  <span>No es una autoridad ni una base oficial.</span>
-                </li>
-                <li className="flex gap-2">
-                  <span className="mt-0.5 text-slate-400">•</span>
-                  <span>Evita “opiniones”: fomenta hechos verificables y motivos estructurados.</span>
-                </li>
-              </ul>
-            </div>
-          </div>
-        </section>
-
-        {/* A QUIÉN VA DIRIGIDO */}
-        <section id="dirigido" className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-          <SectionTitle
-            inverted
-            eyebrow="Industria"
-            title="A quién va dirigido"
-            subtitle="Pensado para operaciones de alojamiento con rotación y necesidad de control."
-          />
-
-          <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-           <TargetCard
-              imageSrc={cardHotel}
-              icon={<Hotel className="h-5 w-5" />}
-              title="Hoteles"
-              description="Recepción, pisos, incidencias y trazabilidad operativa."
-            />
-
-            <TargetCard
-              imageSrc={cardRural}
-              icon={<Home className="h-5 w-5" />}
-              title="Turismo rural"
-              description="Gestión de estancias e incidencias sin ruido."
-            />
-
-            <TargetCard
-              imageSrc={cardApartments}
-              icon={<Building2 className="h-5 w-5" />}
-              title="Pisos turísticos"
-              description="Procesos claros, registros estructurados y auditoría."
-            />
-
-            <TargetCard
-              imageSrc={cardHostel}
-              icon={<Users className="h-5 w-5" />}
-              title="Hospederías"
-              description="Equipos pequeños con necesidad de orden y trazabilidad."
-            />
-          </div>
-
-          <div className="mt-3 text-xs text-white/80">
-            * Imágenes opcionales: coloca los ficheros en{" "}
-            <span className="font-semibold text-white">public/img/cards/</span> (ej: hotel.jpg, rural.jpg…)
-          </div>
-        </section>
-
-        {/* CÓMO FUNCIONA */}
-        <section id="como-funciona" className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-          <SectionTitle
-            inverted
-            eyebrow="Flujo"
-            title="Cómo funciona"
-            subtitle="Tres pasos simples: identificar, evaluar con contexto y registrar incidencias."
-          />
-
-          <div className="mt-8 grid gap-4 sm:grid-cols-3">
-            <InfoCard
-              tone="blue"
-              imageSrc={cardReception}
-              icon={<Search className="h-5 w-5" />}
-              title="1) Consulta rápida"
-              description="Documento, email, teléfono o nombre. Resultados en segundos."
-            />
-
-            <InfoCard
-              tone="indigo"
-              imageSrc={cardDirector}
-              icon={<ShieldCheck className="h-5 w-5" />}
-              title="2) Evalúa con contexto"
-              description="Histórico interno privado, orientado a decisiones operativas."
-            />
-
-            <InfoCard
-              tone="emerald"
-              imageSrc={cardOperations}
-              icon={<ClipboardList className="h-5 w-5" />}
-              title="3) Registra"
-              description="Incidencias estructuradas, auditables y trazables."
-            />
-          </div>
-        </section>
-
-        {/* CASOS DE USO */}
-        <section id="casos" className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-          <SectionTitle
-            inverted
-            eyebrow="Resultados"
-            title="Casos de uso"
-            subtitle="Ejemplos de mejora operativa (sin datos personales, sin exposición pública)."
-          />
-
-          <div className="mt-8 grid gap-4 lg:grid-cols-3">
-                      <InfoCard
-              tone="blue"
-              imageSrc={cardFrontdesk}
-              icon={<TrendingUp className="h-5 w-5" />}
-              title="Menos incidencias repetidas"
-              description="Estandariza motivos y severidad para que el equipo actúe con un criterio único."
-            />
-
-            <InfoCard
-              tone="indigo"
-              imageSrc={cardAudit}
-              icon={<ShieldCheck className="h-5 w-5" />}
-              title="Más trazabilidad"
-              description="Auditoría de acciones: quién consultó, cuándo y por qué (sin PII por defecto)."
-            />
-
-            <InfoCard
-              tone="emerald"
-              imageSrc={cardSales}
-              icon={<ClipboardList className="h-5 w-5" />}
-              title="Decisiones con contexto"
-              description="Histórico interno para apoyar protocolos operativos y prevención de incidencias."
-            />
-          </div>
-        </section>
-
-        {/* PLANES */}
-        <section id="planes" className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-          <SectionTitle
-            inverted
-            eyebrow="Planes"
-            title="Planes y acceso"
-            subtitle="Alta controlada. El plan FREE incluye 30 días para validar la operativa. Después, puedes continuar con un plan de pago."
-          />
-
-          <div className="mt-8 grid gap-4 lg:grid-cols-4">
-          <PlanCard
-  tone="free"
-  title="FREE (30 días)"
-  price="0 €"
-  subtitle="Acceso inicial para validar operativa."
-  bullets={[
-    "30 días incluidos desde el alta",
-    "Consultas limitadas según política",
-    "Registro estructurado",
-    "Auditoría básica",
-  ]}
-  highlight
-  badge="Inicio"
-  ctaLabel="Solicitar acceso"
-  onCta={goRequestAccess}
-/>
-
-<PlanCard
-  tone="basic"
-  title="Básico"
-  price="55 € / mes"
-  subtitle="Para equipos pequeños."
-  bullets={[
-    "150 consultas/mes",
-    "Auditoría y trazabilidad",
-    "Facturación Stripe",
-    "Soporte estándar",
-  ]}
-  ctaLabel="Ver condiciones"
-  onCta={() => setOpenModal("BASIC")}
-/>
-
-<PlanCard
-  tone="medium"
-  title="Medio"
-  price="95 € / mes"
-  subtitle="Para más volumen operativo."
-  bullets={[
-    "500 consultas/mes",
-    "Auditoría y trazabilidad",
-    "Exportaciones (PDF/CSV) según módulo",
-    "Facturación Stripe",
-    "Soporte prioritario",
-    "Control de acceso avanzado",
-  ]}
-  ctaLabel="Ver condiciones"
-  onCta={() => setOpenModal("MEDIUM")}
-/>
-
-<PlanCard
-  tone="premium"
-  title="Premium"
-  price="145 € / mes"
-  subtitle="SaaS completo."
-  bullets={[
-    "2.000 consultas/mes",
-    "API Bajo demanda (servicio adicional)",
-    "Auditoría y reporting extendido",
-    "Exportaciones completas (PDF/CSV/XML)",
-    "4 usuarios incluidos",
-    "Facturación Stripe",
-  ]}
-  ctaLabel="Ver condiciones"
-  onCta={() => setOpenModal("PREMIUM")}
-  badge="Top"
-/>
-
-          </div>
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-  <PlanCard
-    tone="medium"
-    title="API Debacu (add-on)"
-    price="Desde 95 € / mes"
-    subtitle="Acceso técnico para consumir endpoints (sin desarrollo)."
-    bullets={[
-      "Acceso API por hotel (token / key)",
-      "Límites técnicos y rate limit por contrato",
-      "Auditoría de llamadas (si se activa)",
-      "Soporte técnico básico",
-    ]}
-    ctaLabel="Ver condiciones"
-    onCta={() => setOpenModal("API")}
-    badge="Add-on"
-  />
-
-  <PlanCard
-    tone="premium"
-    title="Integración PMS (proyecto)"
-    price="Desde 1.500 €"
-    subtitle="Proyecto por hotel y por PMS. Alcance cerrado."
-    bullets={[
-      "Análisis + mapping de datos",
-      "Desarrollo del conector",
-      "Pruebas + puesta en producción",
-      "Documentación + handover",
-    ]}
-    ctaLabel="Ver condiciones"
-    onCta={() => setOpenModal("INTEGRACION")}
-    badge="Enterprise"
-  />
-</div>
-
-         <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-600 shadow-sm">
-          <span className="font-semibold text-slate-900">Nota:</span> acceso restringido y uso profesional.
-          <div className="mt-3 space-y-1 text-sm text-slate-700">
-            <div className="font-semibold">No se contrata en web pública.</div>
-            <div className="font-semibold">Solicitar acceso.</div>
-            <div className="text-slate-600">Validación manual / alta controlada.</div>
-          </div>
-        </div>
-
-        </section>
-
-        <div id="legal" />
-      </main>
-
-{openModal && (
-  <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-    <div
-      className="absolute inset-0 bg-black/60"
-      onClick={() => setOpenModal(null)}
-    />
-    <div className="relative w-full max-w-2xl rounded-2xl border border-white/10 bg-white shadow-xl">
-      <div className="flex items-start justify-between gap-4 border-b p-5">
-        <div>
-          <div className="text-lg font-semibold text-slate-900">
-            {modalContent[openModal].title}
-          </div>
-          {modalContent[openModal].subtitle && (
-            <div className="mt-1 text-sm text-slate-600">
-              {modalContent[openModal].subtitle}
-            </div>
-          )}
-        </div>
-        <button
-          onClick={() => setOpenModal(null)}
-          className="rounded-xl border px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-        >
-          Cerrar
-        </button>
+        <WebFooter />
       </div>
-
-      <div className="p-5 space-y-5">
-        {modalContent[openModal].sections.map((sec) => (
-          <div key={sec.heading}>
-            <div className="text-sm font-semibold text-slate-900">{sec.heading}</div>
-            <ul className="mt-2 space-y-2 text-sm text-slate-700">
-              {sec.bullets.map((b) => (
-                <li key={b} className="flex gap-2">
-                  <span className="mt-0.5 text-slate-400">•</span>
-                  <span>{b}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
-
-        <div className="rounded-xl border bg-slate-50 p-4 text-sm text-slate-700">
-          <span className="font-semibold text-slate-900">Alta controlada:</span>{" "}
-          para contratar o activar un plan necesitas solicitar acceso.
-        </div>
-
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <button
-            onClick={goRequestAccess}
-            className="w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-black"
-          >
-            Solicitar acceso
-          </button>
-          <button
-            onClick={() => setOpenModal(null)}
-            className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
-          >
-            Volver
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
-)}
-
-
-      <LegalFooter />
     </div>
   );
-};
-
-export default PublicLanding;
+}
