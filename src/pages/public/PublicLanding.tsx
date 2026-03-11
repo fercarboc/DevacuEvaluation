@@ -146,7 +146,7 @@ export default function PublicLanding() {
 
           {/* SIGUIENTE SECCIÓN CON REF */}
           <div ref={nextSectionRef}>
-            <ProblemSection />
+            <ProblemSection />  
           </div>
 
           <FeaturesSection />
