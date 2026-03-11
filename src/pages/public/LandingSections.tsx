@@ -16,25 +16,25 @@ import {
 } from "lucide-react";
 
 export const ProblemSection = () => (
-  <section className="section-padding bg-slate-950/50">
-    <div className="max-w-7xl mx-auto">
-      <div className="grid lg:grid-cols-2 gap-16 items-center">
+  <section className="py-20 bg-slate-950/50">
+    <div className="max-w-7xl mx-auto px-6">
+      <div className="grid lg:grid-cols-2 gap-12 items-center">
         <motion.div
           initial={{ opacity: 0, x: -20 }}
           whileInView={{ opacity: 1, x: 0 }}
           viewport={{ once: true }}
         >
-          <h2 className="text-3xl md:text-5xl font-display font-bold mb-8 leading-tight">
+          <h2 className="text-2xl md:text-4xl font-display font-bold mb-6 leading-tight text-white">
             Los hoteles generan datos constantemente, pero rara vez los convierten en{" "}
             <span className="text-blue-500">inteligencia real.</span>
           </h2>
 
-          <p className="text-slate-400 text-lg mb-8">
+          <p className="text-slate-400 text-base md:text-lg mb-6 max-w-xl">
             Debacu transforma esos datos en inteligencia accionable para el hotel,
             resolviendo los problemas estructurales del sector.
           </p>
 
-          <div className="space-y-4">
+          <div className="space-y-3">
             {[
               "Información dispersa entre PMS, Excel y sistemas internos",
               "Incidencias operativas que no se analizan",
@@ -44,7 +44,7 @@ export const ProblemSection = () => (
             ].map((text, i) => (
               <div key={i} className="flex items-start gap-3">
                 <AlertTriangle className="text-amber-500 shrink-0 mt-1" size={18} />
-                <span className="text-slate-300">{text}</span>
+                <span className="text-slate-300 text-sm md:text-base">{text}</span>
               </div>
             ))}
           </div>
@@ -58,13 +58,13 @@ export const ProblemSection = () => (
         >
           <div className="absolute -inset-4 bg-blue-500/10 blur-3xl rounded-full" />
 
-          <div className="glass-card p-8 border-white/[0.05] relative overflow-hidden">
-            <div className="flex items-center gap-4 mb-8">
+          <div className="glass-card p-6 md:p-8 border-white/[0.05] relative overflow-hidden">
+            <div className="flex items-center gap-4 mb-6">
               <div className="w-12 h-12 rounded-xl bg-rose-500/10 flex items-center justify-center">
                 <FileSpreadsheet className="text-rose-500" />
               </div>
               <div>
-                <h4 className="font-bold text-white">Datos Fragmentados</h4>
+                <h4 className="font-bold text-white text-base">Datos Fragmentados</h4>
                 <p className="text-xs text-slate-500">
                   Pérdida de eficiencia operativa
                 </p>
@@ -83,7 +83,7 @@ export const ProblemSection = () => (
               </div>
             </div>
 
-            <div className="mt-8 pt-8 border-t border-white/5 flex justify-center">
+            <div className="mt-6 pt-6 border-t border-white/5 flex justify-center">
               <div className="flex items-center gap-2 text-blue-400 font-bold text-sm">
                 <Zap size={16} />
                 <span>Optimizar con Debacu</span>
@@ -97,19 +97,19 @@ export const ProblemSection = () => (
 );
 
 export const FeaturesSection = () => (
-  <section className="section-padding">
-    <div className="max-w-7xl mx-auto">
-      <div className="text-center mb-16">
-        <h2 className="text-3xl md:text-5xl font-display font-bold mb-4">
+  <section className="py-20">
+    <div className="max-w-7xl mx-auto px-6">
+      <div className="text-center mb-12">
+        <h2 className="text-2xl md:text-4xl font-display font-bold mb-4 text-white">
           Qué hace Debacu
         </h2>
-        <p className="text-slate-400 max-w-2xl mx-auto">
+        <p className="text-slate-400 max-w-2xl mx-auto text-sm md:text-base">
           Una suite completa de herramientas diseñadas para la nueva era de la
           gestión hotelera.
         </p>
       </div>
 
-      <div className="grid md:grid-cols-3 gap-8">
+      <div className="grid md:grid-cols-3 gap-6">
         {[
           {
             icon: <ShieldAlert className="text-blue-500" />,
@@ -136,13 +136,15 @@ export const FeaturesSection = () => (
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
             transition={{ delay: i * 0.1 }}
-            className="glass-card p-8 glass-card-hover"
+            className="glass-card p-6 md:p-8 glass-card-hover"
           >
-            <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mb-6 border border-white/[0.05]">
+            <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mb-5 border border-white/[0.05]">
               {feature.icon}
             </div>
 
-            <h3 className="text-xl font-bold mb-4 text-white">{feature.title}</h3>
+            <h3 className="text-lg md:text-xl font-bold mb-3 text-white">
+              {feature.title}
+            </h3>
             <p className="text-slate-400 text-sm leading-relaxed">{feature.desc}</p>
           </motion.div>
         ))}
@@ -152,13 +154,13 @@ export const FeaturesSection = () => (
 );
 
 export const HowItWorks = () => (
-  <section className="section-padding bg-slate-950/30">
-    <div className="max-w-7xl mx-auto">
-      <div className="text-center mb-16">
-        <h2 className="text-3xl md:text-5xl font-display font-bold mb-4">
+  <section className="py-20 bg-slate-950/30">
+    <div className="max-w-7xl mx-auto px-6">
+      <div className="text-center mb-12">
+        <h2 className="text-2xl md:text-4xl font-display font-bold mb-4 text-white">
           Cómo funciona
         </h2>
-        <p className="text-slate-400 max-w-2xl mx-auto">
+        <p className="text-slate-400 max-w-2xl mx-auto text-sm md:text-base">
           Un flujo de datos optimizado para resultados inmediatos.
         </p>
       </div>
@@ -200,10 +202,10 @@ export const HowItWorks = () => (
             transition={{ delay: i * 0.1 }}
             className="relative z-10 text-center"
           >
-            <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center mx-auto mb-6 shadow-lg shadow-blue-600/20 border-4 border-[#020617] text-white">
+            <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center mx-auto mb-5 shadow-lg shadow-blue-600/20 border-4 border-[#020617] text-white">
               {item.icon}
             </div>
-            <h4 className="font-bold mb-2 text-white">{item.title}</h4>
+            <h4 className="font-bold mb-2 text-white text-sm md:text-base">{item.title}</h4>
             <p className="text-slate-500 text-xs leading-relaxed">{item.desc}</p>
           </motion.div>
         ))}
@@ -215,14 +217,14 @@ export const HowItWorks = () => (
 const LayoutDashboard = ({ size }: { size: number }) => <BarChart3 size={size} />;
 
 export const TechSection = () => (
-  <section className="section-padding">
-    <div className="max-w-7xl mx-auto">
-      <div className="grid lg:grid-cols-2 gap-16 items-center">
+  <section className="py-20">
+    <div className="max-w-7xl mx-auto px-6">
+      <div className="grid lg:grid-cols-2 gap-12 items-center">
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           whileInView={{ opacity: 1, scale: 1 }}
           viewport={{ once: true }}
-          className="glass-card p-8 bg-blue-600/5 border-blue-500/20"
+          className="glass-card p-6 md:p-8 bg-blue-600/5 border-blue-500/20"
         >
           <div className="grid grid-cols-2 gap-4">
             <div className="glass-card p-4 bg-white/5">
@@ -272,11 +274,11 @@ export const TechSection = () => (
           whileInView={{ opacity: 1, x: 0 }}
           viewport={{ once: true }}
         >
-          <h2 className="text-3xl md:text-5xl font-display font-bold mb-8">
+          <h2 className="text-2xl md:text-4xl font-display font-bold mb-6 text-white">
             Tecnología desarrollada específicamente para hospitality
           </h2>
 
-          <p className="text-slate-400 text-lg mb-8">
+          <p className="text-slate-400 text-base md:text-lg mb-6">
             Debacu combina análisis de datos operativos, evaluación de riesgo e
             inteligencia artificial en una arquitectura SaaS escalable.
           </p>
@@ -288,7 +290,7 @@ export const TechSection = () => (
               "Motor de análisis de comportamiento de reserva",
               "Arquitectura SaaS de alta disponibilidad",
             ].map((item, i) => (
-              <li key={i} className="flex items-center gap-3 text-slate-300">
+              <li key={i} className="flex items-center gap-3 text-slate-300 text-sm md:text-base">
                 <CheckCircle2 className="text-blue-500" size={18} />
                 {item}
               </li>
@@ -301,13 +303,13 @@ export const TechSection = () => (
 );
 
 export const UseCases = () => (
-  <section className="section-padding bg-slate-950/50">
-    <div className="max-w-7xl mx-auto">
-      <div className="text-center mb-16">
-        <h2 className="text-3xl md:text-5xl font-display font-bold mb-4">
-          Casos de Uso
+  <section className="py-20 bg-slate-950/50">
+    <div className="max-w-7xl mx-auto px-6">
+      <div className="text-center mb-12">
+        <h2 className="text-2xl md:text-4xl font-display font-bold mb-4 text-white">
+          Casos de uso
         </h2>
-        <p className="text-slate-400 max-w-2xl mx-auto">
+        <p className="text-slate-400 max-w-2xl mx-auto text-sm md:text-base">
           Soluciones reales para problemas cotidianos del sector.
         </p>
       </div>
@@ -335,7 +337,7 @@ export const UseCases = () => (
             key={i}
             className="glass-card p-6 border-white/[0.05] hover:border-blue-500/30 transition-all group"
           >
-            <h4 className="font-bold mb-3 text-white group-hover:text-blue-400 transition-colors">
+            <h4 className="font-bold mb-3 text-white group-hover:text-blue-400 transition-colors text-base">
               {item.title}
             </h4>
             <p className="text-slate-500 text-sm leading-relaxed">{item.desc}</p>
@@ -347,10 +349,10 @@ export const UseCases = () => (
 );
 
 export const TargetAudience = () => (
-  <section className="section-padding">
-    <div className="max-w-7xl mx-auto">
-      <div className="glass-card p-12 bg-gradient-to-br from-blue-600/10 to-violet-600/10 border-white/[0.05] text-center">
-        <h2 className="text-3xl md:text-4xl font-display font-bold mb-8 text-white">
+  <section className="py-20">
+    <div className="max-w-7xl mx-auto px-6">
+      <div className="glass-card p-8 md:p-12 bg-gradient-to-br from-blue-600/10 to-violet-600/10 border-white/[0.05] text-center">
+        <h2 className="text-2xl md:text-3xl font-display font-bold mb-8 text-white">
           Diseñado para todo el ecosistema hospitality
         </h2>
 
@@ -364,7 +366,7 @@ export const TargetAudience = () => (
           ].map((item, i) => (
             <span
               key={i}
-              className="px-6 py-2 rounded-full bg-white/5 border border-white/10 text-sm font-medium text-slate-300"
+              className="px-5 py-2 rounded-full bg-white/5 border border-white/10 text-sm font-medium text-slate-300"
             >
               {item}
             </span>
@@ -376,35 +378,35 @@ export const TargetAudience = () => (
 );
 
 export const InnovationSection = () => (
-  <section className="section-padding bg-slate-950/30">
-    <div className="max-w-7xl mx-auto text-center">
-      <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-bold uppercase tracking-widest mb-8">
+  <section className="py-20 bg-slate-950/30">
+    <div className="max-w-7xl mx-auto px-6 text-center">
+      <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[10px] font-bold uppercase tracking-widest mb-6">
         <Zap size={12} />
-        Innovación Continua
+        Innovación continua
       </div>
 
-      <h2 className="text-3xl md:text-5xl font-display font-bold mb-8 max-w-4xl mx-auto text-white">
+      <h2 className="text-2xl md:text-4xl font-display font-bold mb-6 max-w-4xl mx-auto text-white">
         Una plataforma tecnológica que integra el futuro del hospitality
       </h2>
 
-      <p className="text-slate-400 text-lg max-w-2xl mx-auto mb-12">
+      <p className="text-slate-400 text-base md:text-lg max-w-2xl mx-auto mb-10">
         Debacu no es solo un software, es el motor de inteligencia que
         profesionaliza la toma de decisiones en tu alojamiento.
       </p>
 
       <div className="grid md:grid-cols-3 gap-8 max-w-4xl mx-auto">
         <div className="text-center">
-          <div className="text-3xl font-bold text-white mb-2">100%</div>
+          <div className="text-2xl md:text-3xl font-bold text-white mb-2">100%</div>
           <p className="text-slate-500 text-sm">Cloud Native</p>
         </div>
 
         <div className="text-center">
-          <div className="text-3xl font-bold text-white mb-2">Real-time</div>
+          <div className="text-2xl md:text-3xl font-bold text-white mb-2">Real-time</div>
           <p className="text-slate-500 text-sm">Data Processing</p>
         </div>
 
         <div className="text-center">
-          <div className="text-3xl font-bold text-white mb-2">AI-First</div>
+          <div className="text-2xl md:text-3xl font-bold text-white mb-2">AI-First</div>
           <p className="text-slate-500 text-sm">Architecture</p>
         </div>
       </div>
