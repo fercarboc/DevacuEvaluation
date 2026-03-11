@@ -729,7 +729,7 @@ Deno.serve(async (req) => {
         source_file_sha256: sourceFileSha256,
         source_system: toNullableString(previewRows[0]?.source_system),
         separator: parsed.delimiter,
-        status: "PROCESSING",
+        status: "PENDING",
         rows_total: parsed.rows.length,
         rows_ok: previewRows.length,
         rows_warning: rowsWarningCount,
@@ -932,7 +932,7 @@ Deno.serve(async (req) => {
       await sb
         .from("debacu_eval_unified_import_batches")
         .update({
-          status: "FAILED",
+          status: "PARTIAL_ERROR",
           metadata: {
             header_map: headerMap,
             header_row_index: parsed.headerRowIndex,

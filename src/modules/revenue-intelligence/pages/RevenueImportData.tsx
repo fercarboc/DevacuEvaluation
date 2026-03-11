@@ -1,3 +1,4 @@
+// src/modules/revenue-intelligence/pages/RevenueImportData.tsx
 import React, { useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
@@ -15,6 +16,7 @@ import { supabase } from "@/services/supabaseClient";
 type RevenueImportDataProps = {
   orgId: string | null;
   selectedPropertyId: string | null;
+  selectedPropertyCode?: string | null;
   selectedPropertyName?: string | null;
 };
 
@@ -71,12 +73,41 @@ type CommitResponse = {
   };
 };
 
+type FunctionEnvelope<T> = {
+  ok?: boolean;
+  data?: T;
+  error?: string;
+  detail?: string;
+};
+
+function unwrapFunctionData<T>(payload: unknown): T | null {
+  if (!payload || typeof payload !== "object") return null;
+
+  const obj = payload as Record<string, unknown>;
+
+  if ("data" in obj) {
+    return (obj.data as T) ?? null;
+  }
+
+  return payload as T;
+}
+
 function isDryRunResponse(data: unknown): data is DryRunResponse {
-  return Boolean(data && typeof data === "object" && "preview" in (data as Record<string, unknown>));
+  return Boolean(
+    data &&
+      typeof data === "object" &&
+      "preview" in (data as Record<string, unknown>) &&
+      "rows_ok" in (data as Record<string, unknown>)
+  );
 }
 
 function isCommitResponse(data: unknown): data is CommitResponse {
-  return Boolean(data && typeof data === "object" && (data as Record<string, unknown>).status === "ok");
+  return Boolean(
+    data &&
+      typeof data === "object" &&
+      (data as Record<string, unknown>).status === "ok" &&
+      "batch_id" in (data as Record<string, unknown>)
+  );
 }
 
 function extractFunctionErrorMessage(error: unknown, fallback: string): string {
@@ -96,6 +127,8 @@ function extractFunctionErrorMessage(error: unknown, fallback: string): string {
         ? maybeError.error
         : typeof maybeError.details === "string"
         ? maybeError.details
+        : typeof maybeError.detail === "string"
+        ? maybeError.detail
         : null;
 
     if (nestedMessage) return nestedMessage;
@@ -107,6 +140,7 @@ function extractFunctionErrorMessage(error: unknown, fallback: string): string {
 export default function RevenueImportData({
   orgId,
   selectedPropertyId,
+  selectedPropertyCode,
   selectedPropertyName,
 }: RevenueImportDataProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -158,7 +192,7 @@ export default function RevenueImportData({
     setFile(selected);
   };
 
-  const handleValidate = async () => {
+   const handleValidate = async () => {
     if (!file) return;
     if (!canOperate) {
       setError("No hay propiedad activa seleccionada.");
@@ -175,6 +209,7 @@ export default function RevenueImportData({
       const formData = new FormData();
       formData.append("file", file);
       formData.append("mode", "dry_run");
+      if (orgId) formData.append("org_id", orgId);
 
       const { data, error } = await supabase.functions.invoke(
         "debacu_eval_csv_unified_import",
@@ -185,11 +220,14 @@ export default function RevenueImportData({
         throw new Error(extractFunctionErrorMessage(error, "Error validando el CSV"));
       }
 
-      if (!isDryRunResponse(data)) {
+      const unwrapped = unwrapFunctionData<DryRunResponse>(data);
+
+      if (!isDryRunResponse(unwrapped)) {
+        console.error("Dry run payload inesperado:", data);
         throw new Error("Respuesta inesperada en dry_run");
       }
 
-      setDryRunResult(data);
+      setDryRunResult(unwrapped);
       setSuccess("Validación completada. Revisa preview, warnings y errores.");
     } catch (err) {
       setError(extractFunctionErrorMessage(err, "Error inesperado en dry_run"));
@@ -197,45 +235,52 @@ export default function RevenueImportData({
       setIsValidating(false);
     }
   };
-
   const handleImport = async () => {
-    if (!file || !dryRunResult) return;
-    if (!canOperate) {
-      setError("No hay propiedad activa seleccionada.");
-      return;
+  if (!file || !dryRunResult) return;
+  if (!canOperate) {
+    setError("No hay propiedad activa seleccionada.");
+    return;
+  }
+
+  setIsImporting(true);
+  setError(null);
+  setSuccess(null);
+  setCommitResult(null);
+
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("mode", "commit");
+
+    if (orgId) formData.append("org_id", orgId);
+    if (selectedPropertyId) formData.append("selected_property_id", selectedPropertyId);
+    if (selectedPropertyCode) formData.append("selected_property_code", selectedPropertyCode);
+    if (selectedPropertyName) formData.append("selected_property_name", selectedPropertyName);
+
+    const { data, error } = await supabase.functions.invoke(
+      "debacu_eval_csv_unified_import",
+      { body: formData },
+    );
+
+    if (error) {
+      throw new Error(extractFunctionErrorMessage(error, "Error importando el CSV"));
     }
 
-    setIsImporting(true);
-    setError(null);
-    setSuccess(null);
-    setCommitResult(null);
+    const unwrapped = unwrapFunctionData<CommitResponse>(data);
 
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("mode", "commit");
-
-      const { data, error } = await supabase.functions.invoke(
-        "debacu_eval_csv_unified_import",
-        { body: formData },
-      );
-
-      if (error) {
-        throw new Error(extractFunctionErrorMessage(error, "Error importando el CSV"));
-      }
-
-      if (!isCommitResponse(data)) {
-        throw new Error("Respuesta inesperada en commit");
-      }
-
-      setCommitResult(data);
-      setSuccess(`Importación completada. Batch ${data.batch_id}`);
-    } catch (err) {
-      setError(extractFunctionErrorMessage(err, "Error inesperado en commit"));
-    } finally {
-      setIsImporting(false);
+    if (!isCommitResponse(unwrapped)) {
+      console.error("Commit payload inesperado:", data);
+      throw new Error("Respuesta inesperada en commit");
     }
-  };
+
+    setCommitResult(unwrapped);
+    setSuccess(`Importación completada. Batch ${unwrapped.batch_id}`);
+  } catch (err) {
+    setError(extractFunctionErrorMessage(err, "Error inesperado en commit"));
+  } finally {
+    setIsImporting(false);
+  }
+};
 
   const downloadTemplate = () => {
     const csvContent =
@@ -466,6 +511,31 @@ export default function RevenueImportData({
                         <ul className="mt-2 text-sm text-rose-700 list-disc pl-5">
                           {(item.errors ?? []).map((e, i) => (
                             <li key={i}>{e}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {dryRunResult.warnings.length > 0 && (
+                <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
+                  <div className="p-6 border-b border-gray-100 flex items-center gap-3">
+                    <Info size={20} className="text-amber-500" />
+                    <h3 className="font-bold">Warnings detectados</h3>
+                  </div>
+
+                  <div className="p-6 space-y-4">
+                    {dryRunResult.warnings.slice(0, 10).map((item, idx) => (
+                      <div key={idx} className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
+                        <p className="text-sm font-bold text-amber-700">
+                          Fila {item.row_number ?? "-"}{" "}
+                          {item.reservation_key ? `· ${item.reservation_key}` : ""}
+                        </p>
+                        <ul className="mt-2 text-sm text-amber-700 list-disc pl-5">
+                          {(item.warnings ?? []).map((w, i) => (
+                            <li key={i}>{w}</li>
                           ))}
                         </ul>
                       </div>

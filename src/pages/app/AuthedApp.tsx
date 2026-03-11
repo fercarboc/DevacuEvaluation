@@ -442,10 +442,10 @@ export default function AuthedApp() {
         <RevenueImportData
           orgId={selectedProperty?.orgId ?? null}
           selectedPropertyId={selectedPropertyId}
+          selectedPropertyCode={selectedProperty?.code ?? null}
           selectedPropertyName={selectedProperty?.name ?? null}
         />
       )}
-
 
 
       {currentView === "rev_day_by_day" && canAccessRevenue && (
