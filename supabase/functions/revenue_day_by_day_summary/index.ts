@@ -1,4 +1,3 @@
-// supabase/functions/revenue_day_by_day_summary/index.ts
 // deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
@@ -288,29 +287,25 @@ export default Deno.serve(async (req: Request) => {
       {
         date: string;
         roomsSold: number;
-        roomsAvailable: number;
         revenue: number;
-        revparValue: number;
       }
     >();
 
     for (const row of dailyRows) {
       const date = String(row.stay_date);
+
       const current = grouped.get(date) ?? {
         date,
         roomsSold: 0,
-        roomsAvailable: 0,
         revenue: 0,
-        revparValue: 0,
       };
 
       const revenueRooms = toNumber(row.revenue_rooms);
       const revenueTotal = toNumber(row.revenue_total);
+      const effectiveRevenue = revenueRooms > 0 ? revenueRooms : revenueTotal;
 
       current.roomsSold += toNumber(row.rooms_sold);
-      current.roomsAvailable += toNumber(row.rooms_available);
-      current.revenue += revenueRooms > 0 ? revenueRooms : revenueTotal;
-      current.revparValue += toNumber(row.revpar);
+      current.revenue += effectiveRevenue;
 
       grouped.set(date, current);
     }
@@ -320,15 +315,15 @@ export default Deno.serve(async (req: Request) => {
       .map((row) => {
         const adr = row.roomsSold > 0 ? row.revenue / row.roomsSold : 0;
 
-        let occ = 0;
-        if (row.roomsAvailable > 0) {
-          occ = (row.roomsSold / row.roomsAvailable) * 100;
-        } else if (property.roomsCount > 0) {
-          occ = (row.roomsSold / property.roomsCount) * 100;
-        }
+        const occ =
+          property.roomsCount > 0
+            ? (row.roomsSold / property.roomsCount) * 100
+            : 0;
 
         const revpar =
-          property.roomsCount > 0 ? row.revenue / property.roomsCount : row.revparValue;
+          property.roomsCount > 0
+            ? row.revenue / property.roomsCount
+            : 0;
 
         return {
           date: row.date,
@@ -346,9 +341,6 @@ export default Deno.serve(async (req: Request) => {
     const totalRevenue = daily.reduce((acc, row) => acc + row.revenue, 0);
     const totalRoomsSold = daily.reduce((acc, row) => acc + row.roomsSold, 0);
 
-    // OJO:
-    // La ocupación total del periodo se calcula contra roomsCount de la propiedad,
-    // porque rooms_available en revenue_daily puede venir repetido por canal/segmento/tipo.
     const avgOcc =
       property.roomsCount > 0 && dayCount > 0
         ? (totalRoomsSold / (dayCount * property.roomsCount)) * 100

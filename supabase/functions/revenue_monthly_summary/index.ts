@@ -1,4 +1,3 @@
-// supabase/functions/revenue_monthly_summary/index.ts
 // deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
@@ -39,14 +38,14 @@ type PropertyRow = {
   rooms_total?: number | null;
 };
 
-type RevenueDailyPropertyRow = {
+type RevenueDailyRow = {
   stay_date: string;
   rooms_sold?: number | null;
   rooms_available?: number | null;
-  revenue?: number | null;
+  revenue_rooms?: number | null;
+  revenue_total?: number | null;
   adr?: number | null;
   revpar?: number | null;
-  occ?: number | null;
 };
 
 function isUuid(v: string) {
@@ -67,6 +66,10 @@ function round2(value: number) {
 }
 
 function monthKey(date: string) {
+  return String(date).slice(0, 7);
+}
+
+function monthShortKey(date: string) {
   return String(date).slice(5, 7);
 }
 
@@ -181,21 +184,23 @@ async function loadPropertyOrThrow(
   };
 }
 
-async function loadAllRevenueDailyPropertyRows(
+async function loadAllRevenueDailyRows(
   admin: SupabaseClient,
   orgId: string,
   propertyId: string,
   periodFrom: string,
   periodTo: string,
-): Promise<RevenueDailyPropertyRow[]> {
+): Promise<RevenueDailyRow[]> {
   const pageSize = 1000;
   let offset = 0;
-  const allRows: RevenueDailyPropertyRow[] = [];
+  const allRows: RevenueDailyRow[] = [];
 
   while (true) {
     const { data, error } = await admin
-      .from("debacu_eval_revenue_daily_property_v")
-      .select("stay_date, rooms_sold, rooms_available, revenue, adr, revpar, occ")
+      .from("debacu_eval_revenue_daily")
+      .select(
+        "stay_date, rooms_sold, rooms_available, revenue_rooms, revenue_total, adr, revpar",
+      )
       .eq("org_id", orgId)
       .eq("property_id", propertyId)
       .gte("stay_date", periodFrom)
@@ -203,9 +208,9 @@ async function loadAllRevenueDailyPropertyRows(
       .order("stay_date", { ascending: true })
       .range(offset, offset + pageSize - 1);
 
-    if (error) throw new Error(`failed_load_revenue_daily_property_v:${error.message}`);
+    if (error) throw new Error(`failed_load_revenue_daily:${error.message}`);
 
-    const batch = (data ?? []) as RevenueDailyPropertyRow[];
+    const batch = (data ?? []) as RevenueDailyRow[];
     allRows.push(...batch);
 
     if (batch.length < pageSize) break;
@@ -215,32 +220,38 @@ async function loadAllRevenueDailyPropertyRows(
   return allRows;
 }
 
-function aggregateMonths(rows: RevenueDailyPropertyRow[]) {
+function aggregateMonths(
+  rows: RevenueDailyRow[],
+  roomsCount: number,
+) {
   const grouped = new Map<
     string,
     {
       month: string;
-      days: number;
+      daySet: Set<string>;
       roomsSold: number;
-      roomsAvailable: number;
       revenue: number;
     }
   >();
 
   for (const row of rows) {
-    const month = String(row.stay_date).slice(0, 7);
+    const date = String(row.stay_date);
+    const month = monthKey(date);
+
     const current = grouped.get(month) ?? {
       month,
-      days: 0,
+      daySet: new Set<string>(),
       roomsSold: 0,
-      roomsAvailable: 0,
       revenue: 0,
     };
 
-    current.days += 1;
+    const revenueRooms = toNumber(row.revenue_rooms);
+    const revenueTotal = toNumber(row.revenue_total);
+    const effectiveRevenue = revenueRooms > 0 ? revenueRooms : revenueTotal;
+
+    current.daySet.add(date);
     current.roomsSold += toNumber(row.rooms_sold);
-    current.roomsAvailable += toNumber(row.rooms_available);
-    current.revenue += toNumber(row.revenue);
+    current.revenue += effectiveRevenue;
 
     grouped.set(month, current);
   }
@@ -248,20 +259,29 @@ function aggregateMonths(rows: RevenueDailyPropertyRow[]) {
   return Array.from(grouped.values())
     .sort((a, b) => a.month.localeCompare(b.month))
     .map((row) => {
+      const days = row.daySet.size;
       const adr = row.roomsSold > 0 ? row.revenue / row.roomsSold : 0;
-      const revpar = row.roomsAvailable > 0 ? row.revenue / row.roomsAvailable : 0;
-      const occ = row.roomsAvailable > 0 ? (row.roomsSold / row.roomsAvailable) * 100 : 0;
+
+      const occ =
+        roomsCount > 0 && days > 0
+          ? (row.roomsSold / (days * roomsCount)) * 100
+          : 0;
+
+      const revpar =
+        roomsCount > 0 && days > 0
+          ? row.revenue / (days * roomsCount)
+          : 0;
 
       return {
         month: row.month,
-        monthKey: monthKey(row.month),
+        monthKey: monthShortKey(row.month),
         label: monthLabel(row.month),
         occ: round2(occ),
-        rn: row.roomsSold,
+        rn: round2(row.roomsSold),
         adr: round2(adr),
         revenue: round2(row.revenue),
         revpar: round2(revpar),
-        days: row.days,
+        days,
       };
     });
 }
@@ -286,9 +306,15 @@ export default Deno.serve(async (req: Request) => {
     const compareTo = String(body?.compare_to ?? "").trim();
     const appId = String(body?.app_id ?? DEFAULT_APP_ID).trim() || DEFAULT_APP_ID;
 
-    if (!propertyId) return json(req, 400, { ok: false, error: "missing_property_id" });
-    if (!isUuid(propertyId)) return json(req, 400, { ok: false, error: "invalid_property_id" });
-    if (!periodFrom || !periodTo) return json(req, 400, { ok: false, error: "missing_period_from_to" });
+    if (!propertyId) {
+      return json(req, 400, { ok: false, error: "missing_property_id" });
+    }
+    if (!isUuid(propertyId)) {
+      return json(req, 400, { ok: false, error: "invalid_property_id" });
+    }
+    if (!periodFrom || !periodTo) {
+      return json(req, 400, { ok: false, error: "missing_period_from_to" });
+    }
     if (!isISODate(periodFrom) || !isISODate(periodTo)) {
       return json(req, 400, { ok: false, error: "invalid_date_format" });
     }
@@ -316,7 +342,7 @@ export default Deno.serve(async (req: Request) => {
 
     const property = await loadPropertyOrThrow(admin, org_id, propertyId);
 
-    const currentRows = await loadAllRevenueDailyPropertyRows(
+    const currentRows = await loadAllRevenueDailyRows(
       admin,
       org_id,
       propertyId,
@@ -324,22 +350,24 @@ export default Deno.serve(async (req: Request) => {
       periodTo,
     );
 
-    const currentMonths = aggregateMonths(currentRows);
+    const currentMonths = aggregateMonths(currentRows, property.roomsCount);
 
     const currentRevenue = currentMonths.reduce((acc, row) => acc + row.revenue, 0);
     const currentRn = currentMonths.reduce((acc, row) => acc + row.rn, 0);
     const currentDays = currentMonths.reduce((acc, row) => acc + row.days, 0);
-    const currentRoomsAvailable = currentRows.reduce(
-      (acc, row) => acc + toNumber(row.rooms_available),
-      0,
-    );
 
     const currentTotals = {
-      occ: round2(currentRoomsAvailable > 0 ? (currentRn / currentRoomsAvailable) * 100 : 0),
-      rn: currentRn,
+      occ:
+        property.roomsCount > 0 && currentDays > 0
+          ? round2((currentRn / (currentDays * property.roomsCount)) * 100)
+          : 0,
+      rn: round2(currentRn),
       adr: round2(currentRn > 0 ? currentRevenue / currentRn : 0),
       revenue: round2(currentRevenue),
-      revpar: round2(currentRoomsAvailable > 0 ? currentRevenue / currentRoomsAvailable : 0),
+      revpar:
+        property.roomsCount > 0 && currentDays > 0
+          ? round2(currentRevenue / (currentDays * property.roomsCount))
+          : 0,
       days: currentDays,
       months: currentMonths.length,
     };
@@ -349,7 +377,7 @@ export default Deno.serve(async (req: Request) => {
     let comparisonRows: any[] = [];
 
     if (compareFrom && compareTo) {
-      const compareRowsRaw = await loadAllRevenueDailyPropertyRows(
+      const compareRowsRaw = await loadAllRevenueDailyRows(
         admin,
         org_id,
         propertyId,
@@ -357,22 +385,24 @@ export default Deno.serve(async (req: Request) => {
         compareTo,
       );
 
-      compareMonths = aggregateMonths(compareRowsRaw);
+      compareMonths = aggregateMonths(compareRowsRaw, property.roomsCount);
 
       const compareRevenue = compareMonths.reduce((acc, row) => acc + row.revenue, 0);
       const compareRn = compareMonths.reduce((acc, row) => acc + row.rn, 0);
       const compareDays = compareMonths.reduce((acc, row) => acc + row.days, 0);
-      const compareRoomsAvailable = compareRowsRaw.reduce(
-        (acc, row) => acc + toNumber(row.rooms_available),
-        0,
-      );
 
       compareTotals = {
-        occ: round2(compareRoomsAvailable > 0 ? (compareRn / compareRoomsAvailable) * 100 : 0),
-        rn: compareRn,
+        occ:
+          property.roomsCount > 0 && compareDays > 0
+            ? round2((compareRn / (compareDays * property.roomsCount)) * 100)
+            : 0,
+        rn: round2(compareRn),
         adr: round2(compareRn > 0 ? compareRevenue / compareRn : 0),
         revenue: round2(compareRevenue),
-        revpar: round2(compareRoomsAvailable > 0 ? compareRevenue / compareRoomsAvailable : 0),
+        revpar:
+          property.roomsCount > 0 && compareDays > 0
+            ? round2(compareRevenue / (compareDays * property.roomsCount))
+            : 0,
         days: compareDays,
         months: compareMonths.length,
       };
@@ -420,7 +450,7 @@ export default Deno.serve(async (req: Request) => {
             revparPct: round2(deltaPct(current.revpar, compare.revpar)),
             occAbs: round2(current.occ - compare.occ),
             occPct: round2(deltaPct(current.occ, compare.occ)),
-            rnAbs: current.rn - compare.rn,
+            rnAbs: round2(current.rn - compare.rn),
             rnPct: round2(deltaPct(current.rn, compare.rn)),
           },
         };
@@ -441,7 +471,7 @@ export default Deno.serve(async (req: Request) => {
         customer_id: String(ent.customer_id),
         plan_code: ent.plan_code ?? null,
         subscription_status: ent.subscription_status ?? null,
-        source_table: "debacu_eval_revenue_daily_property_v",
+        source_table: "debacu_eval_revenue_daily",
       },
       data: {
         property,

@@ -15,6 +15,7 @@ import Leaks from "@/views/Leaks";
 import DayByDay from "@/modules/revenue-intelligence/pages/DayByDay";
 import MonthlyComparison from "@/modules/revenue-intelligence/pages/MonthlyComparison";
 import RevenueChannelsSegments from "@/modules/revenue-intelligence/pages/revenueChannelsSegments";
+import PickupAdvanced from "@/modules/revenue-intelligence/pages/PickupAdvanced";
 import SettingsProperties from "@/modules/revenue-intelligence/pages/SettingsProperties";
 import RoomTypesPage from "@/modules/revenue-intelligence/pages/RoomTypesPage";
 import PriceCalendarPage from "@/modules/revenue-intelligence/pages/PriceCalendarPage";
@@ -57,6 +58,7 @@ import {
   CalendarClock,
   Layers3,
   Upload,
+  TrendingUp,
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
@@ -107,6 +109,7 @@ function isRevenueView(v: AuthedView) {
     v === "rev_day_by_day" ||
     v === "rev_monthly" ||
     v === "rev_channels_segments" ||
+    v === "rev_pickup_advanced" ||
     v === "rev_properties" ||
     v === "rev_room_types" ||
     v === "rev_price_calendar" ||
@@ -259,6 +262,12 @@ export default function AuthedApp() {
         section: "REVENUE",
       },
       {
+        view: "rev_pickup_advanced",
+        label: "Pickup Avanzado",
+        icon: TrendingUp,
+        section: "REVENUE",
+      },
+      {
         view: "rev_properties",
         label: "Propiedades",
         icon: Building2,
@@ -318,6 +327,8 @@ export default function AuthedApp() {
         return "Mensual";
       case "rev_channels_segments":
         return "Canales & Segmentos";
+      case "rev_pickup_advanced":
+        return "Pickup Avanzado";
       case "rev_properties":
         return "Propiedades";
       case "rev_room_types":
@@ -361,6 +372,8 @@ export default function AuthedApp() {
         return "Comparativa mensual de revenue, ADR, RN y evolución.";
       case "rev_channels_segments":
         return "Análisis de producción comercial por canal y estructura de ventas disponible.";
+      case "rev_pickup_advanced":
+        return "Ritmo de captación real por fecha de reserva y fecha de arribo para la propiedad activa.";
       case "rev_properties":
         return "Gestiona las propiedades y la configuración base de Revenue Intelligence.";
       case "rev_room_types":
@@ -438,6 +451,7 @@ export default function AuthedApp() {
       {currentView === "rev_channels" && canAccessRevenue && <ChannelAnalysis />}
       {currentView === "rev_risk" && canAccessRevenue && <RiskAnalysis />}
       {currentView === "rev_leakage" && canAccessRevenue && <Leaks />}
+
       {currentView === "rev_import" && canAccessRevenue && (
         <RevenueImportData
           orgId={selectedProperty?.orgId ?? null}
@@ -446,7 +460,6 @@ export default function AuthedApp() {
           selectedPropertyName={selectedProperty?.name ?? null}
         />
       )}
-
 
       {currentView === "rev_day_by_day" && canAccessRevenue && (
         <DayByDay
@@ -472,16 +485,24 @@ export default function AuthedApp() {
         />
       )}
 
-     {currentView === "rev_channels_segments" && canAccessRevenue && (
-  <RevenueChannelsSegments
-    orgId={selectedProperty?.orgId ?? null}
-    selectedPropertyId={selectedPropertyId}
-    properties={revenueProperties.map((p) => ({
-      id: p.id,
-      name: p.name,
-    }))}
-  />
-)}
+      {currentView === "rev_channels_segments" && canAccessRevenue && (
+        <RevenueChannelsSegments
+          orgId={selectedProperty?.orgId ?? null}
+          selectedPropertyId={selectedPropertyId}
+          properties={revenueProperties.map((p) => ({
+            id: p.id,
+            name: p.name,
+          }))}
+        />
+      )}
+
+      {currentView === "rev_pickup_advanced" && canAccessRevenue && (
+        <PickupAdvanced
+          orgId={selectedProperty?.orgId ?? null}
+          selectedPropertyId={selectedPropertyId}
+          selectedPropertyName={selectedProperty?.name ?? null}
+        />
+      )}
 
       {currentView === "rev_properties" && canAccessRevenue && (
         <SettingsProperties user={user as any} />

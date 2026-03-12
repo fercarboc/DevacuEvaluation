@@ -22,10 +22,6 @@ type RevenueDailyRow = {
   revenue_total: number | string | null;
 };
 
-function safeUpper(v?: string | null) {
-  return (v ?? "").toUpperCase();
-}
-
 function isUuid(v: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
@@ -56,8 +52,8 @@ async function resolveOrgIdOrThrow(
   const { data, error } = await sb
     .from("debacu_eval_org_members")
     .select("org_id")
-    .eq("auth_user_id", authUserId)
     .eq("org_id", orgId)
+    .or(`user_id.eq.${authUserId},auth_user_id.eq.${authUserId}`)
     .eq("status", MEMBERSHIP_ACTIVE_VALUE)
     .maybeSingle();
 
@@ -176,8 +172,8 @@ Deno.serve(async (req: Request) => {
     >();
 
     for (const row of sourceRows) {
-      const channel = String(row.channel ?? "SIN_CANAL").trim();
-      const segment = String(row.segment ?? "SIN_SEGMENTO").trim();
+      const channel = String(row.channel ?? "").trim() || "SIN_CANAL";
+      const segment = String(row.segment ?? "").trim() || "SIN_SEGMENTO";
       const totalSales = asNumber(row.rooms_sold);
       const totalRevenue = asNumber(row.revenue_total);
 

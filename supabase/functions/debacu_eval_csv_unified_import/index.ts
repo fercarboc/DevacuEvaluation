@@ -31,6 +31,19 @@ type IdentityResult = {
   normalized_identifier: string;
 } | null;
 
+type SelectedProperty = {
+  id: string;
+  org_id: string;
+  code: string;
+  name: string;
+  import_property_code: string | null;
+};
+
+type CsvPropertyDetection = {
+  raw: string | null;
+  normalized: string | null;
+};
+
 /* ======================================================
  * Env + client
  * ====================================================== */
@@ -106,6 +119,7 @@ async function sha256Hex(text: string): Promise<string> {
 
 function normalizePropertyCode(value: string | null): string | null {
   if (!value) return null;
+
   return (
     value
       .trim()
@@ -118,12 +132,42 @@ function normalizePropertyCode(value: string | null): string | null {
   );
 }
 
+/**
+ * Normalización para comparar PMS vs propiedad seleccionada:
+ * - mayúsculas
+ * - sin tildes
+ * - sin espacios
+ * - sin guiones
+ * - sin underscores
+ * - sin símbolos raros
+ */
+function normalizePropertyMatcher(value: string | null): string | null {
+  if (!value) return null;
+
+  return (
+    value
+      .trim()
+      .toUpperCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^A-Z0-9]+/g, "")
+      .slice(0, 200) || null
+  );
+}
+
 function inferPropertyCode(row: JsonRecord): string | null {
   const direct = toNullableString(row.property_code);
   if (direct) return direct;
 
   const fromName = normalizePropertyCode(toNullableString(row.property_name));
   return fromName;
+}
+
+function inferCsvPropertyRaw(row: JsonRecord): string | null {
+  const direct = toNullableString(row.property_code);
+  if (direct) return direct;
+
+  return toNullableString(row.property_name);
 }
 
 function inferImportProfileCode(headerMap: Record<string, string>): string {
@@ -146,10 +190,16 @@ function countWarningsForRow(warnings: unknown[]): number {
   return Array.isArray(warnings) && warnings.length > 0 ? 1 : 0;
 }
 
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  const result: T[][] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    result.push(items.slice(i, i + chunkSize));
+  }
+  return result;
+}
+
 /* ======================================================
  * Multi-org resolution
- * - formData may include org_id
- * - fallback to first ACTIVE membership
  * ====================================================== */
 async function resolveOrgForUser(
   sb: ReturnType<typeof supabaseServiceClient>,
@@ -185,6 +235,91 @@ async function resolveOrgForUser(
   if (!data?.org_id) throw new Error("FORBIDDEN");
 
   return String(data.org_id);
+}
+
+async function resolveSelectedPropertyOrThrow(
+  sb: ReturnType<typeof supabaseServiceClient>,
+  orgId: string,
+  selectedPropertyId: string | null,
+): Promise<SelectedProperty> {
+  const propertyId = String(selectedPropertyId ?? "").trim();
+
+  if (!propertyId) {
+    throw new Error("selected_property_id_required");
+  }
+
+  const { data, error } = await sb
+    .from("debacu_eval_properties")
+    .select("id, org_id, code, name, import_property_code")
+    .eq("id", propertyId)
+    .eq("org_id", orgId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`selected_property_lookup_failed:${error.message}`);
+  }
+
+  if (!data?.id) {
+    throw new Error("selected_property_not_found");
+  }
+
+  return {
+    id: String(data.id),
+    org_id: String(data.org_id),
+    code: String(data.code),
+    name: String(data.name),
+    import_property_code: toNullableString(data.import_property_code),
+  };
+}
+
+function assertSelectedPropertyConfigured(selectedProperty: SelectedProperty) {
+  if (!selectedProperty.import_property_code) {
+    throw new Error("selected_property_missing_import_property_code");
+  }
+}
+
+function detectCsvPropertyOrThrow(
+  detectedCsvProperties: Map<string, string>,
+): CsvPropertyDetection {
+  const entries = Array.from(detectedCsvProperties.entries());
+
+  if (entries.length === 0) {
+    throw new Error("csv_property_not_detected");
+  }
+
+  if (entries.length > 1) {
+    throw new Error(
+      `csv_contains_multiple_property_codes:${entries.map(([, raw]) => raw).join(", ")}`,
+    );
+  }
+
+  const [normalized, raw] = entries[0];
+  return {
+    raw,
+    normalized,
+  };
+}
+
+function assertPropertyMatchOrThrow(
+  selectedProperty: SelectedProperty,
+  csvProperty: CsvPropertyDetection,
+) {
+  const expectedRaw = selectedProperty.import_property_code;
+  const expectedNormalized = normalizePropertyMatcher(expectedRaw);
+
+  if (!expectedNormalized) {
+    throw new Error("selected_property_missing_import_property_code");
+  }
+
+  if (!csvProperty.normalized) {
+    throw new Error("csv_property_not_detected");
+  }
+
+  if (expectedNormalized !== csvProperty.normalized) {
+    throw new Error(
+      `PROPERTY_MISMATCH|csv=${csvProperty.raw ?? "N/D"}|selected_name=${selectedProperty.name}|selected_code=${selectedProperty.code}|expected_import_property_code=${expectedRaw}`,
+    );
+  }
 }
 
 /* ======================================================
@@ -272,7 +407,6 @@ function buildNormalizedRow(
 
 /* ======================================================
  * Extra validation for this import
- * - currency is required because DB has NOT NULL
  * ====================================================== */
 function validateNormalizedRowForImport(row: JsonRecord) {
   const base = validateUnifiedRow(row);
@@ -298,39 +432,21 @@ function validateNormalizedRowForImport(row: JsonRecord) {
 }
 
 /* ======================================================
- * Reservation write
- * - preserves first_seen_* if row already exists
- * - updates last_seen_* on every import
+ * Batch payload builders
  * ====================================================== */
-async function upsertReservation(
-  sb: ReturnType<typeof supabaseServiceClient>,
-  params: {
-    orgId: string;
-    batchId: string;
-    row: JsonRecord;
-    propertyCode: string;
-  },
-) {
+function buildReservationUpsertPayload(params: {
+  orgId: string;
+  batchId: string;
+  row: JsonRecord;
+  propertyCode: string;
+}) {
   const { orgId, batchId, row, propertyCode } = params;
   const nowIso = new Date().toISOString();
-  const reservationKey = requiredString(row.reservation_key, "reservation_key");
 
-  const { data: existing, error: existingError } = await sb
-    .from("debacu_eval_reservations")
-    .select("id, first_seen_batch_id, first_seen_at")
-    .eq("org_id", orgId)
-    .eq("property_code", propertyCode)
-    .eq("reservation_key", reservationKey)
-    .maybeSingle();
-
-  if (existingError) {
-    throw new Error(`reservation_lookup_failed:${existingError.message}`);
-  }
-
-  const payload = {
+  return {
     org_id: orgId,
     property_code: propertyCode,
-    reservation_key: reservationKey,
+    reservation_key: requiredString(row.reservation_key, "reservation_key"),
     reservation_id: requiredString(row.reservation_id, "reservation_id"),
     reservation_line_id: toNullableString(row.reservation_line_id),
 
@@ -354,7 +470,6 @@ async function upsertReservation(
     room_type: toNullableString(row.room_type),
     rate_plan: toNullableString(row.rate_plan),
 
-    // Column is timestamptz; date-only fallback is acceptable for v1
     cancelled_at: toNullableString(row.cancelled_at),
 
     company: toNullableString(row.company),
@@ -362,87 +477,57 @@ async function upsertReservation(
     market_code: toNullableString(row.market_code),
     source_system: toNullableString(row.source_system),
 
-    first_seen_batch_id: existing?.first_seen_batch_id ?? batchId,
     last_seen_batch_id: batchId,
-    first_seen_at: existing?.first_seen_at ?? nowIso,
     last_seen_at: nowIso,
   };
-
-  const { error } = await sb
-    .from("debacu_eval_reservations")
-    .upsert(payload, {
-      onConflict: "org_id,property_code,reservation_key",
-    });
-
-  if (error) {
-    throw new Error(`reservation_upsert_failed:${error.message}`);
-  }
 }
 
-/* ======================================================
- * Snapshots
- * ====================================================== */
-async function insertReservationSnapshot(
-  sb: ReturnType<typeof supabaseServiceClient>,
-  params: {
-    batchId: string;
-    orgId: string;
-    propertyCode: string;
-    row: JsonRecord;
-  },
-) {
+function buildReservationSnapshotPayload(params: {
+  batchId: string;
+  orgId: string;
+  propertyCode: string;
+  row: JsonRecord;
+}) {
   const { batchId, orgId, propertyCode, row } = params;
   const snapshotDate = new Date().toISOString().slice(0, 10);
 
-  const { error } = await sb
-    .from("debacu_eval_reservation_snapshots")
-    .insert({
-      batch_id: batchId,
-      org_id: orgId,
-      property_code: propertyCode,
-      reservation_key: requiredString(row.reservation_key, "reservation_key"),
-      snapshot_date: snapshotDate,
+  return {
+    batch_id: batchId,
+    org_id: orgId,
+    property_code: propertyCode,
+    reservation_key: requiredString(row.reservation_key, "reservation_key"),
+    snapshot_date: snapshotDate,
 
-      booking_date: requiredString(row.booking_date, "booking_date"),
-      checkin_date: requiredString(row.checkin_date, "checkin_date"),
-      checkout_date: requiredString(row.checkout_date, "checkout_date"),
+    booking_date: requiredString(row.booking_date, "booking_date"),
+    checkin_date: requiredString(row.checkin_date, "checkin_date"),
+    checkout_date: requiredString(row.checkout_date, "checkout_date"),
 
-      reservation_status: requiredString(row.status, "status"),
-      currency: requiredString(row.currency, "currency"),
+    reservation_status: requiredString(row.status, "status"),
+    currency: requiredString(row.currency, "currency"),
 
-      gross_revenue: requiredNumber(row.gross_revenue, "gross_revenue"),
-      commission_amount: toNullableNumber(row.commission_amount),
-      net_revenue: toNullableNumber(row.net_revenue),
+    gross_revenue: requiredNumber(row.gross_revenue, "gross_revenue"),
+    commission_amount: toNullableNumber(row.commission_amount),
+    net_revenue: toNullableNumber(row.net_revenue),
 
-      rooms: requiredNumber(row.rooms, "rooms"),
-      adults: toNullableNumber(row.adults),
-      children: toNullableNumber(row.children),
+    rooms: requiredNumber(row.rooms, "rooms"),
+    adults: toNullableNumber(row.adults),
+    children: toNullableNumber(row.children),
 
-      channel: toNullableString(row.channel),
-      segment: toNullableString(row.segment),
-      room_type: toNullableString(row.room_type),
-      rate_plan: toNullableString(row.rate_plan),
+    channel: toNullableString(row.channel),
+    segment: toNullableString(row.segment),
+    room_type: toNullableString(row.room_type),
+    rate_plan: toNullableString(row.rate_plan),
 
-      cancelled_at: toNullableString(row.cancelled_at),
-    });
-
-  if (error) {
-    throw new Error(`snapshot_insert_failed:${error.message}`);
-  }
+    cancelled_at: toNullableString(row.cancelled_at),
+  };
 }
 
-/* ======================================================
- * Stay nights rebuild
- * ====================================================== */
-async function rebuildStayNights(
-  sb: ReturnType<typeof supabaseServiceClient>,
-  params: {
-    orgId: string;
-    batchId: string;
-    propertyCode: string;
-    row: JsonRecord;
-  },
-) {
+function buildStayNightRows(params: {
+  orgId: string;
+  batchId: string;
+  propertyCode: string;
+  row: JsonRecord;
+}): Record<string, unknown>[] {
   const { orgId, batchId, propertyCode, row } = params;
 
   const reservationKey = requiredString(row.reservation_key, "reservation_key");
@@ -474,17 +559,6 @@ async function rebuildStayNights(
   const allocatedGross = grossRevenue / nightsCount;
   const allocatedNet = netRevenue / nightsCount;
 
-  const { error: deleteError } = await sb
-    .from("debacu_eval_stay_nights")
-    .delete()
-    .eq("org_id", orgId)
-    .eq("property_code", propertyCode)
-    .eq("reservation_key", reservationKey);
-
-  if (deleteError) {
-    throw new Error(`stay_nights_delete_failed:${deleteError.message}`);
-  }
-
   const rows: Record<string, unknown>[] = [];
 
   for (let i = 0; i < nightsCount; i++) {
@@ -509,12 +583,101 @@ async function rebuildStayNights(
     });
   }
 
-  const { error: insertError } = await sb
-    .from("debacu_eval_stay_nights")
-    .insert(rows);
+  return rows;
+}
 
-  if (insertError) {
-    throw new Error(`stay_nights_insert_failed:${insertError.message}`);
+/* ======================================================
+ * Batch DB helpers
+ * ====================================================== */
+async function insertImportRowsBatch(
+  sb: ReturnType<typeof supabaseServiceClient>,
+  rows: Record<string, unknown>[],
+) {
+  if (rows.length === 0) return;
+
+  for (const chunk of chunkArray(rows, 200)) {
+    const { error } = await sb
+      .from("debacu_eval_unified_import_rows")
+      .insert(chunk);
+
+    if (error) {
+      throw new Error(`import_rows_batch_insert_failed:${error.message}`);
+    }
+  }
+}
+
+async function upsertReservationsBatch(
+  sb: ReturnType<typeof supabaseServiceClient>,
+  rows: Record<string, unknown>[],
+) {
+  if (rows.length === 0) return;
+
+  for (const chunk of chunkArray(rows, 200)) {
+    const { error } = await sb
+      .from("debacu_eval_reservations")
+      .upsert(chunk, {
+        onConflict: "org_id,reservation_key",
+      });
+
+    if (error) {
+      throw new Error(`reservations_batch_upsert_failed:${error.message}`);
+    }
+  }
+}
+
+async function insertSnapshotsBatch(
+  sb: ReturnType<typeof supabaseServiceClient>,
+  rows: Record<string, unknown>[],
+) {
+  if (rows.length === 0) return;
+
+  for (const chunk of chunkArray(rows, 500)) {
+    const { error } = await sb
+      .from("debacu_eval_reservation_snapshots")
+      .insert(chunk);
+
+    if (error) {
+      throw new Error(`snapshots_batch_insert_failed:${error.message}`);
+    }
+  }
+}
+
+async function deleteStayNightsBatch(
+  sb: ReturnType<typeof supabaseServiceClient>,
+  orgId: string,
+  propertyCode: string,
+  reservationKeys: string[],
+) {
+  if (reservationKeys.length === 0) return;
+
+  for (const chunk of chunkArray(reservationKeys, 200)) {
+    const { error } = await sb
+      .from("debacu_eval_stay_nights")
+      .delete()
+      .eq("org_id", orgId)
+      .eq("property_code", propertyCode)
+      .in("reservation_key", chunk);
+
+    if (error) {
+      throw new Error(`stay_nights_batch_delete_failed:${error.message}`);
+    }
+  }
+}
+
+async function insertStayNightsBatch(
+  sb: ReturnType<typeof supabaseServiceClient>,
+  rows: Record<string, unknown>[],
+) {
+  if (rows.length === 0) return;
+
+  for (const chunk of chunkArray(rows, 1000)) {
+    const { error } = await sb
+      .from("debacu_eval_stay_nights")
+      .insert(chunk);
+
+    if (error) {
+      throw new Error(`stay_nights_batch_insert_failed:${error.message}`);
+    }
   }
 }
 
@@ -534,6 +697,8 @@ Deno.serve(async (req) => {
     const file = form.get("file");
     const modeRaw = form.get("mode");
     const orgIdRaw = form.get("org_id");
+    const selectedPropertyIdRaw = form.get("selected_property_id");
+
     const mode = String(modeRaw ?? "dry_run").trim().toLowerCase();
 
     if (!(file instanceof File)) {
@@ -550,6 +715,14 @@ Deno.serve(async (req) => {
       toNullableString(orgIdRaw),
     );
 
+    const selectedProperty = await resolveSelectedPropertyOrThrow(
+      sb,
+      orgId,
+      toNullableString(selectedPropertyIdRaw),
+    );
+
+    assertSelectedPropertyConfigured(selectedProperty);
+
     const csvText = await file.text();
     const sourceFileSha256 = await sha256Hex(csvText);
 
@@ -565,6 +738,7 @@ Deno.serve(async (req) => {
     const previewRows: JsonRecord[] = [];
     const rowErrors: JsonRecord[] = [];
     const allWarnings: JsonRecord[] = [];
+    const detectedCsvProperties = new Map<string, string>();
 
     let rowsWarningCount = 0;
 
@@ -573,7 +747,8 @@ Deno.serve(async (req) => {
       const rowNumber = i + 1;
 
       const normalizedRow = buildNormalizedRow(rawRow, headerMap);
-      const propertyCode = inferPropertyCode(normalizedRow);
+      const csvPropertyRaw = inferCsvPropertyRaw(normalizedRow);
+      const csvPropertyNormalized = normalizePropertyMatcher(csvPropertyRaw);
 
       const validation = validateNormalizedRowForImport(normalizedRow);
 
@@ -614,16 +789,34 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      if (!csvPropertyRaw || !csvPropertyNormalized) {
+        rowErrors.push({
+          row_number: rowNumber,
+          row: rawRow,
+          errors: ["missing property_code/property_name"],
+          warnings: validation.warnings,
+        });
+        continue;
+      }
+
+      detectedCsvProperties.set(csvPropertyNormalized, csvPropertyRaw);
+
       const reservationKey = buildReservationKey(orgId, {
-        property_code: propertyCode,
-        property_name: toNullableString(normalizedRow.property_name),
+        property_code: selectedProperty.code,
+        property_name: selectedProperty.name,
         reservation_id: toNullableString(normalizedRow.reservation_id),
         reservation_line_id: toNullableString(normalizedRow.reservation_line_id),
       });
 
       const enrichedRow: JsonRecord = {
         ...normalizedRow,
-        property_code: propertyCode,
+        property_code: selectedProperty.code,
+        property_name: selectedProperty.name,
+        csv_property_code_detected: csvPropertyRaw,
+        csv_property_code_detected_normalized: csvPropertyNormalized,
+        selected_property_id: selectedProperty.id,
+        selected_property_code: selectedProperty.code,
+        selected_property_name: selectedProperty.name,
         reservation_key: reservationKey,
         identity_key: identityResult?.identity_key ?? null,
         identity_input_kind: identityResult?.input_kind ?? null,
@@ -656,6 +849,9 @@ Deno.serve(async (req) => {
       invalid_rows: rowErrors.length,
     };
 
+    const detectedCsvProperty = detectCsvPropertyOrThrow(detectedCsvProperties);
+    assertPropertyMatchOrThrow(selectedProperty, detectedCsvProperty);
+
     if (mode === "dry_run") {
       return ok(req, {
         ok: true,
@@ -676,25 +872,22 @@ Deno.serve(async (req) => {
           errors: rowErrors,
           warnings: allWarnings,
           header_map: headerMap,
+          selected_property: {
+            id: selectedProperty.id,
+            code: selectedProperty.code,
+            name: selectedProperty.name,
+            import_property_code: selectedProperty.import_property_code,
+          },
+          detected_csv_property: detectedCsvProperty,
         },
       });
     }
 
-    const propertyCodes = Array.from(
-      new Set(
-        previewRows
-          .map((r) => toNullableString(r.property_code))
-          .filter((v): v is string => Boolean(v)),
-      ),
-    );
-
-    if (propertyCodes.length !== 1) {
-      return fail(req, 400, "commit_requires_exactly_one_property_code", {
-        detected_property_codes: propertyCodes,
-      });
+    if (previewRows.length === 0) {
+      return fail(req, 400, "commit_requires_valid_rows");
     }
 
-    const propertyCode = propertyCodes[0];
+    const propertyCode = selectedProperty.code;
 
     const duplicatedFile = await sb
       .from("debacu_eval_unified_import_batches")
@@ -702,6 +895,7 @@ Deno.serve(async (req) => {
       .eq("org_id", orgId)
       .eq("property_code", propertyCode)
       .eq("source_file_sha256", sourceFileSha256)
+      .in("status", ["PENDING", "COMMITTED"])
       .limit(1)
       .maybeSingle();
 
@@ -741,6 +935,12 @@ Deno.serve(async (req) => {
           skipped_top_lines: parsed.skippedTopLines,
           summary,
           screening_enabled: false,
+          selected_property_id: selectedProperty.id,
+          selected_property_code: selectedProperty.code,
+          selected_property_name: selectedProperty.name,
+          selected_property_import_property_code: selectedProperty.import_property_code,
+          csv_detected_property_raw: detectedCsvProperty.raw,
+          csv_detected_property_normalized: detectedCsvProperty.normalized,
         },
       })
       .select("id")
@@ -755,12 +955,20 @@ Deno.serve(async (req) => {
     const batchId = String(batchInsert.data.id);
 
     try {
+      const importRowsToInsert: Record<string, unknown>[] = [];
+      const reservationsToUpsert: Record<string, unknown>[] = [];
+      const snapshotsToInsert: Record<string, unknown>[] = [];
+      const stayNightsToInsert: Record<string, unknown>[] = [];
+      const stayNightReservationKeysToDelete: string[] = [];
+
       for (let i = 0; i < parsed.rows.length; i++) {
         const rawRow = parsed.rows[i] as ParsedCsvRow;
         const rowNumber = i + 1;
 
         const normalizedRow = buildNormalizedRow(rawRow, headerMap);
-        const propertyCodeForRow = inferPropertyCode(normalizedRow);
+        const csvPropertyRaw = inferCsvPropertyRaw(normalizedRow);
+        const csvPropertyNormalized = normalizePropertyMatcher(csvPropertyRaw);
+
         const validation = validateNormalizedRowForImport(normalizedRow);
 
         let identityResult: IdentityResult = null;
@@ -779,69 +987,62 @@ Deno.serve(async (req) => {
             if (message === "NO_IDENTIFIER") {
               screeningEligible = false;
             } else {
-              const { error } = await sb
-                .from("debacu_eval_unified_import_rows")
-                .insert({
-                  batch_id: batchId,
-                  org_id: orgId,
-                  row_number: rowNumber,
-                  raw_payload: rawRow,
-                  normalized_payload: normalizedRow,
-                  validation_status: "ERROR",
-                  validation_errors: [`identity_error: ${message}`],
-                  validation_warnings: validation.warnings,
-                  reservation_key: null,
-                  identity_key: null,
-                  screening_eligible: false,
-                });
-
-              if (error) {
-                throw new Error(`import_row_error_insert_failed:${error.message}`);
-              }
-
+              importRowsToInsert.push({
+                batch_id: batchId,
+                org_id: orgId,
+                row_number: rowNumber,
+                raw_payload: rawRow,
+                normalized_payload: normalizedRow,
+                validation_status: "ERROR",
+                validation_errors: [`identity_error: ${message}`],
+                validation_warnings: validation.warnings,
+                reservation_key: null,
+                identity_key: null,
+                screening_eligible: false,
+              });
               continue;
             }
           }
         }
 
-        if (!validation.valid || !propertyCodeForRow) {
-          const validationErrors = !propertyCodeForRow
+        if (!validation.valid || !csvPropertyRaw || !csvPropertyNormalized) {
+          const validationErrors = !csvPropertyRaw || !csvPropertyNormalized
             ? [...validation.errors, "missing property_code/property_name"]
             : validation.errors;
 
-          const { error } = await sb
-            .from("debacu_eval_unified_import_rows")
-            .insert({
-              batch_id: batchId,
-              org_id: orgId,
-              row_number: rowNumber,
-              raw_payload: rawRow,
-              normalized_payload: normalizedRow,
-              validation_status: "ERROR",
-              validation_errors: validationErrors,
-              validation_warnings: validation.warnings,
-              reservation_key: null,
-              identity_key: null,
-              screening_eligible: false,
-            });
-
-          if (error) {
-            throw new Error(`import_row_invalid_insert_failed:${error.message}`);
-          }
+          importRowsToInsert.push({
+            batch_id: batchId,
+            org_id: orgId,
+            row_number: rowNumber,
+            raw_payload: rawRow,
+            normalized_payload: normalizedRow,
+            validation_status: "ERROR",
+            validation_errors: validationErrors,
+            validation_warnings: validation.warnings,
+            reservation_key: null,
+            identity_key: null,
+            screening_eligible: false,
+          });
 
           continue;
         }
 
         const reservationKey = buildReservationKey(orgId, {
-          property_code: propertyCodeForRow,
-          property_name: toNullableString(normalizedRow.property_name),
+          property_code: selectedProperty.code,
+          property_name: selectedProperty.name,
           reservation_id: toNullableString(normalizedRow.reservation_id),
           reservation_line_id: toNullableString(normalizedRow.reservation_line_id),
         });
 
         const enrichedRow: JsonRecord = {
           ...normalizedRow,
-          property_code: propertyCodeForRow,
+          property_code: selectedProperty.code,
+          property_name: selectedProperty.name,
+          csv_property_code_detected: csvPropertyRaw,
+          csv_property_code_detected_normalized: csvPropertyNormalized,
+          selected_property_id: selectedProperty.id,
+          selected_property_code: selectedProperty.code,
+          selected_property_name: selectedProperty.name,
           reservation_key: reservationKey,
           identity_key: identityResult?.identity_key ?? null,
           identity_input_kind: identityResult?.input_kind ?? null,
@@ -853,47 +1054,60 @@ Deno.serve(async (req) => {
 
         const validationStatus = validation.warnings.length > 0 ? "WARNING" : "OK";
 
-        const importRowInsert = await sb
-          .from("debacu_eval_unified_import_rows")
-          .insert({
-            batch_id: batchId,
-            org_id: orgId,
-            row_number: rowNumber,
-            raw_payload: rawRow,
-            normalized_payload: enrichedRow,
-            validation_status: validationStatus,
-            validation_errors: [],
-            validation_warnings: validation.warnings,
-            reservation_key: reservationKey,
-            identity_key: identityResult?.identity_key ?? null,
-            screening_eligible: screeningEligible,
-          });
-
-        if (importRowInsert.error) {
-          throw new Error(`import_row_insert_failed:${importRowInsert.error.message}`);
-        }
-
-        await upsertReservation(sb, {
-          orgId,
-          batchId,
-          row: enrichedRow,
-          propertyCode: propertyCodeForRow,
+        importRowsToInsert.push({
+          batch_id: batchId,
+          org_id: orgId,
+          row_number: rowNumber,
+          raw_payload: rawRow,
+          normalized_payload: enrichedRow,
+          validation_status: validationStatus,
+          validation_errors: [],
+          validation_warnings: validation.warnings,
+          reservation_key: reservationKey,
+          identity_key: identityResult?.identity_key ?? null,
+          screening_eligible: screeningEligible,
         });
 
-        await insertReservationSnapshot(sb, {
-          batchId,
-          orgId,
-          propertyCode: propertyCodeForRow,
-          row: enrichedRow,
-        });
+        reservationsToUpsert.push(
+          buildReservationUpsertPayload({
+            orgId,
+            batchId,
+            row: enrichedRow,
+            propertyCode,
+          }),
+        );
 
-        await rebuildStayNights(sb, {
-          orgId,
-          batchId,
-          propertyCode: propertyCodeForRow,
-          row: enrichedRow,
-        });
+        snapshotsToInsert.push(
+          buildReservationSnapshotPayload({
+            batchId,
+            orgId,
+            propertyCode,
+            row: enrichedRow,
+          }),
+        );
+
+        stayNightReservationKeysToDelete.push(reservationKey);
+
+        stayNightsToInsert.push(
+          ...buildStayNightRows({
+            orgId,
+            batchId,
+            propertyCode,
+            row: enrichedRow,
+          }),
+        );
       }
+
+      await insertImportRowsBatch(sb, importRowsToInsert);
+      await upsertReservationsBatch(sb, reservationsToUpsert);
+      await insertSnapshotsBatch(sb, snapshotsToInsert);
+      await deleteStayNightsBatch(
+        sb,
+        orgId,
+        propertyCode,
+        Array.from(new Set(stayNightReservationKeysToDelete)),
+      );
+      await insertStayNightsBatch(sb, stayNightsToInsert);
 
       const batchUpdate = await sb
         .from("debacu_eval_unified_import_batches")
@@ -907,12 +1121,68 @@ Deno.serve(async (req) => {
             summary,
             committed_rows: previewRows.length,
             screening_enabled: false,
+            selected_property_id: selectedProperty.id,
+            selected_property_code: selectedProperty.code,
+            selected_property_name: selectedProperty.name,
+            selected_property_import_property_code: selectedProperty.import_property_code,
+            csv_detected_property_raw: detectedCsvProperty.raw,
+            csv_detected_property_normalized: detectedCsvProperty.normalized,
           },
         })
         .eq("id", batchId);
 
-      if (batchUpdate.error) {
+       if (batchUpdate.error) {
         throw new Error(`batch_commit_update_failed:${batchUpdate.error.message}`);
+      }
+
+        const affectedStayDates = stayNightsToInsert
+        .map((row) => toNullableString(row.stay_date))
+        .filter((value): value is string => Boolean(value))
+        .sort();
+
+      const rebuildDateFrom = affectedStayDates[0] ?? null;
+      const rebuildDateTo = affectedStayDates[affectedStayDates.length - 1] ?? null;
+
+      if (rebuildDateFrom && rebuildDateTo) {
+        const userAuthHeader =
+          req.headers.get("Authorization") ?? req.headers.get("authorization");
+
+        if (!userAuthHeader) {
+          throw new Error("missing_user_authorization_header_for_rebuild");
+        }
+        console.log("AUTH HEADER:", userAuthHeader);
+        const rebuildResponse = await fetch(
+          `${SUPABASE_URL}/functions/v1/debacu_eval_revenue_daily_rebuild`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": userAuthHeader,
+            },
+            body: JSON.stringify({
+              org_id: orgId,
+              property_id: selectedProperty.id,
+              date_from: rebuildDateFrom,
+              date_to: rebuildDateTo,
+            }),
+          },
+        );
+
+        const rebuildPayload = await rebuildResponse.json().catch(() => null);
+
+        console.log("rebuildResponse.ok =", rebuildResponse.ok);
+        console.log("rebuildPayload =", JSON.stringify(rebuildPayload));
+
+               if (!rebuildResponse.ok) {
+          throw new Error(
+            `revenue_daily_rebuild_failed:${
+              rebuildPayload?.detail_message ??
+              rebuildPayload?.detail ??
+              rebuildPayload?.error ??
+              rebuildResponse.statusText
+            }`,
+          );
+        }
       }
 
       return ok(req, {
@@ -926,6 +1196,13 @@ Deno.serve(async (req) => {
           rows_warning: rowsWarningCount,
           rows_error: rowErrors.length,
           summary,
+          selected_property: {
+            id: selectedProperty.id,
+            code: selectedProperty.code,
+            name: selectedProperty.name,
+            import_property_code: selectedProperty.import_property_code,
+          },
+          detected_csv_property: detectedCsvProperty,
         },
       });
     } catch (commitErr) {
@@ -940,6 +1217,12 @@ Deno.serve(async (req) => {
             summary,
             screening_enabled: false,
             commit_error: extractErrorMessage(commitErr),
+            selected_property_id: selectedProperty.id,
+            selected_property_code: selectedProperty.code,
+            selected_property_name: selectedProperty.name,
+            selected_property_import_property_code: selectedProperty.import_property_code,
+            csv_detected_property_raw: detectedCsvProperty.raw,
+            csv_detected_property_normalized: detectedCsvProperty.normalized,
           },
         })
         .eq("id", batchId);
@@ -955,9 +1238,81 @@ Deno.serve(async (req) => {
     if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
       return fail(req, 401, "UNAUTHORIZED");
     }
+
     if (msg === "FORBIDDEN") {
       return fail(req, 403, "FORBIDDEN");
     }
+
+
+    if (msg === "missing_user_authorization_header_for_rebuild") {
+      return fail(
+        req,
+        401,
+        "missing_user_authorization_header_for_rebuild"
+      );
+    }
+
+    if (msg === "selected_property_id_required") {
+      return fail(req, 400, "selected_property_id_required");
+    }
+
+    if (msg === "selected_property_not_found") {
+      return fail(req, 404, "selected_property_not_found");
+    }
+
+    if (msg === "selected_property_missing_import_property_code") {
+      return fail(
+        req,
+        400,
+        "La propiedad seleccionada no tiene configurado import_property_code. Debes configurarlo antes de importar.",
+      );
+    }
+
+    if (msg === "csv_property_not_detected") {
+      return fail(
+        req,
+        400,
+        "No se ha podido detectar la propiedad en el CSV. Revisa property_code o property_name.",
+      );
+    }
+
+    if (msg.startsWith("csv_contains_multiple_property_codes:")) {
+      const detected = msg.replace("csv_contains_multiple_property_codes:", "");
+      return fail(
+        req,
+        400,
+        "El CSV contiene varias propiedades y esta pantalla solo admite una propiedad por importación.",
+        {
+          detected_property_codes: detected.split(",").map((v) => v.trim()),
+        },
+      );
+    }
+
+    if (msg.startsWith("PROPERTY_MISMATCH|")) {
+      const parts = msg.split("|").reduce<Record<string, string>>((acc, item) => {
+        const [k, ...rest] = item.split("=");
+        if (rest.length > 0) {
+          acc[k] = rest.join("=");
+        }
+        return acc;
+      }, {});
+
+      const csvProperty = parts.csv ?? "N/D";
+      const selectedName = parts.selected_name ?? "N/D";
+      const expectedImportCode = parts.expected_import_property_code ?? "N/D";
+
+      return fail(
+        req,
+        409,
+        `El CSV pertenece a "${csvProperty}" y no coincide con la propiedad seleccionada "${selectedName}". La propiedad seleccionada espera import_property_code "${expectedImportCode}".`,
+        {
+          csv_property_detected: csvProperty,
+          selected_property_name: selectedName,
+          expected_import_property_code: expectedImportCode,
+        },
+      );
+    }
+
     if (
       msg.startsWith("missing_") ||
       msg.startsWith("invalid_") ||

@@ -2,12 +2,10 @@
 
 export type NormalizedStatus =
   | "CONFIRMED"
-  | "PENDING"
-  | "CANCELLED"
-  | "CHECKED_IN"
+  | "IN_HOUSE"
   | "CHECKED_OUT"
-  | "NO_SHOW"
-  | "UNKNOWN";
+  | "CANCELLED"
+  | "NO_SHOW";
 
 function cleanText(value: unknown): string {
   return String(value ?? "").trim();
@@ -190,76 +188,94 @@ export function normalizeCurrency(value: unknown): string | null {
   return null;
 }
 
-export function normalizeReservationStatus(value: unknown): NormalizedStatus {
+ export function normalizeReservationStatus(value: unknown): NormalizedStatus {
   const raw = normalizeComparableText(value);
 
-  if (!raw) return "UNKNOWN";
+  if (!raw) return "CONFIRMED";
 
   const statusMap: Array<[NormalizedStatus, string[]]> = [
-    ["CANCELLED", [
-      "cancelled",
-      "canceled",
-      "cancelada",
-      "cancelado",
-      "anulada",
-      "anulado",
-      "fecha de cancelacion",
-    ]],
-    ["CHECKED_OUT", [
-      "checked out",
-      "checkout",
-      "check out",
-      "salida",
-      "finalizada",
-      "checked-out",
-    ]],
-    ["CHECKED_IN", [
-      "checked in",
-      "checkin",
-      "check in",
-      "entrada",
-      "hospedado",
-      "in house",
-      "alojado",
-    ]],
-    ["NO_SHOW", [
-      "no show",
-      "noshow",
-      "no-show",
-      "no presentado",
-    ]],
-    ["PENDING", [
-      "pending",
-      "pendiente",
-      "pendiente de leer",
-      "on request",
-      "solicitada",
-      "solicitud",
-    ]],
-    ["CONFIRMED", [
-      "confirmed",
-      "confirmada",
-      "confirmado",
-      "ok",
-      "booked",
-      "reservada",
-      "reserva confirmada",
-      "activa",
-    ]],
+    [
+      "CANCELLED",
+      [
+        "cancelled",
+        "canceled",
+        "cancelada",
+        "cancelado",
+        "anulada",
+        "anulado",
+        "fecha de cancelacion",
+      ],
+    ],
+    [
+      "CHECKED_OUT",
+      [
+        "checked out",
+        "checkout",
+        "check out",
+        "salida",
+        "finalizada",
+        "checked-out",
+        "departed",
+      ],
+    ],
+    [
+      "IN_HOUSE",
+      [
+        "checked in",
+        "checkin",
+        "check in",
+        "entrada",
+        "hospedado",
+        "in house",
+        "alojado",
+        "checked-in",
+        "inhouse",
+        "arrived",
+      ],
+    ],
+    [
+      "NO_SHOW",
+      [
+        "no show",
+        "noshow",
+        "no-show",
+        "no presentado",
+      ],
+    ],
+    [
+      "CONFIRMED",
+      [
+        "confirmed",
+        "confirmada",
+        "confirmado",
+        "ok",
+        "booked",
+        "reservada",
+        "reserva confirmada",
+        "activa",
+        "pending",
+        "pendiente",
+        "pendiente de leer",
+        "on request",
+        "solicitada",
+        "solicitud",
+      ],
+    ],
   ];
 
   for (const [normalized, aliases] of statusMap) {
     if (aliases.includes(raw)) return normalized;
   }
 
-  // fallback por contains
   if (raw.includes("cancel")) return "CANCELLED";
-  if (raw.includes("pend")) return "PENDING";
-  if (raw.includes("confirm")) return "CONFIRMED";
   if (raw.includes("check") && raw.includes("out")) return "CHECKED_OUT";
-  if (raw.includes("check") && raw.includes("in")) return "CHECKED_IN";
+  if (raw.includes("check") && raw.includes("in")) return "IN_HOUSE";
+  if (raw.includes("in house")) return "IN_HOUSE";
+  if (raw.includes("no show") || raw.includes("noshow")) return "NO_SHOW";
+  if (raw.includes("pend")) return "CONFIRMED";
+  if (raw.includes("confirm")) return "CONFIRMED";
 
-  return "UNKNOWN";
+  return "CONFIRMED";
 }
 
 /**

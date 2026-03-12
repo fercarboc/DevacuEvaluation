@@ -39,6 +39,7 @@ export type AuthedView =
   | "rev_day_by_day"
   | "rev_monthly"
   | "rev_channels_segments"
+  | "rev_pickup_advanced"
   | "rev_properties"
   | "rev_room_types"
   | "rev_price_calendar"
