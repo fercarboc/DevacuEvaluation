@@ -1,12 +1,11 @@
 import React, { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
-import { ChevronRight, Zap } from "lucide-react";
+import { Zap } from "lucide-react";
 
 import "@/styles/public.css";
 import WebNavbar from "@/pages/public/WebNavbar";
 import WebFooter from "@/pages/public/WebFooter";
- 
 
 import {
   ProblemSection,
@@ -61,17 +60,17 @@ export default function PublicLanding() {
                 >
                   <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-widest text-blue-400">
                     <Zap size={12} />
-                    Nueva era hospitality
+                    SaaS para hoteles
                   </div>
 
-                  <h1 className="text-gradient mb-5 max-w-2xl font-display text-3xl font-bold leading-[1.2] tracking-tight md:text-4xl lg:text-5xl">
-                    Inteligencia artificial para hoteles: riesgo, revenue y decisión operativa
+                  <h1 className="text-gradient mb-5 max-w-3xl font-display text-3xl font-bold leading-[1.2] tracking-tight md:text-4xl lg:text-5xl">
+                    Plataforma SaaS de riesgo operativo y revenue intelligence para hoteles
                   </h1>
 
-                  <p className="mb-8 max-w-lg text-sm leading-relaxed text-slate-300 md:text-base">
-                    Debacu es una plataforma SaaS que analiza datos operativos,
-                    incidencias y comportamiento para ayudar a los hoteles a
-                    detectar patrones, prevenir problemas y optimizar el revenue.
+                  <p className="mb-8 max-w-xl text-sm leading-relaxed text-slate-300 md:text-base">
+                    Debacu analiza incidencias, comportamiento de huéspedes y datos
+                    operativos para ayudar al hotel a prevenir pérdidas, detectar
+                    patrones y mejorar la toma de decisiones.
                   </p>
 
                   <div className="flex flex-row items-center gap-4">
@@ -92,8 +91,9 @@ export default function PublicLanding() {
                     </button>
                   </div>
 
-                  <p className="mt-6 text-xs text-slate-500">
-                    Plataforma de análisis para hoteles basada en datos operativos y comportamiento de huéspedes.
+                  <p className="mt-6 max-w-xl text-xs text-slate-500">
+                    Tecnología SaaS para hoteles orientada a análisis operativo,
+                    evaluación de riesgo e inteligencia de ingresos.
                   </p>
 
                   <button
@@ -126,7 +126,7 @@ export default function PublicLanding() {
                       ease: "easeInOut",
                     },
                   }}
-                  className="relative hidden lg:flex items-center justify-end"
+                  className="relative hidden items-center justify-end lg:flex"
                 >
                   <div className="absolute right-12 top-1/2 h-[420px] w-[420px] -translate-y-1/2 rounded-full bg-blue-500/30 blur-[140px]" />
 
@@ -146,15 +146,15 @@ export default function PublicLanding() {
 
           {/* SIGUIENTE SECCIÓN CON REF */}
           <div ref={nextSectionRef}>
-            <ProblemSection />  
+            <ProblemSection />
           </div>
 
           <FeaturesSection />
           <HowItWorks />
           <TechSection />
           <UseCases />
-          <TargetAudience />
           <InnovationSection />
+          <TargetAudience />
         </main>
 
         <WebFooter />

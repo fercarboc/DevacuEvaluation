@@ -37,18 +37,18 @@ const FeatureCard = ({
   functions: string[];
   icon: React.ReactNode;
 }) => (
-  <div className="rounded-2xl border border-white/[0.05] bg-slate-950/50 p-6 md:p-7 flex flex-col h-full group hover:border-blue-500/30 transition-all backdrop-blur-sm">
-    <div className="w-11 h-11 rounded-xl bg-blue-600/10 flex items-center justify-center mb-5 text-blue-500 group-hover:scale-110 transition-transform">
+  <div className="group flex h-full flex-col rounded-2xl border border-white/[0.05] bg-slate-950/50 p-6 backdrop-blur-sm transition-all hover:border-blue-500/30 md:p-7">
+    <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600/10 text-blue-500 transition-transform group-hover:scale-110">
       {icon}
     </div>
 
-    <h3 className="text-lg md:text-xl font-bold mb-3 text-white">{title}</h3>
-    <p className="text-sm text-slate-400 mb-6 leading-relaxed">{description}</p>
+    <h3 className="mb-3 text-lg font-bold text-white md:text-xl">{title}</h3>
+    <p className="mb-6 text-sm leading-relaxed text-slate-400">{description}</p>
 
     <div className="mt-auto space-y-2.5">
       {functions.map((f, i) => (
         <div key={i} className="flex items-center gap-3 text-xs text-slate-500">
-          <div className="w-1 h-1 rounded-full bg-blue-500" />
+          <div className="h-1 w-1 rounded-full bg-blue-500" />
           {f}
         </div>
       ))}
@@ -67,16 +67,16 @@ const Step = ({
   description: string;
   icon: React.ReactNode;
 }) => (
-  <div className="relative flex flex-col items-center text-center group">
-    <div className="w-14 h-14 rounded-2xl bg-slate-900 border border-white/10 flex items-center justify-center mb-5 text-blue-500 relative z-10 group-hover:border-blue-500/50 transition-all">
+  <div className="group relative flex flex-col items-center text-center">
+    <div className="relative z-10 mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-slate-900 text-blue-500 transition-all group-hover:border-blue-500/50">
       {icon}
-      <div className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-blue-600 text-[10px] font-bold text-white flex items-center justify-center border-2 border-[#020617]">
+      <div className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full border-2 border-[#020617] bg-blue-600 text-[10px] font-bold text-white">
         {number}
       </div>
     </div>
 
-    <h4 className="text-base md:text-lg font-bold mb-2 text-white">{title}</h4>
-    <p className="text-sm text-slate-500 max-w-[220px] leading-relaxed">
+    <h4 className="mb-2 text-base font-bold text-white md:text-lg">{title}</h4>
+    <p className="max-w-[220px] text-sm leading-relaxed text-slate-500">
       {description}
     </p>
   </div>
@@ -90,41 +90,41 @@ export default function ProductPage() {
       id="public-page-scroll"
       className="h-screen overflow-y-auto overflow-x-hidden bg-[#020617] text-white"
     >
-      <div className="min-h-full flex flex-col">
+      <div className="flex min-h-full flex-col">
         <WebNavbar />
 
-        <main className="pt-20 flex-grow">
+        <main className="flex-grow pt-20">
           {/* Hero Section */}
-          <section className="pt-16 pb-24 px-6 relative overflow-hidden">
-            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-full bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-600/10 via-transparent to-transparent -z-10" />
+          <section className="relative overflow-hidden px-6 pb-24 pt-16">
+            <div className="absolute left-1/2 top-0 -z-10 h-full w-full -translate-x-1/2 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-600/10 via-transparent to-transparent" />
 
-            <div className="max-w-7xl mx-auto text-center">
+            <div className="mx-auto max-w-7xl text-center">
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.6 }}
               >
-                <h1 className="text-3xl md:text-5xl lg:text-6xl font-bold tracking-tight mb-6 max-w-4xl mx-auto leading-[1.1] text-white">
+                <h1 className="mx-auto mb-6 max-w-4xl text-3xl font-bold leading-[1.1] tracking-tight text-white md:text-5xl lg:text-6xl">
                   La plataforma de inteligencia operativa para hoteles
                 </h1>
 
-                <p className="text-base md:text-lg text-slate-400 max-w-3xl mx-auto mb-10 leading-relaxed">
+                <p className="mx-auto mb-10 max-w-3xl text-base leading-relaxed text-slate-400 md:text-lg">
                   Debacu analiza datos operativos y comerciales del hotel para
                   detectar patrones, generar alertas y ayudar a tomar decisiones
                   más inteligentes.
                 </p>
 
-                <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
+                <div className="mb-16 flex flex-col items-center justify-center gap-4 sm:flex-row">
                   <button
                     onClick={() => navigate("/solicitar-acceso")}
-                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-base px-7 py-3.5 w-full sm:w-auto transition-colors"
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-7 py-3.5 text-base font-semibold text-white transition-colors hover:bg-blue-500 sm:w-auto"
                   >
                     Solicitar acceso <ChevronRight size={18} />
                   </button>
 
                   <button
                     onClick={() => navigate("/tecnologia")}
-                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-white font-semibold text-base px-7 py-3.5 w-full sm:w-auto transition-colors"
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-7 py-3.5 text-base font-semibold text-white transition-colors hover:bg-white/10 sm:w-auto"
                   >
                     Ver tecnología <ChevronRight size={18} />
                   </button>
@@ -137,23 +137,23 @@ export default function ProductPage() {
                 transition={{ duration: 0.8, delay: 0.2 }}
                 className="relative"
               >
-                <div className="absolute -inset-10 bg-blue-600/20 blur-[100px] rounded-full opacity-30 -z-10" />
+                <div className="absolute -inset-10 -z-10 rounded-full bg-blue-600/20 opacity-30 blur-[100px]" />
                 <DashboardMockup />
               </motion.div>
             </div>
           </section>
 
           {/* Sector Problem */}
-          <section className="px-6 py-16 md:py-20 bg-slate-950/50 border-y border-white/[0.05]">
-            <div className="max-w-7xl mx-auto">
-              <div className="grid lg:grid-cols-2 gap-12 md:gap-16 items-center">
+          <section className="border-y border-white/[0.05] bg-slate-950/50 px-6 py-16 md:py-20">
+            <div className="mx-auto max-w-7xl">
+              <div className="grid items-center gap-12 md:gap-16 lg:grid-cols-2">
                 <div>
-                  <h2 className="text-2xl md:text-4xl font-bold mb-6 leading-tight text-white max-w-3xl">
+                  <h2 className="max-w-3xl mb-6 text-2xl font-bold leading-tight text-white md:text-4xl">
                     Los hoteles generan datos constantemente, pero rara vez los
                     utilizan para tomar mejores decisiones
                   </h2>
 
-                  <p className="text-slate-400 text-base md:text-lg mb-8 leading-relaxed max-w-2xl">
+                  <p className="mb-8 max-w-2xl text-base leading-relaxed text-slate-400 md:text-lg">
                     Debacu transforma estos datos en inteligencia accionable,
                     resolviendo los problemas estructurales de visibilidad en el
                     sector hospitality.
@@ -166,8 +166,14 @@ export default function ProductPage() {
                       "Fugas de revenue difíciles de detectar",
                       "Información dispersa entre sistemas",
                     ].map((p, i) => (
-                      <div key={i} className="flex items-center gap-3 text-slate-300 text-sm md:text-base">
-                        <AlertCircle size={18} className="text-blue-500 shrink-0" />
+                      <div
+                        key={i}
+                        className="flex items-center gap-3 text-sm text-slate-300 md:text-base"
+                      >
+                        <AlertCircle
+                          size={18}
+                          className="shrink-0 text-blue-500"
+                        />
                         <span>{p}</span>
                       </div>
                     ))}
@@ -175,21 +181,21 @@ export default function ProductPage() {
                 </div>
 
                 <div className="relative">
-                  <div className="rounded-2xl border border-blue-500/20 bg-blue-500/5 p-6 md:p-8 backdrop-blur-sm">
-                    <div className="flex items-center gap-4 mb-6">
-                      <div className="w-10 h-10 rounded-lg bg-blue-600/20 flex items-center justify-center text-blue-500">
+                  <div className="rounded-2xl border border-blue-500/20 bg-blue-500/5 p-6 backdrop-blur-sm md:p-8">
+                    <div className="mb-6 flex items-center gap-4">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-600/20 text-blue-500">
                         <Zap size={20} />
                       </div>
                       <h4 className="font-bold text-white">Solución Debacu</h4>
                     </div>
 
-                    <p className="text-slate-400 text-sm leading-relaxed mb-6">
+                    <p className="mb-6 text-sm leading-relaxed text-slate-400">
                       Nuestra plataforma centraliza, normaliza y analiza cada señal
                       operativa para que el equipo de gestión pueda actuar de forma
                       proactiva en lugar de reactiva.
                     </p>
 
-                    <div className="h-32 bg-slate-900/50 rounded-lg border border-white/5 flex items-center justify-center overflow-hidden">
+                    <div className="flex h-32 items-center justify-center overflow-hidden rounded-lg border border-white/5 bg-slate-900/50">
                       <div className="flex gap-2">
                         {[40, 70, 45, 90, 65, 80].map((h, i) => (
                           <motion.div
@@ -197,7 +203,7 @@ export default function ProductPage() {
                             initial={{ height: 0 }}
                             whileInView={{ height: h }}
                             viewport={{ once: true }}
-                            className="w-4 bg-blue-600/40 rounded-t-sm"
+                            className="w-4 rounded-t-sm bg-blue-600/40"
                           />
                         ))}
                       </div>
@@ -210,18 +216,18 @@ export default function ProductPage() {
 
           {/* What Debacu Does */}
           <section className="px-6 py-16 md:py-20">
-            <div className="max-w-7xl mx-auto">
-              <div className="text-center mb-14 md:mb-16">
-                <h2 className="text-2xl md:text-4xl font-bold mb-4 text-white max-w-4xl mx-auto">
+            <div className="mx-auto max-w-7xl">
+              <div className="mb-14 text-center md:mb-16">
+                <h2 className="mx-auto mb-4 max-w-4xl text-2xl font-bold text-white md:text-4xl">
                   Una plataforma diseñada para entender lo que ocurre en tu hotel
                 </h2>
-                <p className="text-slate-400 max-w-2xl mx-auto text-sm md:text-base">
+                <p className="mx-auto max-w-2xl text-sm text-slate-400 md:text-base">
                   Cuatro pilares fundamentales para profesionalizar la gestión de
                   tu alojamiento.
                 </p>
               </div>
 
-              <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
                 <FeatureCard
                   title="Evaluación de riesgo operativo"
                   description="Debacu analiza incidencias y señales operativas para detectar patrones que afectan al funcionamiento del hotel."
@@ -270,19 +276,19 @@ export default function ProductPage() {
           </section>
 
           {/* How it Works */}
-          <section className="px-6 py-16 md:py-20 bg-slate-950/30">
-            <div className="max-w-7xl mx-auto">
-              <div className="text-center mb-14 md:mb-16">
-                <h2 className="text-2xl md:text-4xl font-bold mb-4 text-white">
+          <section className="bg-slate-950/30 px-6 py-16 md:py-20">
+            <div className="mx-auto max-w-7xl">
+              <div className="mb-14 text-center md:mb-16">
+                <h2 className="mb-4 text-2xl font-bold text-white md:text-4xl">
                   Cómo funciona Debacu
                 </h2>
-                <p className="text-slate-500 text-sm md:text-base">
+                <p className="text-sm text-slate-500 md:text-base">
                   Un proceso fluido desde la captura hasta la decisión.
                 </p>
               </div>
 
-              <div className="grid md:grid-cols-4 gap-10 md:gap-12 relative">
-                <div className="hidden md:block absolute top-8 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-blue-500/20 to-transparent -z-0" />
+              <div className="relative grid gap-10 md:grid-cols-4 md:gap-12">
+                <div className="absolute top-8 -z-0 hidden h-[1px] w-full bg-gradient-to-r from-transparent via-blue-500/20 to-transparent md:block" />
 
                 <Step
                   number="1"
@@ -314,17 +320,17 @@ export default function ProductPage() {
 
           {/* Product Modules */}
           <section className="px-6 py-16 md:py-20">
-            <div className="max-w-7xl mx-auto">
-              <div className="text-center mb-14 md:mb-16">
-                <h2 className="text-2xl md:text-4xl font-bold mb-4 text-white">
+            <div className="mx-auto max-w-7xl">
+              <div className="mb-14 text-center md:mb-16">
+                <h2 className="mb-4 text-2xl font-bold text-white md:text-4xl">
                   Módulos de la plataforma
                 </h2>
-                <p className="text-slate-500 text-sm md:text-base">
+                <p className="text-sm text-slate-500 md:text-base">
                   Herramientas especializadas para cada área de gestión.
                 </p>
               </div>
 
-              <div className="grid md:grid-cols-2 gap-6 md:gap-8">
+              <div className="grid gap-6 md:grid-cols-2 md:gap-8">
                 {[
                   {
                     title: "Risk Intelligence",
@@ -349,16 +355,16 @@ export default function ProductPage() {
                 ].map((module, i) => (
                   <div
                     key={i}
-                    className="p-6 md:p-8 bg-white/[0.02] border border-white/[0.05] rounded-2xl flex gap-5 md:gap-6 group hover:bg-white/[0.04] transition-all"
+                    className="group flex gap-5 rounded-2xl border border-white/[0.05] bg-white/[0.02] p-6 transition-all hover:bg-white/[0.04] md:gap-6 md:p-8"
                   >
-                    <div className="w-11 h-11 rounded-xl bg-slate-900 border border-white/10 flex items-center justify-center shrink-0">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-slate-900">
                       {module.icon}
                     </div>
                     <div>
-                      <h4 className="text-lg font-bold text-white mb-2">
+                      <h4 className="mb-2 text-lg font-bold text-white">
                         {module.title}
                       </h4>
-                      <p className="text-sm text-slate-500 leading-relaxed">
+                      <p className="text-sm leading-relaxed text-slate-500">
                         {module.desc}
                       </p>
                     </div>
@@ -369,24 +375,24 @@ export default function ProductPage() {
           </section>
 
           {/* Dashboard Section */}
-          <section className="px-6 py-16 md:py-20 bg-slate-950/50">
-            <div className="max-w-7xl mx-auto">
-              <div className="text-center mb-12 md:mb-14">
-                <h2 className="text-2xl md:text-4xl font-bold mb-4 text-white">
+          <section className="bg-slate-950/50 px-6 py-16 md:py-20">
+            <div className="mx-auto max-w-7xl">
+              <div className="mb-12 text-center md:mb-14">
+                <h2 className="mb-4 text-2xl font-bold text-white md:text-4xl">
                   Panel de inteligencia del hotel
                 </h2>
-                <p className="text-slate-400 max-w-2xl mx-auto text-sm md:text-base leading-relaxed">
+                <p className="mx-auto max-w-2xl text-sm leading-relaxed text-slate-400 md:text-base">
                   Una visión clara y en tiempo real de lo que está ocurriendo en tu
                   hotel para una gestión sin sorpresas.
                 </p>
               </div>
 
-              <div className="mx-auto max-w-5xl rounded-2xl border border-white/[0.05] bg-white/[0.02] p-3 overflow-hidden backdrop-blur-sm">
-                    <div className="aspect-[16/8] md:aspect-[16/7] bg-slate-900 rounded-lg overflow-hidden relative group">
-                   <img
+              <div className="mx-auto max-w-5xl overflow-hidden rounded-2xl border border-white/[0.05] bg-white/[0.02] p-3 backdrop-blur-sm">
+                <div className="group relative aspect-[16/8] overflow-hidden rounded-lg bg-slate-900 md:aspect-[16/7]">
+                  <img
                     src={panelDebacu}
                     alt="Panel Debacu"
-                    className="w-full h-full object-cover object-top opacity-80 group-hover:scale-[1.02] transition-transform duration-700"
+                    className="h-full w-full object-cover object-top opacity-80 transition-transform duration-700 group-hover:scale-[1.02]"
                   />
 
                   <div className="absolute inset-0 bg-gradient-to-t from-[#020617]/20 via-transparent to-transparent" />
@@ -397,17 +403,17 @@ export default function ProductPage() {
 
           {/* For Whom */}
           <section className="px-6 py-16 md:py-20">
-            <div className="max-w-7xl mx-auto">
-              <div className="text-center mb-14 md:mb-16">
-                <h2 className="text-2xl md:text-4xl font-bold mb-4 text-white max-w-4xl mx-auto">
+            <div className="mx-auto max-w-7xl">
+              <div className="mb-14 text-center md:mb-16">
+                <h2 className="mx-auto mb-4 max-w-4xl text-2xl font-bold text-white md:text-4xl">
                   Diseñado para hoteles que quieren operar con más inteligencia
                 </h2>
-                <p className="text-slate-500 text-sm md:text-base">
+                <p className="text-sm text-slate-500 md:text-base">
                   Soluciones adaptadas a cada tipo de alojamiento.
                 </p>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-5 md:gap-6">
+              <div className="grid grid-cols-2 gap-5 md:grid-cols-5 md:gap-6">
                 {[
                   { name: "Hoteles independientes", icon: <Hotel size={22} /> },
                   { name: "Cadenas pequeñas", icon: <Building2 size={22} /> },
@@ -417,10 +423,10 @@ export default function ProductPage() {
                 ].map((segment, i) => (
                   <div
                     key={i}
-                    className="p-5 md:p-6 bg-white/[0.02] border border-white/[0.05] rounded-xl text-center flex flex-col items-center gap-4 hover:bg-white/[0.05] transition-all cursor-default"
+                    className="flex cursor-default flex-col items-center gap-4 rounded-xl border border-white/[0.05] bg-white/[0.02] p-5 text-center transition-all hover:bg-white/[0.05] md:p-6"
                   >
                     <div className="text-blue-500">{segment.icon}</div>
-                    <span className="text-xs font-bold text-slate-400 leading-tight">
+                    <span className="text-xs font-bold leading-tight text-slate-400">
                       {segment.name}
                     </span>
                   </div>
@@ -430,15 +436,15 @@ export default function ProductPage() {
           </section>
 
           {/* Benefits */}
-          <section className="px-6 py-16 md:py-20 bg-blue-600/5">
-            <div className="max-w-7xl mx-auto">
-              <div className="text-center mb-14 md:mb-16">
-                <h2 className="text-2xl md:text-4xl font-bold mb-4 text-white">
+          <section className="bg-blue-600/5 px-6 py-16 md:py-20">
+            <div className="mx-auto max-w-7xl">
+              <div className="mb-14 text-center md:mb-16">
+                <h2 className="text-2xl font-bold text-white md:text-4xl">
                   Beneficios de utilizar Debacu
                 </h2>
               </div>
 
-              <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-8">
+              <div className="grid gap-8 md:grid-cols-2 lg:grid-cols-4">
                 {[
                   {
                     title: "Mejor control operativo",
@@ -458,12 +464,12 @@ export default function ProductPage() {
                   },
                 ].map((benefit, i) => (
                   <div key={i} className="flex gap-4">
-                    <CheckCircle2 className="text-blue-500 shrink-0" size={22} />
+                    <CheckCircle2 className="shrink-0 text-blue-500" size={22} />
                     <div>
-                      <h4 className="font-bold text-white mb-2 text-base">
+                      <h4 className="mb-2 text-base font-bold text-white">
                         {benefit.title}
                       </h4>
-                      <p className="text-sm text-slate-500 leading-relaxed">
+                      <p className="text-sm leading-relaxed text-slate-500">
                         {benefit.desc}
                       </p>
                     </div>
@@ -473,30 +479,72 @@ export default function ProductPage() {
             </div>
           </section>
 
+          {/* Plans Preview */}
+          <section className="border-t border-white/[0.05] px-6 py-16 md:py-20">
+            <div className="mx-auto max-w-5xl">
+              <div className="rounded-3xl border border-white/[0.06] bg-white/[0.02] p-8 backdrop-blur-sm md:p-12">
+                <div className="grid gap-8 lg:grid-cols-[1.4fr_0.9fr] lg:items-center">
+                  <div>
+                    <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-blue-400">
+                      <Zap size={12} />
+                      Planes y acceso
+                    </div>
+
+                    <h2 className="mb-4 text-2xl font-bold leading-tight text-white md:text-4xl">
+                      Elige la modalidad que mejor encaja con tu hotel
+                    </h2>
+
+                    <p className="max-w-2xl text-sm leading-relaxed text-slate-400 md:text-base">
+                      Debacu se adapta a distintos niveles de adopción, desde
+                      hoteles que empiezan con análisis operativo hasta grupos que
+                      necesitan una capa más avanzada de inteligencia y revenue.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col gap-3">
+                    <button
+                      onClick={() => navigate("/planes")}
+                      className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-6 py-3.5 text-base font-semibold text-white transition-colors hover:bg-blue-500"
+                    >
+                      Ver planes
+                    </button>
+
+                    <button
+                      onClick={() => navigate("/solicitar-acceso")}
+                      className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-6 py-3.5 text-base font-semibold text-white transition-colors hover:bg-white/10"
+                    >
+                      Solicitar acceso
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
           {/* Final CTA */}
-          <section className="px-6 py-16 md:py-20 bg-gradient-to-b from-transparent to-blue-600/10">
-            <div className="max-w-4xl mx-auto text-center">
-              <h2 className="text-3xl md:text-5xl font-bold mb-6 text-white leading-tight">
+          <section className="bg-gradient-to-b from-transparent to-blue-600/10 px-6 py-16 md:py-20">
+            <div className="mx-auto max-w-4xl text-center">
+              <h2 className="mb-6 text-3xl font-bold leading-tight text-white md:text-5xl">
                 Convierte los datos de tu hotel en decisiones inteligentes
               </h2>
-              <p className="text-base md:text-lg text-slate-400 mb-10 leading-relaxed">
+              <p className="mb-10 text-base leading-relaxed text-slate-400 md:text-lg">
                 Únete a los hoteles que ya están profesionalizando su operativa
                 con inteligencia artificial.
               </p>
 
-              <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+              <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">
                 <button
                   onClick={() => navigate("/solicitar-acceso")}
-                  className="inline-flex items-center justify-center rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-base px-8 py-4 w-full sm:w-auto transition-colors"
+                  className="inline-flex w-full items-center justify-center rounded-xl bg-blue-600 px-8 py-4 text-base font-semibold text-white transition-colors hover:bg-blue-500 sm:w-auto"
                 >
                   Solicitar acceso
                 </button>
 
                 <button
-                  onClick={() => navigate("/tecnologia")}
-                  className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-white font-semibold text-base px-8 py-4 w-full sm:w-auto transition-colors"
+                  onClick={() => navigate("/planes")}
+                  className="inline-flex w-full items-center justify-center rounded-xl border border-white/10 bg-white/5 px-8 py-4 text-base font-semibold text-white transition-colors hover:bg-white/10 sm:w-auto"
                 >
-                  Explorar tecnología
+                  Ver planes
                 </button>
               </div>
             </div>

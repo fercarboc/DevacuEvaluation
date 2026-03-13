@@ -316,19 +316,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
               </div>
             </div>
 
-            <div className="flex items-center">
-              <label className="flex items-center gap-2 cursor-pointer group">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="w-4 h-4 rounded border-white/10 bg-white/5 text-blue-600 focus:ring-0 focus:ring-offset-0"
-                />
-                <span className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">
-                  Recordarme
-                </span>
-              </label>
-            </div>
+          
 
             <button
               type="submit"

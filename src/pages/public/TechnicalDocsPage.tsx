@@ -92,17 +92,17 @@ export default function TechnicalDocsPage() {
               >
                 <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-xs font-bold uppercase tracking-widest text-blue-400">
                   <Book size={12} />
-                  Technical Documentation
+                  Documentación técnica
                 </div>
 
                 <h1 className="mb-8 text-4xl font-bold text-white md:text-6xl">
-                  Documentación técnica de Debacu AI
+                  Documentación técnica de la plataforma Debacu
                 </h1>
 
                 <p className="mb-12 max-w-3xl text-lg text-slate-400 md:text-xl">
-                  Descripción detallada de la arquitectura tecnológica, motores
-                  analíticos y sistema de inteligencia artificial de la plataforma
-                  Debacu.
+                  Resumen de la arquitectura tecnológica, modelo de datos, capas
+                  analíticas y enfoque SaaS de Debacu para el tratamiento de
+                  información operativa, riesgo y revenue en entornos hoteleros.
                 </p>
 
                 <button
@@ -125,13 +125,13 @@ export default function TechnicalDocsPage() {
                   </p>
 
                   {[
-                    { label: "Visión General", id: "overview" },
-                    { label: "Ingesta de Datos", id: "ingestion" },
-                    { label: "Modelo de Datos", id: "model" },
+                    { label: "Visión general", id: "overview" },
+                    { label: "Ingesta de datos", id: "ingestion" },
+                    { label: "Modelo de datos", id: "model" },
                     { label: "Procesamiento", id: "processing" },
-                    { label: "Motores Analíticos", id: "engines" },
-                    { label: "Debacu AI", id: "ai" },
-                    { label: "Agentes Inteligentes", id: "agents" },
+                    { label: "Motores analíticos", id: "engines" },
+                    { label: "Capa analítica", id: "ai" },
+                    { label: "Asistencia analítica", id: "agents" },
                     { label: "Visualización", id: "viz" },
                     { label: "Arquitectura SaaS", id: "saas" },
                     { label: "Innovación", id: "innovation" },
@@ -151,22 +151,23 @@ export default function TechnicalDocsPage() {
               <div className="max-w-4xl flex-1">
                 <DocSection title="Arquitectura general del sistema" id="overview">
                   <p>
-                    Debacu está diseñado como una plataforma de inteligencia
-                    operativa de extremo a extremo. El sistema procesa flujos de
-                    datos complejos para convertirlos en señales accionables
-                    mediante una arquitectura desacoplada y escalable.
+                    Debacu está concebido como una plataforma de análisis operativo
+                    para hoteles. Su objetivo es transformar información dispersa en
+                    una base estructurada de datos y señales útiles para prevención,
+                    control operativo y lectura económica del establecimiento.
                   </p>
 
                   <p>
-                    La plataforma está compuesta por cuatro capas principales que
-                    garantizan la integridad y el valor de la información:
+                    La plataforma se articula en cuatro capas funcionales que
+                    permiten incorporar datos, procesarlos, analizarlos y presentar
+                    resultados de forma útil para la toma de decisiones.
                   </p>
 
                   <div className="my-12 grid grid-cols-1 gap-4 md:grid-cols-4">
                     {[
                       { step: "1", label: "Captura", icon: <Database size={16} /> },
                       { step: "2", label: "Procesamiento", icon: <Cpu size={16} /> },
-                      { step: "3", label: "Inteligencia", icon: <BrainCircuit size={16} /> },
+                      { step: "3", label: "Análisis", icon: <BrainCircuit size={16} /> },
                       { step: "4", label: "Decisión", icon: <LayoutDashboard size={16} /> },
                     ].map((item, i) => (
                       <div key={i} className="flex flex-col items-center gap-4">
@@ -187,85 +188,92 @@ export default function TechnicalDocsPage() {
                     </div>
 
                     <pre className="space-y-1 whitespace-pre-wrap">
-{`sources: [PMS, CSV, IoT, OPS]
+{`sources: [PMS, CSV, operational_records]
 pipeline:
+  - ingestion_layer
   - normalization_layer
-  - classification_engine
-  - intelligence_core: [Risk, Revenue, Behaviour]
-  - output: [Dashboard, Webhook, Alert]`}
+  - analytics_layer: [risk, revenue, behaviour]
+  - outputs: [dashboards, alerts, decision_views]`}
                     </pre>
                   </div>
                 </DocSection>
 
                 <DocSection title="Ingesta de datos" id="ingestion">
                   <p>
-                    Debacu puede capturar datos desde múltiples fuentes del hotel,
-                    permitiendo una visión unificada de la operativa.
+                    Debacu puede incorporar información desde distintas fuentes del
+                    hotel para construir una visión unificada de la operativa, las
+                    reservas y determinadas señales relevantes para análisis.
                   </p>
 
                   <div className="my-8 grid gap-6 md:grid-cols-2">
-                    <TechBlock title="Fuentes Soportadas" icon={<Share2 size={20} />}>
+                    <TechBlock title="Fuentes soportadas" icon={<Share2 size={20} />}>
                       <ul className="space-y-2">
                         <li className="flex items-center gap-2">
                           <CheckCircle2 size={12} className="text-emerald-500" />
-                          PMS del hotel
+                          Sistemas PMS
                         </li>
                         <li className="flex items-center gap-2">
                           <CheckCircle2 size={12} className="text-emerald-500" />
-                          Exportaciones CSV/Excel
+                          Exportaciones CSV o Excel estructurado
                         </li>
                         <li className="flex items-center gap-2">
                           <CheckCircle2 size={12} className="text-emerald-500" />
-                          Registros operativos
+                          Registros operativos del establecimiento
                         </li>
                         <li className="flex items-center gap-2">
                           <CheckCircle2 size={12} className="text-emerald-500" />
-                          Información de reservas
+                          Datos de reservas y producción
                         </li>
                       </ul>
                     </TechBlock>
 
-                    <TechBlock title="Data Platform" icon={<Database size={20} />}>
-                      Todos los datos se almacenan en un modelo estructurado para
-                      garantizar consistencia analítica.
+                    <TechBlock title="Base de datos analítica" icon={<Database size={20} />}>
+                      La información se incorpora a un modelo estructurado que busca
+                      mantener consistencia analítica, trazabilidad y capacidad de
+                      crecimiento por propiedad, módulo o volumen.
                     </TechBlock>
                   </div>
                 </DocSection>
 
                 <DocSection title="Modelo de datos" id="model">
                   <p>
-                    El modelo de datos está orientado a hospitality y busca unir
-                    operativa, riesgo y revenue dentro de una base analítica común.
+                    El modelo de datos de Debacu está orientado al sector hospitality
+                    y busca relacionar operativa, riesgo y revenue dentro de una base
+                    analítica común.
                   </p>
 
                   <div className="my-8 grid gap-6 md:grid-cols-2">
                     <TechBlock title="Modelo unificado" icon={<Layers size={20} />}>
-                      Propiedades, reservas, incidencias, eventos y señales
-                      analíticas se relacionan dentro de una estructura preparada
-                      para explotación operativa y comercial.
+                      Propiedades, reservas, incidencias, eventos y señales analíticas
+                      se relacionan dentro de una estructura preparada para
+                      explotación operativa, comparativa y económica.
                     </TechBlock>
 
-                    <TechBlock title="Escalabilidad" icon={<Cloud size={20} />}>
-                      El diseño permite crecimiento progresivo por módulos, por
-                      propiedad y por volumen de datos sin rehacer la base del sistema.
+                    <TechBlock title="Escalabilidad del modelo" icon={<Cloud size={20} />}>
+                      El diseño permite crecimiento progresivo por módulos, por hotel
+                      o por grupo, sin necesidad de rehacer la base estructural del
+                      sistema.
                     </TechBlock>
                   </div>
                 </DocSection>
 
                 <DocSection title="Procesamiento" id="processing">
                   <p>
-                    El procesamiento transforma datos heterogéneos en señales
-                    comparables y útiles para el análisis posterior.
+                    El procesamiento transforma información heterogénea en señales
+                    comparables y datos preparados para análisis posteriores.
                   </p>
 
                   <div className="my-8 grid gap-6 md:grid-cols-2">
                     <TechBlock title="Normalización" icon={<Cpu size={20} />}>
-                      Limpieza, homogeneización y validación de los datos entrantes.
+                      Limpieza, validación, homogeneización de estructuras y
+                      preparación de los datos entrantes para mantener consistencia
+                      entre distintas fuentes.
                     </TechBlock>
 
-                    <TechBlock title="Clasificación" icon={<Zap size={20} />}>
-                      Reglas y lógica analítica para asignar categorías, estados,
-                      patrones y contexto operativo.
+                    <TechBlock title="Clasificación analítica" icon={<Zap size={20} />}>
+                      Aplicación de reglas y lógica analítica para asignar categorías,
+                      estados, patrones y contexto operativo a la información
+                      procesada.
                     </TechBlock>
                   </div>
                 </DocSection>
@@ -273,119 +281,141 @@ pipeline:
                 <DocSection title="Motores analíticos de Debacu" id="engines">
                   <div className="my-8 grid gap-6 md:grid-cols-2">
                     <TechBlock title="Risk Intelligence" icon={<ShieldAlert size={20} />}>
-                      Detección de patrones de riesgo operativo.
+                      Motor orientado a detección de señales de riesgo operativo,
+                      incidencias repetitivas y patrones relevantes para prevención y
+                      control.
                     </TechBlock>
 
                     <TechBlock title="Revenue Intelligence" icon={<TrendingUp size={20} />}>
-                      Análisis de producción por canal y evolución del revenue.
+                      Motor analítico para lectura de producción, canal, segmento,
+                      comportamiento de reserva y posibles desviaciones económicas.
                     </TechBlock>
 
                     <TechBlock title="Behaviour Analysis" icon={<Activity size={20} />}>
-                      Identificación de patrones de comportamiento.
+                      Capa de análisis orientada a identificar patrones de
+                      comportamiento, repeticiones y tendencias útiles para el
+                      entendimiento de la operativa real.
                     </TechBlock>
 
                     <TechBlock title="Data Intelligence" icon={<Layers size={20} />}>
-                      Procesamiento estructurado de datos.
+                      Capa responsable de estructurar, preparar y estabilizar la base
+                      de datos para análisis consistentes y comparables.
                     </TechBlock>
                   </div>
                 </DocSection>
 
-                <DocSection title="Debacu AI" id="ai">
+                <DocSection title="Capa analítica" id="ai">
                   <p>
-                    Debacu AI coordina capas analíticas, reglas y lógica avanzada
-                    para convertir datos del hotel en señales accionables.
+                    Debacu incorpora una capa analítica que coordina reglas,
+                    patrones, clasificación de señales y lógica de lectura de datos
+                    para convertir información del hotel en indicadores útiles.
                   </p>
 
                   <div className="my-8 grid gap-6 md:grid-cols-2">
-                    <TechBlock title="Capa de inteligencia" icon={<BrainCircuit size={20} />}>
-                      Integra reglas, patrones y lógica analítica para generar una
-                      lectura más profunda que un dashboard estático.
+                    <TechBlock title="Lógica de análisis" icon={<BrainCircuit size={20} />}>
+                      Integra reglas, patrones, correlaciones y criterios de lectura
+                      analítica para aportar una interpretación más profunda que una
+                      simple visualización estática.
                     </TechBlock>
 
-                    <TechBlock title="Objetivo" icon={<Zap size={20} />}>
-                      Ayudar a detectar anomalías, oportunidades y riesgos antes de
-                      que se conviertan en un problema operativo o comercial.
+                    <TechBlock title="Objetivo funcional" icon={<Zap size={20} />}>
+                      Detectar anomalías, oportunidades y riesgos antes de que se
+                      conviertan en un problema operativo, reputacional o económico.
                     </TechBlock>
                   </div>
                 </DocSection>
 
-                <DocSection title="Agentes Inteligentes" id="agents">
+                <DocSection title="Asistencia analítica" id="agents">
                   <p>
-                    Los agentes inteligentes actúan como una capa de asistencia
-                    analítica para interpretar señales complejas.
+                    Debacu contempla asistentes analíticos orientados a facilitar la
+                    interpretación de señales complejas y a resumir información
+                    relevante para el usuario.
                   </p>
 
                   <div className="my-8 grid gap-6 md:grid-cols-2">
-                    <TechBlock title="Risk Agent" icon={<Bot size={20} />}>
-                      Interpretación de patrones operativos y eventos asociados a riesgo.
+                    <TechBlock title="Risk Assistant" icon={<Bot size={20} />}>
+                      Ayuda a interpretar señales operativas, incidencias y patrones
+                      asociados a prevención y control interno.
                     </TechBlock>
 
-                    <TechBlock title="Revenue Agent" icon={<Bot size={20} />}>
-                      Ayuda a identificar desviaciones, oportunidades y cambios en
-                      el comportamiento comercial.
+                    <TechBlock title="Revenue Assistant" icon={<Bot size={20} />}>
+                      Ayuda a identificar desviaciones, oportunidades y cambios en el
+                      comportamiento comercial a partir de la información disponible.
                     </TechBlock>
                   </div>
                 </DocSection>
 
                 <DocSection title="Visualización" id="viz">
                   <p>
-                    Toda la información analizada se traduce en paneles, alertas y
-                    vistas orientadas a la toma de decisiones.
+                    La información procesada y analizada se presenta mediante paneles,
+                    alertas y vistas orientadas a facilitar la lectura de la situación
+                    operativa y económica del hotel.
                   </p>
 
                   <div className="my-8 grid gap-6 md:grid-cols-2">
                     <TechBlock title="Dashboards" icon={<LayoutDashboard size={20} />}>
-                      Vistas claras y operativas para dirección, revenue y gestión.
+                      Vistas operativas para dirección, revenue, análisis interno y
+                      seguimiento de señales relevantes.
                     </TechBlock>
 
                     <TechBlock title="Alertas" icon={<ShieldAlert size={20} />}>
-                      Señales accionables para no depender solo de revisión manual.
+                      Señales accionables para reducir dependencia de revisión manual
+                      y mejorar capacidad de respuesta.
                     </TechBlock>
                   </div>
                 </DocSection>
 
                 <DocSection title="Arquitectura SaaS" id="saas">
                   <p>
-                    Debacu está planteado como un SaaS multiempresa con separación
-                    lógica de datos, escalabilidad y control de acceso.
+                    Debacu está planteado como una plataforma SaaS multi-tenant con
+                    separación lógica por organización, control de acceso y capacidad
+                    de escalado progresivo.
                   </p>
 
                   <div className="my-8 grid gap-6 md:grid-cols-2">
-                    <TechBlock title="Seguridad" icon={<Lock size={20} />}>
-                      Separación por organización, control de acceso y base para
-                      trazabilidad completa.
+                    <TechBlock title="Seguridad y control" icon={<Lock size={20} />}>
+                      Separación por organización, trazabilidad, control de acceso y
+                      base técnica para operación multiempresa.
                     </TechBlock>
 
-                    <TechBlock title="Cloud readiness" icon={<Cloud size={20} />}>
-                      Diseño orientado a crecer sin rehacer la plataforma.
+                    <TechBlock title="Preparación para crecimiento" icon={<Cloud size={20} />}>
+                      Diseño orientado a crecer por hoteles, módulos, usuarios y
+                      volumen de datos sin rediseñar la plataforma.
                     </TechBlock>
                   </div>
                 </DocSection>
 
                 <DocSection title="Innovación tecnológica" id="innovation">
-                  <div className="rounded-2xl bg-blue-600 p-8 text-white">
+                  <div className="rounded-2xl border border-blue-500/20 bg-blue-600/10 p-8 text-white">
                     <h4 className="mb-6 text-2xl font-bold">
-                      Liderando la transformación del sector
+                      Innovación aplicada a la gestión hotelera
                     </h4>
 
                     <p className="mb-8 leading-relaxed text-blue-100">
-                      Debacu introduce una aproximación innovadora al combinar
-                      análisis de datos operativos e inteligencia artificial.
+                      Debacu combina arquitectura SaaS, normalización de datos y
+                      capas analíticas especializadas para crear una base tecnológica
+                      orientada a riesgo operativo, comportamiento y revenue.
                     </p>
 
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <div className="rounded-xl border border-white/10 bg-white/10 p-4">
                         <p className="mb-2 text-xs font-bold uppercase tracking-widest">
-                          Impacto
+                          Enfoque
                         </p>
-                        <p className="text-sm">+30% Eficiencia Operativa</p>
+                        <p className="text-sm">
+                          Integración de operativa, riesgo y revenue en una base
+                          analítica común.
+                        </p>
                       </div>
 
                       <div className="rounded-xl border border-white/10 bg-white/10 p-4">
                         <p className="mb-2 text-xs font-bold uppercase tracking-widest">
-                          Precisión
+                          Objetivo
                         </p>
-                        <p className="text-sm">99.2% Detección de Patrones</p>
+                        <p className="text-sm">
+                          Mejorar capacidad de análisis, prevención y decisión en
+                          entornos hoteleros reales.
+                        </p>
                       </div>
                     </div>
                   </div>

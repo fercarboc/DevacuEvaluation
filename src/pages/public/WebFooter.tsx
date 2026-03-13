@@ -31,6 +31,18 @@ export default function WebFooter() {
     []
   );
 
+  const navigationItems = useMemo(
+    () => [
+      { label: "Producto", path: "/producto" },
+      { label: "Tecnología", path: "/tecnologia" },
+      { label: "Arquitectura", path: "/arquitectura" },
+      { label: "Documentación", path: "/documentacion" },
+      { label: "Planes", path: "/planes" },
+      { label: "Contacto", path: "/contacto" },
+    ],
+    []
+  );
+
   const openTab = (_tab: TabKey) => {
     setOpenLegal(true);
   };
@@ -39,26 +51,56 @@ export default function WebFooter() {
     <>
       <footer className="mt-20 border-t border-white/10 bg-slate-950/70">
         <div className="mx-auto max-w-7xl px-6 py-16">
-          <div className="grid gap-12 md:grid-cols-3">
+          <div className="grid gap-12 md:grid-cols-2 xl:grid-cols-4">
             {/* Marca */}
             <div>
-              <div className="mb-5 flex items-center gap-3 text-white">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-600">
+              <button
+                onClick={() => navigate("/")}
+                type="button"
+                className="mb-5 flex items-center gap-3 text-left text-white"
+              >
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-600 shadow-lg shadow-blue-600/20">
                   <span className="text-sm font-bold text-white">D</span>
                 </div>
 
                 <div>
-                  <div className="text-xl font-bold text-white">Debacu</div>
-                  <div className="text-xs text-slate-400">Evaluation360</div>
+                  <div className="text-lg font-bold text-white">Debacu</div>
+                  <div className="text-xs tracking-wide text-slate-400">
+                    Evaluation360
+                  </div>
                 </div>
-              </div>
+              </button>
 
-              <p className="max-w-xs text-sm leading-relaxed text-slate-400">
-                Plataforma SaaS orientada a hoteles para riesgo, revenue y control
-                operativo basado en datos.
+              <p className="max-w-sm text-sm leading-relaxed text-slate-400">
+                Plataforma SaaS para hoteles orientada a análisis operativo,
+                evaluación de riesgo e inteligencia de revenue.
               </p>
 
-               
+              <p className="mt-4 max-w-sm text-xs leading-relaxed text-slate-500">
+                Tecnología diseñada para transformar datos del hotel en señales,
+                alertas y criterios de decisión útiles para dirección y operativa.
+              </p>
+            </div>
+
+            {/* Navegación */}
+            <div>
+              <div className="mb-4 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                Navegación
+              </div>
+
+              <ul className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                {navigationItems.map((item) => (
+                  <li key={item.path}>
+                    <button
+                      type="button"
+                      onClick={() => navigate(item.path)}
+                      className="text-left text-slate-400 transition hover:text-white hover:underline"
+                    >
+                      {item.label}
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </div>
 
             {/* Contacto */}
@@ -74,12 +116,14 @@ export default function WebFooter() {
                   title="Abrir formulario de contacto"
                   type="button"
                 >
-                  contacto@debacu.com
+                  Formulario de contacto
                 </button>
 
+                <div>contacto@debacu.com</div>
                 <div>+34 672 336 572</div>
-                <div className="text-slate-500">LinkedIn · Próximamente</div>
-                <div className="text-slate-500">X / Twitter · Próximamente</div>
+                <div className="text-slate-500">
+                  Información comercial y técnica bajo solicitud
+                </div>
               </div>
             </div>
 
@@ -108,10 +152,10 @@ export default function WebFooter() {
           <div className="mt-10 flex flex-col items-center justify-between gap-3 border-t border-white/10 pt-5 text-xs text-slate-500 sm:flex-row">
             <span>
               © {new Date().getFullYear()} Debacu Evaluation360 · Uso profesional ·
-              Acceso restringido
+              Acceso sujeto a validación
             </span>
 
-            <span>Documentación informativa · No servicio público</span>
+            <span>Información corporativa, técnica y comercial</span>
           </div>
         </div>
       </footer>

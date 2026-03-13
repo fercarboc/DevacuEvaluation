@@ -6,6 +6,19 @@ function classNames(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
 
+type NavItem = {
+  label: string;
+  path: string;
+};
+
+const navItems: NavItem[] = [
+  { label: "Producto", path: "/producto" },
+  { label: "Tecnología", path: "/tecnologia" },
+  { label: "Arquitectura", path: "/arquitectura" },
+  { label: "Documentación", path: "/documentacion" },
+  { label: "Contacto", path: "/contacto" },
+];
+
 export default function WebNavbar() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -30,11 +43,14 @@ export default function WebNavbar() {
       onClick={onClick}
       type="button"
       className={classNames(
-        "text-sm font-medium transition-colors",
+        "relative text-sm font-medium transition-colors",
         active ? "text-white" : "text-slate-400 hover:text-white"
       )}
     >
-      {label}
+      <span>{label}</span>
+      {active && (
+        <span className="absolute -bottom-2 left-0 h-[2px] w-full rounded-full bg-blue-500" />
+      )}
     </button>
   );
 
@@ -45,50 +61,32 @@ export default function WebNavbar() {
         <button
           onClick={() => goToPath("/")}
           type="button"
-          className="shrink-0 flex items-center gap-3 text-white"
+          className="flex shrink-0 items-center gap-3 text-white"
         >
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-600 shadow-lg shadow-blue-600/20">
             <span className="text-sm font-bold text-white">D</span>
           </div>
 
           <div className="text-left leading-tight">
-            <div className="text-sm font-semibold text-white">Debacu</div>
-            <div className="text-[11px] text-slate-400">Evaluation360</div>
+            <div className="text-sm font-semibold tracking-tight text-white">
+              Debacu
+            </div>
+            <div className="text-[11px] tracking-wide text-slate-400">
+              Evaluation360
+            </div>
           </div>
         </button>
 
         {/* Navegación desktop */}
         <nav className="hidden items-center gap-8 md:flex">
-          <NavButton
-            label="Producto"
-            onClick={() => goToPath("/producto")}
-            active={location.pathname === "/producto"}
-          />
-          <NavButton
-            label="Tecnología"
-            onClick={() => goToPath("/tecnologia")}
-            active={location.pathname === "/tecnologia"}
-          />
-          <NavButton
-            label="Arquitectura"
-            onClick={() => goToPath("/arquitectura")}
-            active={location.pathname === "/arquitectura"}
-          />
-          <NavButton
-            label="Documentación"
-            onClick={() => goToPath("/documentacion")}
-            active={location.pathname === "/documentacion"}
-          />
-          <NavButton
-            label="Planes"
-            onClick={() => goToPath("/planes")}
-            active={location.pathname === "/planes"}
-          />
-          <NavButton
-            label="Contacto"
-            onClick={() => goToPath("/contacto")}
-            active={location.pathname === "/contacto"}
-          />
+          {navItems.map((item) => (
+            <NavButton
+              key={item.path}
+              label={item.label}
+              onClick={() => goToPath(item.path)}
+              active={location.pathname === item.path}
+            />
+          ))}
         </nav>
 
         {/* Acciones desktop */}
@@ -125,53 +123,21 @@ export default function WebNavbar() {
       {mobileOpen && (
         <div className="border-t border-white/10 bg-[#020617] px-6 py-5 md:hidden">
           <div className="flex flex-col gap-4">
-            <button
-              onClick={() => goToPath("/producto")}
-              type="button"
-              className="text-left text-base font-medium text-slate-300 hover:text-white"
-            >
-              Producto
-            </button>
-
-            <button
-              onClick={() => goToPath("/tecnologia")}
-              type="button"
-              className="text-left text-base font-medium text-slate-300 hover:text-white"
-            >
-              Tecnología
-            </button>
-
-            <button
-              onClick={() => goToPath("/arquitectura")}
-              type="button"
-              className="text-left text-base font-medium text-slate-300 hover:text-white"
-            >
-              Arquitectura
-            </button>
-
-            <button
-              onClick={() => goToPath("/documentacion")}
-              type="button"
-              className="text-left text-base font-medium text-slate-300 hover:text-white"
-            >
-              Documentación
-            </button>
-
-            <button
-              onClick={() => goToPath("/planes")}
-              type="button"
-              className="text-left text-base font-medium text-slate-300 hover:text-white"
-            >
-              Planes
-            </button>
-
-            <button
-              onClick={() => goToPath("/contacto")}
-              type="button"
-              className="text-left text-base font-medium text-slate-300 hover:text-white"
-            >
-              Contacto
-            </button>
+            {navItems.map((item) => (
+              <button
+                key={item.path}
+                onClick={() => goToPath(item.path)}
+                type="button"
+                className={classNames(
+                  "text-left text-base font-medium transition-colors",
+                  location.pathname === item.path
+                    ? "text-white"
+                    : "text-slate-300 hover:text-white"
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
 
             <div className="flex flex-col gap-3 border-t border-white/10 pt-4">
               <button

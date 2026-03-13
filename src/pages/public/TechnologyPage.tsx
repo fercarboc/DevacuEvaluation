@@ -37,12 +37,12 @@ const TechDiagram = () => (
         <div className="w-36 rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 text-center shadow-lg shadow-blue-500/5 backdrop-blur-sm">
           <Database className="mx-auto mb-2 text-blue-400" size={24} />
           <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300">
-            Data Sources
+            Fuentes de datos
           </span>
         </div>
 
         <div className="flex w-full flex-col gap-2">
-          {["PMS Systems", "CSV Exports", "Operational Data"].map((s) => (
+          {["PMS", "Exportaciones CSV", "Datos operativos"].map((s) => (
             <div
               key={s}
               className="rounded border border-white/10 bg-white/5 px-3 py-1.5 text-center font-mono text-[9px] text-slate-400"
@@ -70,7 +70,7 @@ const TechDiagram = () => (
 
         <Cpu className="mx-auto mb-3 text-violet-400" size={36} />
         <h4 className="mb-3 text-xs font-bold uppercase tracking-widest text-violet-300">
-          Processing Layer
+          Capa de procesamiento
         </h4>
 
         <div className="space-y-2">
@@ -84,7 +84,7 @@ const TechDiagram = () => (
           </div>
 
           <div className="flex justify-between font-mono text-[8px] text-slate-500">
-            <span>NORMALIZING</span>
+            <span>NORMALIZANDO</span>
             <span>74%</span>
           </div>
         </div>
@@ -105,7 +105,7 @@ const TechDiagram = () => (
           <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
           <BrainCircuit className="mx-auto mb-3 text-emerald-400" size={36} />
           <h4 className="mb-3 text-xs font-bold uppercase tracking-widest text-emerald-300">
-            AI Engines
+            Capa analítica
           </h4>
 
           <div className="grid grid-cols-4 gap-1.5">
@@ -198,17 +198,17 @@ export default function TechnologyPage() {
               >
                 <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-xs font-bold uppercase tracking-widest text-blue-400">
                   <Cpu size={12} />
-                  Engineering & AI
+                  Tecnología y analítica
                 </div>
 
                 <h1 className="mb-8 text-4xl font-bold text-white md:text-6xl">
-                  Debacu AI — Inteligencia aplicada a la operativa hotelera
+                  Arquitectura tecnológica aplicada a la operativa hotelera
                 </h1>
 
                 <p className="mx-auto mb-12 max-w-3xl text-lg text-slate-400 md:text-xl">
-                  Debacu integra análisis de datos, motores analíticos y agentes
-                  inteligentes para transformar información operativa en
-                  decisiones accionables para el hotel.
+                  Debacu estructura datos operativos, señales de riesgo y métricas
+                  de revenue para convertir información dispersa en análisis útil,
+                  alertas y cuadros de decisión para el hotel.
                 </p>
               </motion.div>
 
@@ -224,8 +224,9 @@ export default function TechnologyPage() {
                   Arquitectura tecnológica de Debacu
                 </h2>
                 <p className="max-w-2xl text-slate-400">
-                  Diseñada para la escalabilidad, precisión y procesamiento en
-                  tiempo real de datos complejos del sector hospitality.
+                  Diseñada para procesar datos operativos hoteleros, estructurar
+                  señales analíticas y escalar a múltiples establecimientos con
+                  criterios homogéneos de análisis y seguridad.
                 </p>
               </div>
 
@@ -233,23 +234,23 @@ export default function TechnologyPage() {
                 {[
                   {
                     icon: <Database className="text-blue-500" />,
-                    title: "Data ingestion layer",
-                    desc: "Captura de datos desde sistemas PMS, exportaciones CSV, incidencias operativas y datos de reservas. Los datos se normalizan y se almacenan en un modelo analítico diseñado para hospitality.",
+                    title: "Capa de ingestión",
+                    desc: "Captura de información desde PMS, exportaciones CSV, incidencias operativas y datos de reserva. Los datos se incorporan a un modelo analítico orientado al sector hotelero.",
                   },
                   {
                     icon: <Cpu className="text-violet-500" />,
-                    title: "Data processing layer",
-                    desc: "Procesamiento mediante normalización de datos, clasificación de eventos y generación de métricas operativas. Correlación entre diferentes fuentes para crear una base de conocimiento estructurada.",
+                    title: "Capa de procesamiento",
+                    desc: "Normalización, clasificación de eventos, estructuración de métricas y correlación entre distintas fuentes para construir una base de análisis consistente.",
                   },
                   {
                     icon: <BrainCircuit className="text-emerald-500" />,
-                    title: "Intelligence layer",
-                    desc: "Motores analíticos para detección de patrones, clasificación de señales, análisis de comportamiento y revenue. Generación automática de indicadores y alertas operativas críticas.",
+                    title: "Capa analítica",
+                    desc: "Motores especializados para detección de patrones, evaluación de señales, análisis de comportamiento y lectura operativa de indicadores relevantes.",
                   },
                   {
                     icon: <LayoutDashboard className="text-blue-400" />,
-                    title: "Visualization layer",
-                    desc: "Presentación de resultados en dashboards interactivos, alertas en tiempo real, paneles de inteligencia y recomendaciones operativas basadas en datos.",
+                    title: "Capa de visualización",
+                    desc: "Presentación de resultados mediante dashboards, alertas, paneles de análisis y vistas orientadas a la toma de decisiones operativas y económicas.",
                   },
                 ].map((layer, i) => (
                   <div
@@ -272,7 +273,7 @@ export default function TechnologyPage() {
             </div>
           </section>
 
-          {/* Debacu AI Section */}
+          {/* Core Intelligence Section */}
           <section className="px-6 py-20">
             <div className="mx-auto grid max-w-7xl items-center gap-16 lg:grid-cols-2">
               <motion.div
@@ -281,13 +282,14 @@ export default function TechnologyPage() {
                 viewport={{ once: true }}
               >
                 <h2 className="mb-8 text-3xl font-bold text-white md:text-5xl">
-                  Debacu AI — Motor de inteligencia de la plataforma
+                  Núcleo analítico de la plataforma
                 </h2>
 
                 <p className="mb-8 text-lg text-slate-400">
-                  Debacu AI es la capa de inteligencia que analiza datos
-                  operativos y comerciales del hotel para detectar patrones,
-                  identificar anomalías y generar recomendaciones.
+                  Debacu incorpora una capa analítica que procesa información
+                  operativa y comercial del hotel para detectar patrones,
+                  identificar desviaciones y generar señales útiles para la
+                  gestión diaria y la lectura del negocio.
                 </p>
 
                 <div className="grid grid-cols-2 gap-4">
@@ -295,7 +297,7 @@ export default function TechnologyPage() {
                     { icon: <Activity size={16} />, label: "Modelos analíticos" },
                     { icon: <Lock size={16} />, label: "Reglas de clasificación" },
                     { icon: <TrendingUp size={16} />, label: "Análisis estadístico" },
-                    { icon: <Users size={16} />, label: "Asistentes inteligentes" },
+                    { icon: <Users size={16} />, label: "Asistencia analítica" },
                   ].map((item, i) => (
                     <div
                       key={i}
@@ -310,8 +312,8 @@ export default function TechnologyPage() {
                 </div>
 
                 <p className="mt-8 text-sm italic text-slate-500">
-                  El objetivo es convertir datos dispersos en señales operativas
-                  útiles para la toma de decisiones estratégicas.
+                  El objetivo no es sustituir al hotel, sino aportar una capa de
+                  análisis que ordene la información y mejore la capacidad de decisión.
                 </p>
               </motion.div>
 
@@ -325,24 +327,24 @@ export default function TechnologyPage() {
                       <div className="h-2 w-2 rounded-full bg-green-500" />
                     </div>
                     <span className="font-mono text-[10px] text-slate-600">
-                      AI_ENGINE_CORE_V2.4
+                      ANALYTICS_CORE_V2.4
                     </span>
                   </div>
 
                   <div className="space-y-4">
                     <div className="flex items-center gap-3 font-mono text-xs text-blue-400">
                       <span className="opacity-50">01</span>
-                      <span>INITIALIZING_NEURAL_LAYERS...</span>
+                      <span>INITIALIZING_PROCESSING_LAYERS...</span>
                     </div>
 
                     <div className="flex items-center gap-3 font-mono text-xs text-emerald-400">
                       <span className="opacity-50">02</span>
-                      <span>PATTERN_RECOGNITION_ACTIVE [98.4%]</span>
+                      <span>PATTERN_ANALYSIS_ACTIVE [98.4%]</span>
                     </div>
 
                     <div className="flex items-center gap-3 font-mono text-xs text-slate-400">
                       <span className="opacity-50">03</span>
-                      <span>ANOMALY_DETECTION: NO_THREATS_FOUND</span>
+                      <span>SIGNAL_CLASSIFICATION_RUNNING</span>
                     </div>
 
                     <div className="flex h-24 w-full items-end gap-1 rounded border border-white/[0.05] bg-white/[0.02] p-2">
@@ -372,11 +374,12 @@ export default function TechnologyPage() {
             <div className="mx-auto max-w-7xl">
               <div className="mb-16 text-center">
                 <h2 className="mb-4 text-3xl font-bold text-white md:text-5xl">
-                  Motores de Inteligencia
+                  Motores analíticos de Debacu
                 </h2>
                 <p className="mx-auto max-w-2xl text-slate-400">
-                  Cuatro motores especializados trabajando en paralelo para una
-                  visión 360º de tu hotel.
+                  Distintas capas especializadas trabajan sobre la misma base de
+                  datos para ofrecer una lectura más completa de la operativa y
+                  del rendimiento del hotel.
                 </p>
               </div>
 
@@ -385,41 +388,41 @@ export default function TechnologyPage() {
                   {
                     icon: <ShieldAlert className="text-rose-500" />,
                     title: "Risk Intelligence Engine",
-                    desc: "Motor especializado en evaluar señales operativas relacionadas con la actividad del hotel. Análisis de incidencias, detección de patrones repetitivos y generación de indicadores de riesgo preventivos.",
+                    desc: "Motor especializado en señales operativas, incidencias y patrones repetitivos que pueden afectar a la prevención, el control y la calidad operativa del establecimiento.",
                     features: [
                       "Prevención operativa",
-                      "Control de calidad",
-                      "Detección de fraude",
+                      "Control de incidencias",
+                      "Señales de riesgo",
                     ],
                   },
                   {
                     icon: <TrendingUp className="text-blue-500" />,
                     title: "Revenue Intelligence Engine",
-                    desc: "Motor analítico centrado en el rendimiento comercial. Analiza producción por canal, comportamiento de reserva y evolución de ingresos para detectar oportunidades de optimización.",
+                    desc: "Motor analítico centrado en producción, canal, segmento y comportamiento de reserva para detectar desviaciones, oportunidades de mejora y fugas de ingreso.",
                     features: [
-                      "Channel mix optimization",
-                      "Booking behavior",
-                      "Revenue leakage detection",
+                      "Canal y segmento",
+                      "Comportamiento de reserva",
+                      "Fugas de revenue",
                     ],
                   },
                   {
                     icon: <Activity className="text-emerald-500" />,
                     title: "Behaviour Analysis Engine",
-                    desc: "Motor de análisis de comportamiento basado en datos históricos. Permite identificar tendencias recurrentes y señales relevantes que ayudan a comprender el funcionamiento real del hotel.",
+                    desc: "Motor orientado a identificar tendencias, repeticiones y patrones de comportamiento relevantes a partir del histórico operativo y comercial del hotel.",
                     features: [
-                      "Guest profiling",
-                      "Seasonal trends",
-                      "Pattern recognition",
+                      "Patrones recurrentes",
+                      "Tendencias temporales",
+                      "Lectura de comportamiento",
                     ],
                   },
                   {
                     icon: <Layers className="text-violet-500" />,
                     title: "Data Intelligence Engine",
-                    desc: "Motor encargado de procesar y estructurar los datos de entrada. Normalización de métricas, estructuración de información y preparación de datos para el análisis profundo.",
+                    desc: "Motor responsable de estructurar la información de entrada, normalizar métricas y preparar la base de datos para análisis consistentes y comparables.",
                     features: [
-                      "Data cleansing",
-                      "Metric normalization",
-                      "API integration",
+                      "Normalización",
+                      "Estructuración",
+                      "Preparación analítica",
                     ],
                   },
                 ].map((engine, i) => (
@@ -458,27 +461,27 @@ export default function TechnologyPage() {
             </div>
           </section>
 
-          {/* AI Agents Section */}
+          {/* Assistants Section */}
           <section className="px-6 py-20">
             <div className="mx-auto grid max-w-7xl items-center gap-16 lg:grid-cols-2">
               <div className="order-2 grid grid-cols-1 gap-4 lg:order-1">
                 {[
                   {
-                    name: "Risk Analysis Agent",
+                    name: "Risk Analysis Assistant",
                     icon: <ShieldAlert size={18} />,
-                    desc: "Analiza señales operativas y patrones de incidencias.",
+                    desc: "Ayuda a interpretar señales operativas y patrones de incidencias.",
                     status: "Active",
                   },
                   {
-                    name: "Revenue Analysis Agent",
+                    name: "Revenue Analysis Assistant",
                     icon: <TrendingUp size={18} />,
-                    desc: "Evalúa tendencias de ingresos y desviaciones comerciales.",
+                    desc: "Ayuda a leer tendencias de ingresos y desviaciones comerciales.",
                     status: "Monitoring",
                   },
                   {
-                    name: "Operational Insight Agent",
+                    name: "Operational Insight Assistant",
                     icon: <Zap size={18} />,
-                    desc: "Detecta mejoras posibles en procesos internos.",
+                    desc: "Apoya la identificación de mejoras operativas y señales internas.",
                     status: "Active",
                   },
                 ].map((agent, i) => (
@@ -511,26 +514,26 @@ export default function TechnologyPage() {
               <div className="order-1 lg:order-2">
                 <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-bold uppercase tracking-widest text-emerald-400">
                   <Bot size={12} />
-                  AI Agents
+                  Asistencia analítica
                 </div>
 
                 <h2 className="mb-8 text-3xl font-bold text-white md:text-5xl">
-                  Agentes inteligentes de Debacu
+                  Asistentes analíticos de Debacu
                 </h2>
 
                 <p className="mb-8 text-lg text-slate-400">
-                  Debacu incorpora agentes inteligentes que ayudan a interpretar
-                  la información y generar análisis automatizados. No sustituyen
-                  al hotelero, sino que proporcionan asistencia inteligente
-                  basada en datos.
+                  Debacu incorpora asistentes orientados a facilitar la lectura de
+                  la información y a generar análisis automatizados sobre la base
+                  de datos disponible. Son una capa de apoyo, no un sustituto del
+                  criterio del hotel.
                 </p>
 
                 <ul className="space-y-4">
                   {[
-                    "Analizar métricas operativas automáticamente",
-                    "Detectar anomalías en tiempo real",
-                    "Interpretar tendencias complejas",
-                    "Sugerir posibles acciones preventivas",
+                    "Ayudar a interpretar métricas operativas",
+                    "Detectar anomalías y señales relevantes",
+                    "Resumir tendencias complejas",
+                    "Sugerir posibles acciones de revisión o prevención",
                   ].map((item, i) => (
                     <li key={i} className="flex items-center gap-3 text-slate-300">
                       <div className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500/10">
@@ -556,9 +559,10 @@ export default function TechnologyPage() {
                       Arquitectura SaaS escalable
                     </h2>
                     <p className="mb-8 text-slate-400">
-                      Debacu se desarrolla como una plataforma SaaS multiempresa
-                      diseñada para escalar a múltiples alojamientos con máxima
-                      eficiencia y seguridad.
+                      Debacu se desarrolla como una plataforma SaaS multi-tenant
+                      preparada para trabajar con múltiples hoteles o grupos,
+                      manteniendo separación lógica, consistencia analítica y
+                      capacidad de crecimiento.
                     </p>
 
                     <div className="grid grid-cols-2 gap-6">
@@ -566,15 +570,15 @@ export default function TechnologyPage() {
                         { icon: <Cloud size={20} />, label: "Cloud Native" },
                         {
                           icon: <Lock size={20} />,
-                          label: "Multi-tenant Isolation",
+                          label: "Multi-tenant isolation",
                         },
                         {
                           icon: <Server size={20} />,
-                          label: "Efficient Processing",
+                          label: "Procesamiento eficiente",
                         },
                         {
                           icon: <Network size={20} />,
-                          label: "Continuous Updates",
+                          label: "Actualización continua",
                         },
                       ].map((item, i) => (
                         <div key={i} className="flex items-center gap-3">
@@ -605,20 +609,20 @@ export default function TechnologyPage() {
           <section className="px-6 py-20">
             <div className="mx-auto max-w-7xl text-center">
               <h2 className="mb-8 text-3xl font-bold text-white md:text-5xl">
-                Innovación tecnológica aplicada al sector hospitality
+                Tecnología aplicada a riesgo, operativa y revenue hotelero
               </h2>
 
               <p className="mx-auto mb-12 max-w-3xl text-lg text-slate-400">
-                Debacu introduce una aproximación innovadora al combinar análisis
-                de datos operativos, evaluación estructurada de eventos e
-                inteligencia artificial aplicada.
+                Debacu combina arquitectura SaaS, normalización de datos y capas
+                analíticas especializadas para crear una base tecnológica útil en
+                gestión operativa, prevención y lectura económica del hotel.
               </p>
 
               <button
                 onClick={() => navigate("/documentacion")}
                 className="inline-flex items-center gap-2 rounded-full bg-blue-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-blue-600/20 transition-all hover:bg-blue-500"
               >
-                Explorar Documentación Técnica <ArrowRight size={16} />
+                Explorar documentación técnica <ArrowRight size={16} />
               </button>
             </div>
           </section>

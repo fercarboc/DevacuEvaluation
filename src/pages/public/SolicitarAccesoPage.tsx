@@ -66,6 +66,10 @@ export default function SolicitarAccesoPage() {
     type: "info",
   });
 
+  const fieldClassName =
+  "mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100";
+
+
   const showToast = (message: string, type: ToastState["type"] = "info") => {
     setToast({ open: true, message, type });
     window.setTimeout(() => {
@@ -351,7 +355,7 @@ export default function SolicitarAccesoPage() {
                     <input
                       value={form.contact_name}
                       onChange={(e) => onChange("contact_name", e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                       placeholder="Nombre del responsable"
                       autoComplete="name"
                     />
@@ -362,7 +366,7 @@ export default function SolicitarAccesoPage() {
                     <input
                       value={form.contact_role}
                       onChange={(e) => onChange("contact_role", e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                       placeholder="Gerente, Recepción, Dirección..."
                     />
                   </div>
@@ -374,7 +378,7 @@ export default function SolicitarAccesoPage() {
                     <input
                       value={form.email}
                       onChange={(e) => onChange("email", e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                       placeholder="correo@empresa.com"
                       autoComplete="email"
                     />
@@ -385,7 +389,7 @@ export default function SolicitarAccesoPage() {
                     <input
                       value={form.phone}
                       onChange={(e) => onChange("phone", e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                       placeholder="600000000"
                       autoComplete="tel"
                     />
@@ -401,7 +405,7 @@ export default function SolicitarAccesoPage() {
                     <input
                       value={form.company_name}
                       onChange={(e) => onChange("company_name", e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                       placeholder="Nombre comercial"
                     />
                   </div>
@@ -411,7 +415,7 @@ export default function SolicitarAccesoPage() {
                     <input
                       value={form.legal_name}
                       onChange={(e) => onChange("legal_name", e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                       placeholder="S.L., S.A., autónomo..."
                     />
                   </div>
@@ -423,7 +427,7 @@ export default function SolicitarAccesoPage() {
                     <input
                       value={form.cif}
                       onChange={(e) => onChange("cif", e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                       placeholder="B12345678"
                     />
                   </div>
@@ -437,7 +441,7 @@ export default function SolicitarAccesoPage() {
                       onChange={(e) =>
                         onChange("property_type", e.target.value as PropertyType)
                       }
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                     >
                       <option value="HOTEL">Hotel</option>
                       <option value="RURAL">Casa rural</option>
@@ -452,7 +456,7 @@ export default function SolicitarAccesoPage() {
                     <input
                       value={form.address}
                       onChange={(e) => onChange("address", e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                       placeholder="Calle, número..."
                     />
                   </div>
@@ -462,7 +466,7 @@ export default function SolicitarAccesoPage() {
                     <input
                       value={form.city}
                       onChange={(e) => onChange("city", e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                       placeholder="Localidad"
                     />
                   </div>
@@ -472,7 +476,7 @@ export default function SolicitarAccesoPage() {
                     <input
                       value={form.country}
                       onChange={(e) => onChange("country", e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                       placeholder="ESP"
                     />
                   </div>
@@ -484,7 +488,7 @@ export default function SolicitarAccesoPage() {
                     <input
                       value={form.rooms_count}
                       onChange={(e) => onChange("rooms_count", e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                       placeholder="10"
                       inputMode="numeric"
                     />
@@ -495,7 +499,7 @@ export default function SolicitarAccesoPage() {
                     <input
                       value={form.website}
                       onChange={(e) => onChange("website", e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                      className={fieldClassName}
                       placeholder="https://..."
                     />
                   </div>
