@@ -12,49 +12,81 @@ export type ImportJobRow = {
   valid_rows: number | null;
   invalid_rows: number | null;
   summary: any | null;
+  property_id?: string | null;
 };
 
 export type ImportJobsFilters = {
-  from?: string; // ISO (inclusive)
-  to?: string;   // ISO (inclusive; usamos lte)
+  from?: string; // ISO inclusive
+  to?: string;   // ISO inclusive
   status?: string;
   runType?: string;
   limit?: number;
 };
 
-export function useImportJobs(orgId: string, filters: ImportJobsFilters) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [jobs, setJobs] = useState<ImportJobRow[]>([]);
+type State = {
+  loading: boolean;
+  error: string | null;
+  jobs: ImportJobRow[];
+};
+
+function clean(v?: string | null) {
+  const s = String(v || "").trim();
+  return s.length > 0 ? s : "";
+}
+
+export function useImportJobs(
+  orgId: string,
+  propertyId: string | null,
+  filters: ImportJobsFilters,
+) {
+  const [state, setState] = useState<State>({
+    loading: false,
+    error: null,
+    jobs: [],
+  });
 
   const stableFilters = useMemo(() => {
     return {
-      from: filters?.from,
-      to: filters?.to,
-      status: filters?.status,
-      runType: filters?.runType,
-      limit: filters?.limit ?? 200,
+      from: clean(filters?.from),
+      to: clean(filters?.to),
+      status: clean(filters?.status),
+      runType: clean(filters?.runType),
+      limit: Math.min(Math.max(Number(filters?.limit ?? 200), 1), 500),
     };
   }, [filters?.from, filters?.to, filters?.status, filters?.runType, filters?.limit]);
 
+  const cleanOrgId = useMemo(() => clean(orgId), [orgId]);
+  const cleanPropertyId = useMemo(() => clean(propertyId), [propertyId]);
+
+  const canLoad = useMemo(() => {
+    return cleanOrgId.length > 0 && cleanPropertyId.length > 0;
+  }, [cleanOrgId, cleanPropertyId]);
+
   const load = useCallback(async () => {
-    const oid = String(orgId || "").trim();
-    if (!oid) {
-      setJobs([]);
-      setError(null);
-      setLoading(false);
+    if (!canLoad) {
+      setState({
+        loading: false,
+        error: null,
+        jobs: [],
+      });
       return;
     }
 
-    setLoading(true);
-    setError(null);
+    setState((s) => ({
+      ...s,
+      loading: true,
+      error: null,
+    }));
 
     try {
-      // 👇 Cast para saltar el typing cuando faltan tablas/columnas en Database types
+      // Usamos cast a any porque el tipado Database puede no incluir estas tablas/columnas
       let q = (supabase as any)
         .from("import_jobs")
-        .select("id, created_at, run_type, status, file_path, total_rows, valid_rows, invalid_rows, summary")
-        .eq("org_id", oid)
+        .select(
+          "id, created_at, run_type, status, file_path, total_rows, valid_rows, invalid_rows, summary, property_id",
+        )
+        .eq("org_id", cleanOrgId)
+        .eq("property_id", cleanPropertyId)
         .order("created_at", { ascending: false })
         .limit(stableFilters.limit);
 
@@ -72,18 +104,28 @@ export function useImportJobs(orgId: string, filters: ImportJobsFilters) {
       const { data, error } = await q;
       if (error) throw error;
 
-      setJobs((data || []) as ImportJobRow[]);
+      setState({
+        loading: false,
+        error: null,
+        jobs: (data || []) as ImportJobRow[],
+      });
     } catch (e: any) {
-      setError(String(e?.message || e));
-      setJobs([]);
-    } finally {
-      setLoading(false);
+      setState({
+        loading: false,
+        error: String(e?.message || e || "failed_to_load_import_jobs"),
+        jobs: [],
+      });
     }
-  }, [orgId, stableFilters]);
+  }, [canLoad, cleanOrgId, cleanPropertyId, stableFilters]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  return { loading, error, jobs, reload: load };
+  return {
+    loading: state.loading,
+    error: state.error,
+    jobs: state.jobs,
+    reload: load,
+  };
 }

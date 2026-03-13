@@ -198,6 +198,56 @@ function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   return result;
 }
 
+function uniqueSortedStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(
+    new Set(
+      values
+        .map((v) => String(v ?? "").trim())
+        .filter(Boolean),
+    ),
+  ).sort();
+}
+
+async function invokeUserScopedFunction(
+  req: Request,
+  functionName: string,
+  body: Record<string, unknown>,
+) {
+  const userAuthHeader =
+    req.headers.get("Authorization") ?? req.headers.get("authorization");
+
+  if (!userAuthHeader) {
+    throw new Error("missing_user_authorization_header_for_rebuild");
+  }
+
+  const response = await fetch(
+    `${SUPABASE_URL}/functions/v1/${functionName}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: userAuthHeader,
+      },
+      body: JSON.stringify(body),
+    },
+  );
+
+  const payload = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new Error(
+      `${functionName}_failed:${
+        payload?.detail_message ??
+        payload?.detail ??
+        payload?.error ??
+        response.statusText
+      }`,
+    );
+  }
+
+  return payload;
+}
+
 /* ======================================================
  * Multi-org resolution
  * ====================================================== */
@@ -1105,9 +1155,54 @@ Deno.serve(async (req) => {
         sb,
         orgId,
         propertyCode,
-        Array.from(new Set(stayNightReservationKeysToDelete)),
+        uniqueSortedStrings(stayNightReservationKeysToDelete),
       );
       await insertStayNightsBatch(sb, stayNightsToInsert);
+
+      const affectedStayDates = uniqueSortedStrings(
+        stayNightsToInsert.map((row) => toNullableString(row.stay_date)),
+      );
+
+      const rebuildDateFrom = affectedStayDates[0] ?? null;
+      const rebuildDateTo = affectedStayDates[affectedStayDates.length - 1] ?? null;
+
+      if (rebuildDateFrom && rebuildDateTo) {
+        await invokeUserScopedFunction(
+          req,
+          "debacu_eval_reservation_ledger_rebuild",
+          {
+            org_id: orgId,
+            property_code: propertyCode,
+            from: rebuildDateFrom,
+            to: rebuildDateTo,
+            app_id: "DEBACU_EVAL",
+          },
+        );
+
+        await invokeUserScopedFunction(
+          req,
+          "debacu_eval_revenue_daily_rebuild",
+          {
+            org_id: orgId,
+            property_id: selectedProperty.id,
+            date_from: rebuildDateFrom,
+            date_to: rebuildDateTo,
+          },
+        );
+
+        await invokeUserScopedFunction(
+          req,
+          "revenue_pickup_snapshot_rebuild",
+          {
+            org_id: orgId,
+            property_code: propertyCode,
+            snapshot_date: new Date().toISOString().slice(0, 10),
+            from: rebuildDateFrom,
+            to: rebuildDateTo,
+            app_id: "DEBACU_EVAL",
+          },
+        );
+      }
 
       const batchUpdate = await sb
         .from("debacu_eval_unified_import_batches")
@@ -1127,62 +1222,17 @@ Deno.serve(async (req) => {
             selected_property_import_property_code: selectedProperty.import_property_code,
             csv_detected_property_raw: detectedCsvProperty.raw,
             csv_detected_property_normalized: detectedCsvProperty.normalized,
+            rebuild_date_from: rebuildDateFrom,
+            rebuild_date_to: rebuildDateTo,
+            ledger_rebuild: Boolean(rebuildDateFrom && rebuildDateTo),
+            revenue_daily_rebuild: Boolean(rebuildDateFrom && rebuildDateTo),
+            pickup_snapshot_rebuild: Boolean(rebuildDateFrom && rebuildDateTo),
           },
         })
         .eq("id", batchId);
 
-       if (batchUpdate.error) {
+      if (batchUpdate.error) {
         throw new Error(`batch_commit_update_failed:${batchUpdate.error.message}`);
-      }
-
-        const affectedStayDates = stayNightsToInsert
-        .map((row) => toNullableString(row.stay_date))
-        .filter((value): value is string => Boolean(value))
-        .sort();
-
-      const rebuildDateFrom = affectedStayDates[0] ?? null;
-      const rebuildDateTo = affectedStayDates[affectedStayDates.length - 1] ?? null;
-
-      if (rebuildDateFrom && rebuildDateTo) {
-        const userAuthHeader =
-          req.headers.get("Authorization") ?? req.headers.get("authorization");
-
-        if (!userAuthHeader) {
-          throw new Error("missing_user_authorization_header_for_rebuild");
-        }
-        console.log("AUTH HEADER:", userAuthHeader);
-        const rebuildResponse = await fetch(
-          `${SUPABASE_URL}/functions/v1/debacu_eval_revenue_daily_rebuild`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": userAuthHeader,
-            },
-            body: JSON.stringify({
-              org_id: orgId,
-              property_id: selectedProperty.id,
-              date_from: rebuildDateFrom,
-              date_to: rebuildDateTo,
-            }),
-          },
-        );
-
-        const rebuildPayload = await rebuildResponse.json().catch(() => null);
-
-        console.log("rebuildResponse.ok =", rebuildResponse.ok);
-        console.log("rebuildPayload =", JSON.stringify(rebuildPayload));
-
-               if (!rebuildResponse.ok) {
-          throw new Error(
-            `revenue_daily_rebuild_failed:${
-              rebuildPayload?.detail_message ??
-              rebuildPayload?.detail ??
-              rebuildPayload?.error ??
-              rebuildResponse.statusText
-            }`,
-          );
-        }
       }
 
       return ok(req, {
@@ -1196,6 +1246,13 @@ Deno.serve(async (req) => {
           rows_warning: rowsWarningCount,
           rows_error: rowErrors.length,
           summary,
+          rebuild: {
+            from: rebuildDateFrom,
+            to: rebuildDateTo,
+            ledger_rebuild: Boolean(rebuildDateFrom && rebuildDateTo),
+            revenue_daily_rebuild: Boolean(rebuildDateFrom && rebuildDateTo),
+            pickup_snapshot_rebuild: Boolean(rebuildDateFrom && rebuildDateTo),
+          },
           selected_property: {
             id: selectedProperty.id,
             code: selectedProperty.code,
@@ -1243,13 +1300,8 @@ Deno.serve(async (req) => {
       return fail(req, 403, "FORBIDDEN");
     }
 
-
     if (msg === "missing_user_authorization_header_for_rebuild") {
-      return fail(
-        req,
-        401,
-        "missing_user_authorization_header_for_rebuild"
-      );
+      return fail(req, 401, "missing_user_authorization_header_for_rebuild");
     }
 
     if (msg === "selected_property_id_required") {

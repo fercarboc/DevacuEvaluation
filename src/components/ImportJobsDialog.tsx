@@ -1,6 +1,7 @@
 // src/components/ImportJobsDialog.tsx
 import React, { useMemo, useState } from "react";
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -29,10 +30,11 @@ type Props = {
   open: boolean;
   onClose: () => void;
   orgId: string;
+  propertyId: string | null;
+  propertyName?: string | null;
 };
 
 function isoDateOnly(d: Date) {
-  // yyyy-mm-dd
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
@@ -40,7 +42,6 @@ function isoDateOnly(d: Date) {
 }
 
 function startOfDayISO(dateOnly: string) {
-  // dateOnly = yyyy-mm-dd -> ISO local-ish; para filtros vale con Z
   return `${dateOnly}T00:00:00.000Z`;
 }
 
@@ -64,8 +65,24 @@ function statusChipColor(status: string) {
   return "default";
 }
 
-export default function ImportJobsDialog({ open, onClose, orgId }: Props) {
-  const [rangePreset, setRangePreset] = useState<"WEEK" | "MONTH" | "CUSTOM">("MONTH");
+function clean(v?: string | null) {
+  const s = String(v || "").trim();
+  return s.length > 0 ? s : "";
+}
+
+export default function ImportJobsDialog({
+  open,
+  onClose,
+  orgId,
+  propertyId,
+  propertyName,
+}: Props) {
+  const cleanOrgId = useMemo(() => clean(orgId), [orgId]);
+  const cleanPropertyId = useMemo(() => clean(propertyId), [propertyId]);
+
+  const [rangePreset, setRangePreset] = useState<"WEEK" | "MONTH" | "CUSTOM">(
+    "MONTH",
+  );
   const [status, setStatus] = useState<string>("ALL");
   const [runType, setRunType] = useState<string>("ALL");
 
@@ -97,20 +114,30 @@ export default function ImportJobsDialog({ open, onClose, orgId }: Props) {
     return toDate ? endOfDayISO(toDate) : undefined;
   }, [rangePreset, today, toDate]);
 
-  const { loading, error, jobs, reload } = useImportJobs(orgId, {
-    from: effectiveFrom,
-    to: effectiveTo,
-    status,
-    runType,
-    limit: 200,
-  });
+  const { loading, error, jobs, reload } = useImportJobs(
+    cleanOrgId,
+    cleanPropertyId || null,
+    {
+      from: effectiveFrom,
+      to: effectiveTo,
+      status,
+      runType,
+      limit: 200,
+    },
+  );
 
   const totals = useMemo(() => {
     const total = jobs.length;
-    const committed = jobs.filter((j) => String(j.status || "").toUpperCase() === "COMMITTED").length;
-    const failed = jobs.filter((j) => String(j.status || "").toUpperCase() === "FAILED").length;
+    const committed = jobs.filter(
+      (j) => String(j.status || "").toUpperCase() === "COMMITTED",
+    ).length;
+    const failed = jobs.filter(
+      (j) => String(j.status || "").toUpperCase() === "FAILED",
+    ).length;
     return { total, committed, failed };
   }, [jobs]);
+
+  const canUse = cleanOrgId.length > 0 && cleanPropertyId.length > 0;
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="lg">
@@ -126,14 +153,33 @@ export default function ImportJobsDialog({ open, onClose, orgId }: Props) {
       </DialogTitle>
 
       <DialogContent>
-        <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ xs: "stretch", md: "center" }}>
+        {!canUse ? (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            Debes seleccionar una propiedad para ver las importaciones.
+          </Alert>
+        ) : propertyName ? (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            Propiedad activa: <strong>{propertyName}</strong>
+          </Alert>
+        ) : (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            Propiedad activa: <strong>{cleanPropertyId}</strong>
+          </Alert>
+        )}
+
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={1.5}
+          alignItems={{ xs: "stretch", md: "center" }}
+        >
           <TextField
             select
             size="small"
             label="Rango"
             value={rangePreset}
-            onChange={(e) => setRangePreset(e.target.value as any)}
+            onChange={(e) => setRangePreset(e.target.value as "WEEK" | "MONTH" | "CUSTOM")}
             sx={{ minWidth: 180 }}
+            disabled={!canUse}
           >
             <MenuItem value="WEEK">Semana (últimos 7 días)</MenuItem>
             <MenuItem value="MONTH">Mes (últimos 30 días)</MenuItem>
@@ -150,6 +196,7 @@ export default function ImportJobsDialog({ open, onClose, orgId }: Props) {
                 onChange={(e) => setFromDate(e.target.value)}
                 InputLabelProps={{ shrink: true }}
                 sx={{ minWidth: 160 }}
+                disabled={!canUse}
               />
               <TextField
                 size="small"
@@ -159,6 +206,7 @@ export default function ImportJobsDialog({ open, onClose, orgId }: Props) {
                 onChange={(e) => setToDate(e.target.value)}
                 InputLabelProps={{ shrink: true }}
                 sx={{ minWidth: 160 }}
+                disabled={!canUse}
               />
             </>
           )}
@@ -170,6 +218,7 @@ export default function ImportJobsDialog({ open, onClose, orgId }: Props) {
             value={status}
             onChange={(e) => setStatus(e.target.value)}
             sx={{ minWidth: 160 }}
+            disabled={!canUse}
           >
             <MenuItem value="ALL">(Todos)</MenuItem>
             <MenuItem value="UPLOADED">UPLOADED</MenuItem>
@@ -185,6 +234,7 @@ export default function ImportJobsDialog({ open, onClose, orgId }: Props) {
             value={runType}
             onChange={(e) => setRunType(e.target.value)}
             sx={{ minWidth: 220 }}
+            disabled={!canUse}
           >
             <MenuItem value="ALL">(Todos)</MenuItem>
             <MenuItem value="FUTURE_BOOKINGS">FUTURE_BOOKINGS</MenuItem>
@@ -199,7 +249,7 @@ export default function ImportJobsDialog({ open, onClose, orgId }: Props) {
             <Chip size="small" label={`Total: ${totals.total}`} variant="outlined" />
             <Chip size="small" label={`OK: ${totals.committed}`} color="success" variant="outlined" />
             <Chip size="small" label={`FAILED: ${totals.failed}`} color="error" variant="outlined" />
-            <Button size="small" onClick={reload} disabled={loading}>
+            <Button size="small" onClick={reload} disabled={loading || !canUse}>
               Refrescar
             </Button>
           </Stack>
@@ -207,27 +257,35 @@ export default function ImportJobsDialog({ open, onClose, orgId }: Props) {
 
         <Divider sx={{ my: 2 }} />
 
-        {loading && (
+        {loading && canUse && (
           <Box sx={{ py: 2, display: "flex", alignItems: "center", gap: 1 }}>
             <CircularProgress size={18} />
             <Typography variant="body2">Cargando importaciones…</Typography>
           </Box>
         )}
 
-        {!loading && error && (
+        {!loading && error && canUse && (
           <Typography variant="body2" color="error">
             {error}
           </Typography>
         )}
 
-        {!loading && !error && jobs.length === 0 && (
+        {!loading && !error && canUse && jobs.length === 0 && (
           <Typography variant="body2" color="text.secondary">
             No hay importaciones para este filtro.
           </Typography>
         )}
 
-        {!loading && !error && jobs.length > 0 && (
-          <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1, overflow: "auto", maxHeight: 620 }}>
+        {!loading && !error && canUse && jobs.length > 0 && (
+          <Box
+            sx={{
+              border: "1px solid",
+              borderColor: "divider",
+              borderRadius: 1,
+              overflow: "auto",
+              maxHeight: 620,
+            }}
+          >
             <Table size="small" stickyHeader>
               <TableHead>
                 <TableRow>
@@ -245,6 +303,7 @@ export default function ImportJobsDialog({ open, onClose, orgId }: Props) {
                 {jobs.map((j) => {
                   const st = String(j.status || "").toUpperCase();
                   const rt = String(j.run_type || "").toUpperCase();
+
                   return (
                     <TableRow key={j.id} hover>
                       <TableCell>{fmtTs(j.created_at)}</TableCell>

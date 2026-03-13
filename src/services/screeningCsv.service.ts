@@ -11,15 +11,16 @@ import type {
 
 /**
  * Bucket donde se suben CSVs.
- * Default: customer-exports
+ * Default: customer-imports
  */
- 
-const IMPORT_BUCKET = import.meta.env.VITE_DEBACU_IMPORT_BUCKET || "customer-imports";
+const IMPORT_BUCKET =
+  import.meta.env.VITE_DEBACU_IMPORT_BUCKET || "customer-imports";
 
 /**
  * ⚠️ IMPORTANTE:
- * Si tu "Database" tipado no incluye estas tablas (import_profiles/screening_runs/...),
- * TypeScript subraya .from("...") en rojo.
+ * Si tu "Database" tipado no incluye estas tablas
+ * (import_profiles / screening_runs / screening_results / screening_alerts / import_jobs),
+ * TypeScript subrayará .from("...") en rojo.
  * Solución rápida: usar un client "any" solo en este servicio.
  */
 const sb: any = supabase;
@@ -30,12 +31,24 @@ function mustOrgId(orgId: string) {
   return v;
 }
 
+function mustPropertyId(propertyId: string) {
+  const v = String(propertyId || "").trim();
+  if (!v) throw new Error("missing_property_id");
+  return v;
+}
+
 function pickErrorMessage(e: any, fallback = "request_failed") {
-  return e?.message || e?.error_description || e?.error?.message || e?.error || fallback;
+  return (
+    e?.message ||
+    e?.error_description ||
+    e?.error?.message ||
+    e?.error ||
+    fallback
+  );
 }
 
 // -----------------------------
-// Profiles
+// Profiles (ORG level)
 // -----------------------------
 export async function listImportProfiles(orgId: string): Promise<ImportProfile[]> {
   const org_id = mustOrgId(orgId);
@@ -51,15 +64,22 @@ export async function listImportProfiles(orgId: string): Promise<ImportProfile[]
 }
 
 // -----------------------------
-// Runs
+// Runs (ORG + PROPERTY level)
 // -----------------------------
-export async function listScreeningRuns(orgId: string, limit = 50): Promise<ScreeningRun[]> {
-  const org_id = mustOrgId(orgId);
+export async function listScreeningRuns(params: {
+  orgId: string;
+  propertyId: string;
+  limit?: number;
+}): Promise<ScreeningRun[]> {
+  const org_id = mustOrgId(params.orgId);
+  const property_id = mustPropertyId(params.propertyId);
+  const limit = Math.min(Math.max(Number(params.limit ?? 50), 1), 500);
 
   const { data, error } = await sb
     .from("screening_runs")
     .select("*")
     .eq("org_id", org_id)
+    .eq("property_id", property_id)
     .order("created_at", { ascending: false })
     .limit(limit);
 
@@ -143,43 +163,51 @@ export async function listRunAlerts(params: {
 // -----------------------------
 // Storage upload helper
 // -----------------------------
- 
-
-export async function uploadScreeningCsvToStorage(orgId: string, file: File) {
-  const cleanOrgId = String(orgId || "").trim();
-  if (!cleanOrgId) throw new Error("missing_orgId");
+export async function uploadScreeningCsvToStorage(
+  orgId: string,
+  propertyId: string,
+  file: File,
+) {
+  const cleanOrgId = mustOrgId(orgId);
+  const cleanPropertyId = mustPropertyId(propertyId);
 
   // 1) comprobar sesión REAL
   const { data: s, error: sErr } = await supabase.auth.getSession();
   if (sErr) throw sErr;
   if (!s.session) throw new Error("no_session_before_upload");
 
-  // 2) path EXACTO
+  // 2) path EXACTO: org + property
   const ts = Date.now();
   const safeName = String(file.name || "upload.csv").replace(/[^\w.\-]+/g, "_");
-  const path = `debacu_eval/org/${cleanOrgId}/screening/${ts}_${safeName}`;
+  const path = `debacu_eval/org/${cleanOrgId}/property/${cleanPropertyId}/screening/${ts}_${safeName}`;
 
   // 3) upload
   const { data, error } = await supabase.storage
-    .from("customer-imports")
+    .from(IMPORT_BUCKET)
     .upload(path, file, {
       upsert: false,
       contentType: file.type || "text/csv",
     });
 
   if (error) {
-    // Esto es CLAVE: no pierdas el detalle
-    console.error("[uploadScreeningCsvToStorage] error", { path, error });
+    console.error("[uploadScreeningCsvToStorage] error", {
+      orgId: cleanOrgId,
+      propertyId: cleanPropertyId,
+      path,
+      error,
+    });
     throw new Error(error.message);
   }
 
-  return data.path; // esto es lo que luego mandas al edge function
+  return data.path;
 }
+
 // -----------------------------
 // Edge Function: import_validate_commit
 // -----------------------------
 export async function importValidateCommit(params: {
   orgId: string;
+  propertyId: string;
   profileId: string;
   runType?: string;
   dryRun: boolean;
@@ -187,11 +215,16 @@ export async function importValidateCommit(params: {
   csvText?: string;
 }): Promise<ImportValidateCommitDryRunResponse | ImportValidateCommitCommitResponse> {
   const payload: any = {
-    org_id: params.orgId,
-    profile_id: params.profileId,
+    org_id: mustOrgId(params.orgId),
+    property_id: mustPropertyId(params.propertyId),
+    profile_id: String(params.profileId || "").trim(),
     run_type: params.runType,
     dry_run: params.dryRun,
   };
+
+  if (!payload.profile_id) {
+    throw new Error("missing_profile_id");
+  }
 
   if (params.filePath) payload.file_path = params.filePath;
   if (params.csvText) payload.csv_text = params.csvText;
@@ -201,7 +234,11 @@ export async function importValidateCommit(params: {
   });
 
   if (error) throw new Error(pickErrorMessage(error));
-  if (!data?.ok) throw new Error(String(data?.detail || data?.error || "request_failed"));
+  if (!data?.ok) {
+    throw new Error(String(data?.detail || data?.error || "request_failed"));
+  }
 
-  return data as any;
+  return data as
+    | ImportValidateCommitDryRunResponse
+    | ImportValidateCommitCommitResponse;
 }

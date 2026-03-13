@@ -31,6 +31,8 @@ import {
 type Props = {
   open: boolean;
   orgId: string;
+  propertyId: string | null;
+  propertyName?: string | null;
   onClose: () => void;
   onCommitted: (runId: string) => void;
 };
@@ -38,12 +40,31 @@ type Props = {
 type Step = "SETUP" | "DRYRUN_DONE" | "COMMIT_DONE";
 
 function pickRunType(profile: ImportProfile) {
-  // Por defecto: usamos source_type como run_type (tú ya lo haces en backend si no viene)
   return String(profile.source_type || "").toUpperCase();
 }
 
-export default function ImportWizard({ open, orgId, onClose, onCommitted }: Props) {
-  const { loading: loadingProfiles, error: profilesError, profiles, reload } = useImportProfiles(orgId);
+function clean(v?: string | null) {
+  const s = String(v || "").trim();
+  return s.length > 0 ? s : "";
+}
+
+export default function ImportWizard({
+  open,
+  orgId,
+  propertyId,
+  propertyName,
+  onClose,
+  onCommitted,
+}: Props) {
+  const cleanOrgId = useMemo(() => clean(orgId), [orgId]);
+  const cleanPropertyId = useMemo(() => clean(propertyId), [propertyId]);
+
+  const {
+    loading: loadingProfiles,
+    error: profilesError,
+    profiles,
+    reload,
+  } = useImportProfiles(cleanOrgId);
 
   const [profileId, setProfileId] = useState<string>("");
   const [file, setFile] = useState<File | null>(null);
@@ -52,8 +73,10 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const [dryRun, setDryRun] = useState<ImportValidateCommitDryRunResponse | null>(null);
-  const [commitRes, setCommitRes] = useState<ImportValidateCommitCommitResponse | null>(null);
+  const [dryRun, setDryRun] =
+    useState<ImportValidateCommitDryRunResponse | null>(null);
+  const [commitRes, setCommitRes] =
+    useState<ImportValidateCommitCommitResponse | null>(null);
 
   const selectedProfile = useMemo(
     () => profiles.find((p) => p.id === profileId) || null,
@@ -66,22 +89,29 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
   }, [selectedProfile]);
 
   const canDryRun = useMemo(() => {
-    return String(orgId || "").trim() && String(profileId || "").trim() && !!file && !busy;
-  }, [orgId, profileId, file, busy]);
+    return (
+      cleanOrgId.length > 0 &&
+      cleanPropertyId.length > 0 &&
+      clean(profileId).length > 0 &&
+      !!file &&
+      !busy
+    );
+  }, [cleanOrgId, cleanPropertyId, profileId, file, busy]);
 
   const canCommit = useMemo(() => {
-    return !!dryRun && !busy;
-  }, [dryRun, busy]);
+    return !!dryRun && cleanPropertyId.length > 0 && !busy;
+  }, [dryRun, cleanPropertyId, busy]);
 
   useEffect(() => {
     if (!open) return;
-    // reset wizard on open
+
     setStep("SETUP");
     setBusy(false);
     setErr(null);
     setDryRun(null);
     setCommitRes(null);
-    // si hay perfiles, selecciona el primero
+    setFile(null);
+
     if (profiles?.length && !profileId) {
       setProfileId(profiles[0].id);
     }
@@ -89,8 +119,9 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
   }, [open]);
 
   useEffect(() => {
-    // auto pick first profile when loaded
-    if (open && !profileId && profiles?.length) setProfileId(profiles[0].id);
+    if (open && !profileId && profiles?.length) {
+      setProfileId(profiles[0].id);
+    }
   }, [open, profiles, profileId]);
 
   async function handleDryRun() {
@@ -98,21 +129,29 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
 
     setBusy(true);
     setErr(null);
-    try {
-      // 1) upload file to Storage
-      const filePath = await uploadScreeningCsvToStorage(orgId, file);
 
-      // 2) dry-run
+    try {
+      const filePath = await uploadScreeningCsvToStorage(
+        cleanOrgId,
+        cleanPropertyId,
+        file,
+      );
+
       const res = await importValidateCommit({
-        orgId,
+        orgId: cleanOrgId,
+        propertyId: cleanPropertyId,
         profileId: selectedProfile.id,
         runType,
         dryRun: true,
         filePath,
       });
 
-      if (res.mode !== "DRY_RUN") throw new Error("unexpected_response_mode");
+      if (res.mode !== "DRY_RUN") {
+        throw new Error("unexpected_response_mode");
+      }
+
       setDryRun(res);
+      setCommitRes(null);
       setStep("DRYRUN_DONE");
     } catch (e: any) {
       setErr(String(e?.message || e));
@@ -122,31 +161,33 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
   }
 
   async function handleCommit() {
-    if (!canCommit || !selectedProfile) return;
+    if (!canCommit || !selectedProfile || !file) return;
 
     setBusy(true);
     setErr(null);
-    try {
-      // Importante: el commit vuelve a crear import_job y run.
-      // Para no depender del filePath anterior, volvemos a subir el CSV
-      // (simple y robusto; si luego quieres optimizar, pasamos import_job_id).
-      if (!file) throw new Error("missing_file");
 
-      const filePath = await uploadScreeningCsvToStorage(orgId, file);
+    try {
+      const filePath = await uploadScreeningCsvToStorage(
+        cleanOrgId,
+        cleanPropertyId,
+        file,
+      );
 
       const res = await importValidateCommit({
-        orgId,
+        orgId: cleanOrgId,
+        propertyId: cleanPropertyId,
         profileId: selectedProfile.id,
         runType,
         dryRun: false,
         filePath,
       });
 
-      if (res.mode !== "COMMIT") throw new Error("unexpected_response_mode");
+      if (res.mode !== "COMMIT") {
+        throw new Error("unexpected_response_mode");
+      }
+
       setCommitRes(res);
       setStep("COMMIT_DONE");
-
-      // refrescar runs list en la página (si el padre recarga)
       onCommitted(res.run_id);
     } catch (e: any) {
       setErr(String(e?.message || e));
@@ -159,14 +200,30 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
   const previewRows = dryRun?.preview?.slice(0, 10) || [];
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
+    <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="md">
       <DialogTitle>Nuevo Screening (CSV)</DialogTitle>
 
       <DialogContent dividers>
         <Stack spacing={2}>
+          {!cleanPropertyId ? (
+            <Alert severity="warning">
+              Debes seleccionar una propiedad antes de subir y procesar el CSV.
+            </Alert>
+          ) : null}
+
+          {propertyName ? (
+            <Alert severity="info">
+              Propiedad activa: <strong>{propertyName}</strong>
+            </Alert>
+          ) : cleanPropertyId ? (
+            <Alert severity="info">
+              Propiedad activa: <strong>{cleanPropertyId}</strong>
+            </Alert>
+          ) : null}
+
           {profilesError && (
             <Alert severity="error">
-              Error cargando perfiles: {profilesError}{" "}
+              Error cargando perfiles: {profilesError}
               <Button size="small" onClick={reload} sx={{ ml: 1 }}>
                 Reintentar
               </Button>
@@ -188,7 +245,7 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
                   fullWidth
                   value={profileId}
                   onChange={(e) => setProfileId(e.target.value)}
-                  disabled={busy || loadingProfiles}
+                  disabled={busy || loadingProfiles || !cleanPropertyId}
                 >
                   {profiles.map((p) => (
                     <MenuItem key={p.id} value={p.id}>
@@ -210,7 +267,7 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
                 <Button
                   variant="outlined"
                   component="label"
-                  disabled={busy}
+                  disabled={busy || !cleanPropertyId}
                 >
                   Seleccionar CSV
                   <input
@@ -227,7 +284,11 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
                   />
                 </Button>
 
-                <Typography variant="caption" sx={{ ml: 2 }} color="text.secondary">
+                <Typography
+                  variant="caption"
+                  sx={{ ml: 2 }}
+                  color="text.secondary"
+                >
                   {file ? file.name : "Ningún archivo seleccionado"}
                 </Typography>
               </Box>
@@ -242,7 +303,10 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
                 </Button>
 
                 {busy && (
-                  <CircularProgress size={18} sx={{ ml: 2, verticalAlign: "middle" }} />
+                  <CircularProgress
+                    size={18}
+                    sx={{ ml: 2, verticalAlign: "middle" }}
+                  />
                 )}
               </Box>
             </CardContent>
@@ -251,7 +315,11 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
           {dryRun && (
             <Card variant="outlined">
               <CardContent>
-                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                <Stack
+                  direction="row"
+                  justifyContent="space-between"
+                  alignItems="center"
+                >
                   <Typography variant="subtitle2">Resultado Dry-run</Typography>
                   <Typography variant="caption" color="text.secondary">
                     import_job_id: {dryRun.import_job_id}
@@ -262,15 +330,22 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
 
                 <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
                   <Box>
-                    <Typography variant="body2">Total filas: {dryRun.total_rows}</Typography>
-                    <Typography variant="body2">Válidas: {dryRun.valid_rows}</Typography>
-                    <Typography variant="body2">Inválidas: {dryRun.invalid_rows}</Typography>
+                    <Typography variant="body2">
+                      Total filas: {dryRun.total_rows}
+                    </Typography>
+                    <Typography variant="body2">
+                      Válidas: {dryRun.valid_rows}
+                    </Typography>
+                    <Typography variant="body2">
+                      Inválidas: {dryRun.invalid_rows}
+                    </Typography>
                   </Box>
 
                   <Box sx={{ flex: 1 }}>
                     <Typography variant="body2" sx={{ fontWeight: 700 }}>
                       Errores (primeros {errorsPreview.length})
                     </Typography>
+
                     {errorsPreview.length === 0 ? (
                       <Typography variant="body2" color="text.secondary">
                         Sin errores.
@@ -280,7 +355,8 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
                         {errorsPreview.map((e, idx) => (
                           <li key={idx}>
                             <Typography variant="caption">
-                              Row {e.row} {e.field ? `(${e.field})` : ""}: {e.error}
+                              Row {e.row} {e.field ? `(${e.field})` : ""}:{" "}
+                              {e.error}
                             </Typography>
                           </li>
                         ))}
@@ -335,7 +411,8 @@ export default function ImportWizard({ open, orgId, onClose, onCommitted }: Prop
 
           {commitRes && (
             <Alert severity="success">
-              Commit OK. Run creado: {commitRes.run_id} (HIGH={commitRes.high} / MED={commitRes.medium} / LOW={commitRes.low})
+              Commit OK. Run creado: {commitRes.run_id} (HIGH={commitRes.high} / MED=
+              {commitRes.medium} / LOW={commitRes.low})
             </Alert>
           )}
         </Stack>

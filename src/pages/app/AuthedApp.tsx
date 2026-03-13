@@ -100,7 +100,25 @@ function toPlanCode(plan: PlanTier): "FREE" | "BASIC" | "MEDIUM" | "PREMIUM" {
   }
 }
 
-function isRevenueView(v: AuthedView) {
+function usesPropertySelector(v: AuthedView) {
+  return (
+    v === "aud_screening_csv" ||
+    v === "rev_channels" ||
+    v === "rev_risk" ||
+    v === "rev_leakage" ||
+    v === "rev_import" ||
+    v === "rev_day_by_day" ||
+    v === "rev_monthly" ||
+    v === "rev_channels_segments" ||
+    v === "rev_pickup_advanced" ||
+    v === "rev_properties" ||
+    v === "rev_room_types" ||
+    v === "rev_price_calendar" ||
+    v === "rev_events_seasons"
+  );
+}
+
+function isRevenueFeatureView(v: AuthedView) {
   return (
     v === "rev_channels" ||
     v === "rev_risk" ||
@@ -298,7 +316,7 @@ export default function AuthedApp() {
 
       { view: "account", label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
     ],
-    []
+    [],
   );
 
   const title = React.useMemo(() => {
@@ -399,7 +417,7 @@ export default function AuthedApp() {
 
   const headerLeft = React.useMemo(() => {
     if (!canAccessRevenue) return null;
-    if (!isRevenueView(currentView)) return null;
+    if (!usesPropertySelector(currentView)) return null;
     if (propertiesLoading) return null;
     if (!revenueProperties.length) return null;
 
@@ -433,8 +451,16 @@ export default function AuthedApp() {
         />
       )}
 
-      {currentView === "aud_screening_csv" && <ScreeningCsv />}
+      {currentView === "aud_screening_csv" && (
+        <ScreeningCsv
+          orgId={selectedProperty?.orgId ?? (user as any)?.orgId ?? ""}
+          propertyId={selectedPropertyId}
+          propertyName={selectedProperty?.name ?? null}
+        />
+      )}
+
       {currentView === "search" && <SearchRatings currentUser={user as any} />}
+
       {currentView === "add" && (
         <RatingForm
           currentCustomerId={(user as any).id}
@@ -444,8 +470,11 @@ export default function AuthedApp() {
 
       {currentView === "account" && <MiCuenta user={user as any} />}
 
-      {isRevenueView(currentView) && !canAccessRevenue && (
-        <RevenueLockedDemo currentPlan={currentPlan} onGoPlans={() => setCurrentView("account")} />
+      {isRevenueFeatureView(currentView) && !canAccessRevenue && (
+        <RevenueLockedDemo
+          currentPlan={currentPlan}
+          onGoPlans={() => setCurrentView("account")}
+        />
       )}
 
       {currentView === "rev_channels" && canAccessRevenue && <ChannelAnalysis />}

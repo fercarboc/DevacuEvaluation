@@ -1,6 +1,7 @@
 // src/components/RunsList.tsx
 import React, { useMemo } from "react";
 import {
+  Alert,
   Box,
   Button,
   Card,
@@ -18,6 +19,8 @@ import type { ScreeningRun } from "@/types/screeningCsv.types";
 
 type Props = {
   orgId: string;
+  propertyId: string | null;
+  propertyName?: string | null;
   selectedRunId: string | null;
   onSelectRun: (runId: string) => void;
   onCreateNew: () => void;
@@ -35,21 +38,50 @@ function runLabel(r: ScreeningRun) {
   return t || "RUN";
 }
 
-export default function RunsList({ orgId, selectedRunId, onSelectRun, onCreateNew }: Props) {
-  const { loading, error, runs, reload } = useScreeningRuns(orgId, 80);
+function clean(v?: string | null) {
+  const s = String(v || "").trim();
+  return s.length > 0 ? s : "";
+}
+
+export default function RunsList({
+  orgId,
+  propertyId,
+  propertyName,
+  selectedRunId,
+  onSelectRun,
+  onCreateNew,
+}: Props) {
+  const cleanOrgId = useMemo(() => clean(orgId), [orgId]);
+  const cleanPropertyId = useMemo(() => clean(propertyId), [propertyId]);
+
+  const { loading, error, runs, refresh } = useScreeningRuns({
+    orgId: cleanOrgId,
+    propertyId: cleanPropertyId,
+    limit: 80,
+    autoLoad: true,
+  });
 
   const hasRuns = useMemo(() => (runs?.length || 0) > 0, [runs]);
+  const canUse = cleanOrgId.length > 0 && cleanPropertyId.length > 0;
 
   return (
     <Card variant="outlined">
       <CardContent>
         <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-          <Typography variant="subtitle1">Runs</Typography>
+          <Box>
+            <Typography variant="subtitle1">Runs</Typography>
+            {canUse ? (
+              <Typography variant="caption" color="text.secondary">
+                {propertyName ? `Propiedad: ${propertyName}` : `Property: ${cleanPropertyId}`}
+              </Typography>
+            ) : null}
+          </Box>
+
           <Stack direction="row" spacing={1}>
-            <Button size="small" onClick={reload} disabled={loading}>
+            <Button size="small" onClick={refresh} disabled={loading || !canUse}>
               Refrescar
             </Button>
-            <Button size="small" variant="contained" onClick={onCreateNew}>
+            <Button size="small" variant="contained" onClick={onCreateNew} disabled={!canUse}>
               Nuevo
             </Button>
           </Stack>
@@ -57,14 +89,20 @@ export default function RunsList({ orgId, selectedRunId, onSelectRun, onCreateNe
 
         <Divider sx={{ my: 1 }} />
 
-        {loading && (
+        {!canUse && (
+          <Alert severity="warning" sx={{ mt: 1 }}>
+            Debes seleccionar una propiedad para ver los runs de screening.
+          </Alert>
+        )}
+
+        {loading && canUse && (
           <Box sx={{ py: 2, display: "flex", alignItems: "center", gap: 1 }}>
             <CircularProgress size={18} />
             <Typography variant="body2">Cargando runs…</Typography>
           </Box>
         )}
 
-        {!loading && error && (
+        {!loading && error && canUse && (
           <Box sx={{ py: 1 }}>
             <Typography variant="body2" color="error">
               {error}
@@ -72,15 +110,15 @@ export default function RunsList({ orgId, selectedRunId, onSelectRun, onCreateNe
           </Box>
         )}
 
-        {!loading && !error && !hasRuns && (
+        {!loading && !error && canUse && !hasRuns && (
           <Box sx={{ py: 2 }}>
             <Typography variant="body2" color="text.secondary">
-              No hay runs todavía. Crea uno con “Nuevo”.
+              No hay runs todavía para esta propiedad. Crea uno con “Nuevo”.
             </Typography>
           </Box>
         )}
 
-        {!loading && !error && hasRuns && (
+        {!loading && !error && canUse && hasRuns && (
           <List dense disablePadding sx={{ maxHeight: 620, overflow: "auto" }}>
             {runs.map((r) => {
               const selected = selectedRunId === r.id;

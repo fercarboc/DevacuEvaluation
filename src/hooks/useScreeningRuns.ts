@@ -1,44 +1,78 @@
-// src/hooks/useScreeningRuns.ts
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ScreeningRun } from "@/types/screeningCsv.types";
+import { useCallback, useEffect, useState } from "react";
 import { listScreeningRuns } from "@/services/screeningCsv.service";
+import type { ScreeningRun } from "@/types/screeningCsv.types";
 
-type State = {
-  loading: boolean;
-  error: string | null;
-  runs: ScreeningRun[];
+type UseScreeningRunsParams = {
+  orgId?: string;
+  propertyId?: string;
+  limit?: number;
+  autoLoad?: boolean;
 };
 
-export function useScreeningRuns(orgId: string, limit = 50) {
-  const [state, setState] = useState<State>({
+type UseScreeningRunsState = {
+  runs: ScreeningRun[];
+  loading: boolean;
+  error: string | null;
+};
+
+export function useScreeningRuns(params: UseScreeningRunsParams) {
+  const { orgId, propertyId, limit = 50, autoLoad = true } = params;
+
+  const [state, setState] = useState<UseScreeningRunsState>({
+    runs: [],
     loading: false,
     error: null,
-    runs: [],
   });
 
-  const canLoad = useMemo(() => String(orgId || "").trim().length > 0, [orgId]);
-
-  const reload = useCallback(async () => {
-    if (!canLoad) {
-      setState((s) => ({ ...s, loading: false, error: null, runs: [] }));
+  const loadRuns = useCallback(async () => {
+    if (!orgId || !propertyId) {
+      setState((s) => ({
+        ...s,
+        runs: [],
+      }));
       return;
     }
 
-    setState((s) => ({ ...s, loading: true, error: null }));
     try {
-      const runs = await listScreeningRuns(orgId, limit);
-      setState({ loading: false, error: null, runs });
-    } catch (e: any) {
-      setState({ loading: false, error: String(e?.message || e), runs: [] });
+      setState((s) => ({
+        ...s,
+        loading: true,
+        error: null,
+      }));
+
+      const data = await listScreeningRuns({
+        orgId,
+        propertyId,
+        limit,
+      });
+
+      setState({
+        runs: data,
+        loading: false,
+        error: null,
+      });
+    } catch (err: any) {
+      setState({
+        runs: [],
+        loading: false,
+        error: err?.message || "failed_to_load_runs",
+      });
     }
-  }, [orgId, limit, canLoad]);
+  }, [orgId, propertyId, limit]);
 
   useEffect(() => {
-    reload();
-  }, [reload]);
+    if (!autoLoad) return;
+    loadRuns();
+  }, [autoLoad, loadRuns]);
+
+  const refresh = useCallback(() => {
+    return loadRuns();
+  }, [loadRuns]);
 
   return {
-    ...state,
-    reload,
+    runs: state.runs,
+    loading: state.loading,
+    error: state.error,
+    refresh,
   };
 }

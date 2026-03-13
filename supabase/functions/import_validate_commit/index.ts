@@ -14,8 +14,6 @@ function mustEnv(name: string) {
 const SUPABASE_URL = mustEnv("SUPABASE_URL");
 const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
 const GLOBAL_PEPPER = mustEnv("DEBACU_GLOBAL_PEPPER");
-
-// ✅ Storage bucket donde guardas los CSV
 const IMPORT_BUCKET = Deno.env.get("DEBACU_IMPORT_BUCKET") || "customer-imports";
 
 // ------------------------------------------------------------
@@ -96,18 +94,16 @@ function maxDate(a: string | null, b: string | null): string | null {
 }
 
 // ------------------------------------------------------------
-// ✅ IMPORT TYPE mapping (para pasar debacu_eval_import_batches_type_chk)
+// IMPORT TYPE mapping
 // ------------------------------------------------------------
 function mapImportType(runType: string) {
   const rt = String(runType || "").toUpperCase();
 
-  // Tu CHECK actual permite: FUTURE_BOOKINGS, PAST_STAYS, GUEST_STAYS, INCIDENTS
   if (rt === "FUTURE_BOOKINGS") return "FUTURE_BOOKINGS";
   if (rt === "HISTORICAL_STAYS") return "PAST_STAYS";
   if (rt === "HISTORICAL_BOOKINGS") return "PAST_STAYS";
   if (rt === "INHOUSE_TODAY") return "GUEST_STAYS";
 
-  // fallback seguro:
   if (rt.includes("FUTURE")) return "FUTURE_BOOKINGS";
   if (rt.includes("PAST") || rt.includes("HISTORICAL")) return "PAST_STAYS";
   if (rt.includes("GUEST") || rt.includes("INHOUSE")) return "GUEST_STAYS";
@@ -117,7 +113,7 @@ function mapImportType(runType: string) {
 }
 
 // ------------------------------------------------------------
-// ✅ Guard: membership check (ACTIVE) para org_id
+// Security guards
 // ------------------------------------------------------------
 async function requireOrgMemberActive(
   admin: ReturnType<typeof sbAdmin>,
@@ -140,8 +136,29 @@ async function requireOrgMemberActive(
   return { ok: true as const, member: data };
 }
 
+async function requirePropertyInOrg(
+  admin: ReturnType<typeof sbAdmin>,
+  org_id: string,
+  property_id: string,
+) {
+  const { data, error } = await admin
+    .from("debacu_eval_properties")
+    .select("id, org_id, name, code, is_active")
+    .eq("id", property_id)
+    .eq("org_id", org_id)
+    .maybeSingle();
+
+  if (error) throw new Error(`property_check_failed:${error.message}`);
+  if (!data?.id) return { ok: false as const, reason: "PROPERTY_NOT_IN_ORG" as const };
+  if (data.is_active === false) {
+    return { ok: false as const, reason: "PROPERTY_NOT_ACTIVE" as const };
+  }
+
+  return { ok: true as const, property: data };
+}
+
 // ------------------------------------------------------------
-// CSV parser (simple, soporta comillas y comas)
+// CSV parser
 // ------------------------------------------------------------
 function parseCsv(csvText: string, delimiter = ",") {
   const rows: string[][] = [];
@@ -216,7 +233,6 @@ type IdentityInfo = {
   document_norm: string | null;
   email_norm: string | null;
   phone_digits: string | null;
-
   doc_key: string | null;
   email_key: string | null;
   phone_key: string | null;
@@ -326,7 +342,7 @@ async function computeIdentity(row: any, strategy: string): Promise<IdentityInfo
 }
 
 // ------------------------------------------------------------
-// Required fields por run_type
+// Required fields
 // ------------------------------------------------------------
 function requiredFieldsFor(runType: string) {
   const rt = String(runType || "").toUpperCase();
@@ -334,12 +350,14 @@ function requiredFieldsFor(runType: string) {
   if (rt === "INHOUSE_TODAY") return ["checkin_date", "first_name", "last_name"];
   if (rt === "FUTURE_BOOKINGS") return ["checkin_date", "checkout_date", "first_name", "last_name"];
   if (rt === "HISTORICAL_STAYS") return ["checkin_date", "checkout_date", "status", "channel", "first_name", "last_name"];
-  if (rt === "HISTORICAL_BOOKINGS") return ["booking_created_at", "checkin_date", "checkout_date", "status", "channel", "first_name", "last_name"];
+  if (rt === "HISTORICAL_BOOKINGS") {
+    return ["booking_created_at", "checkin_date", "checkout_date", "status", "channel", "first_name", "last_name"];
+  }
   return ["checkin_date", "first_name", "last_name"];
 }
 
 // ------------------------------------------------------------
-// Mapping: hotel_column -> debacu_field
+// Mapping
 // ------------------------------------------------------------
 function applyMapping(headers: string[], values: string[], mapping: Record<string, string>) {
   const obj: Record<string, any> = {};
@@ -416,11 +434,12 @@ async function readCsvFromStorage(admin: ReturnType<typeof sbAdmin>, filePath: s
 }
 
 // ------------------------------------------------------------
-// Prev run finder (para delta)
+// Prev run finder (ORG + PROPERTY + RUN_TYPE)
 // ------------------------------------------------------------
 async function getPreviousRunId(
   admin: ReturnType<typeof sbAdmin>,
   org_id: string,
+  property_id: string,
   run_type: string,
   current_run_id: string,
 ) {
@@ -429,12 +448,14 @@ async function getPreviousRunId(
     .select("id, created_at")
     .eq("id", current_run_id)
     .maybeSingle();
+
   if (curErr || !cur?.created_at) return null;
 
   const { data: prev, error: prevErr } = await admin
     .from("screening_runs")
     .select("id")
     .eq("org_id", org_id)
+    .eq("property_id", property_id)
     .eq("run_type", run_type)
     .lt("created_at", cur.created_at)
     .order("created_at", { ascending: false })
@@ -463,7 +484,7 @@ function confRank(c: string) {
 }
 
 // ------------------------------------------------------------
-// stay_status mapping (NO NULL)
+// stay_status mapping
 // ------------------------------------------------------------
 function deriveStayStatus(runType: string, csvStatus: string | null) {
   const rt = String(runType || "").toUpperCase();
@@ -471,13 +492,11 @@ function deriveStayStatus(runType: string, csvStatus: string | null) {
 
   if (s) {
     if (["PLANNED", "CHECKED_IN", "COMPLETED", "NO_SHOW", "CANCELLED"].includes(s)) return s;
-
     if (["BOOKED", "RESERVED", "CONFIRMED", "PENDING"].includes(s)) return "PLANNED";
     if (["INHOUSE", "IN_HOUSE", "CHECKEDIN", "CHECKED-IN"].includes(s)) return "CHECKED_IN";
     if (["CHECKEDOUT", "CHECKED_OUT", "CHECKED-OUT", "DONE", "DEPARTED"].includes(s)) return "COMPLETED";
     if (["CANCELED", "CANCEL", "ANULADA", "ANULADO"].includes(s)) return "CANCELLED";
     if (["NOSHOW", "NO-SHOW"].includes(s)) return "NO_SHOW";
-
     return "PLANNED";
   }
 
@@ -494,7 +513,9 @@ function deriveStayStatus(runType: string, csvStatus: string | null) {
 // ------------------------------------------------------------
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return preflight(req);
-  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
+  if (req.method !== "POST") {
+    return json(req, 405, { ok: false, error: "method_not_allowed" });
+  }
 
   try {
     const user = await requireUser(req);
@@ -507,6 +528,7 @@ Deno.serve(async (req) => {
     const admin = sbAdmin();
 
     const org_id = str(body.org_id ?? body.orgId);
+    const property_id = str(body.property_id ?? body.propertyId);
     const profile_id = str(body.profile_id ?? body.profileId);
     const run_type = str(body.run_type ?? body.runType);
     const dry_run = body.dry_run === true || body.dryRun === true;
@@ -514,10 +536,13 @@ Deno.serve(async (req) => {
     const csv_text = str(body.csv_text ?? body.csvText);
 
     if (!org_id) return json(req, 400, { ok: false, error: "missing_org_id" });
+    if (!property_id) return json(req, 400, { ok: false, error: "missing_property_id" });
     if (!profile_id) return json(req, 400, { ok: false, error: "missing_profile_id" });
-    if (!file_path && !csv_text) return json(req, 400, { ok: false, error: "missing_file_or_csv_text" });
+    if (!file_path && !csv_text) {
+      return json(req, 400, { ok: false, error: "missing_file_or_csv_text" });
+    }
 
-    // ✅ Security gate
+    // 1) Membership check
     const mem = await requireOrgMemberActive(admin, org_id, userId);
     if (!mem.ok) {
       return json(req, 403, {
@@ -527,7 +552,17 @@ Deno.serve(async (req) => {
       });
     }
 
-    // 1) Load profile
+    // 2) Property check
+    const prop = await requirePropertyInOrg(admin, org_id, property_id);
+    if (!prop.ok) {
+      return json(req, 403, {
+        ok: false,
+        error: "FORBIDDEN",
+        detail: prop.reason === "PROPERTY_NOT_ACTIVE" ? "property_not_active" : "property_not_in_org",
+      });
+    }
+
+    // 3) Load profile
     const { data: profile, error: pErr } = await admin
       .from("import_profiles")
       .select("id, org_id, source_type, delimiter, identity_strategy, mapping, disabled_fields")
@@ -535,7 +570,9 @@ Deno.serve(async (req) => {
       .eq("org_id", org_id)
       .maybeSingle();
 
-    if (pErr || !profile) return json(req, 404, { ok: false, error: "profile_not_found" });
+    if (pErr || !profile) {
+      return json(req, 404, { ok: false, error: "profile_not_found" });
+    }
 
     const effectiveRunType = String(run_type || profile.source_type || "").toUpperCase();
     const import_type = mapImportType(effectiveRunType);
@@ -544,26 +581,33 @@ Deno.serve(async (req) => {
     const mapping = (profile.mapping || {}) as Record<string, string>;
     const disabled = new Set<string>((profile.disabled_fields || []) as string[]);
 
-    // 2) Read CSV
+    // 4) Read CSV
     const csv = csv_text ? csv_text : await readCsvFromStorage(admin, file_path);
 
-    // 3) Parse
+    // 5) Parse
     const rawRows = parseCsv(csv, delimiter);
-    if (rawRows.length < 2) return json(req, 400, { ok: false, error: "csv_empty_or_missing_rows" });
+    if (rawRows.length < 2) {
+      return json(req, 400, { ok: false, error: "csv_empty_or_missing_rows" });
+    }
 
     const headers = rawRows[0].map((h) => str(h));
     const dataRows = rawRows.slice(1);
     const totalRows = dataRows.length;
 
-    // 4) Create import job
+    // 6) Create import job
     const file_hash = await crypto.subtle
       .digest("SHA-256", new TextEncoder().encode(csv))
-      .then((buf) => Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join(""));
+      .then((buf) =>
+        Array.from(new Uint8Array(buf))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("")
+      );
 
     const { data: job, error: jobErr } = await admin
       .from("import_jobs")
       .insert({
         org_id,
+        property_id,
         user_id: userId,
         profile_id,
         file_path: file_path || "(inline)",
@@ -575,12 +619,16 @@ Deno.serve(async (req) => {
       .single();
 
     if (jobErr || !job?.id) {
-      return json(req, 500, { ok: false, error: "import_job_create_failed", detail: jobErr?.message });
+      return json(req, 500, {
+        ok: false,
+        error: "import_job_create_failed",
+        detail: jobErr?.message,
+      });
     }
 
     const required = requiredFieldsFor(effectiveRunType).filter((f) => !disabled.has(f));
 
-    // 5) Validate & normalize rows
+    // 7) Validate & normalize rows
     const errors: Array<{ row: number; field?: string; error: string }> = [];
     const parsed: any[] = [];
 
@@ -611,7 +659,9 @@ Deno.serve(async (req) => {
       }
 
       const ident = await computeIdentity(obj, identity_strategy);
-      if (!ident.identity_key) errors.push({ row: rowNum, field: "identity", error: "NO_IDENTIFIER" });
+      if (!ident.identity_key) {
+        errors.push({ row: rowNum, field: "identity", error: "NO_IDENTIFIER" });
+      }
 
       obj.total_amount = num(obj.total_amount);
       obj.room_amount = num(obj.room_amount);
@@ -630,7 +680,9 @@ Deno.serve(async (req) => {
       obj.email_key = ident.email_key;
       obj.phone_key = ident.phone_key;
 
-      if (!str(obj.full_name)) obj.full_name = `${str(obj.first_name)} ${str(obj.last_name)}`.trim();
+      if (!str(obj.full_name)) {
+        obj.full_name = `${str(obj.first_name)} ${str(obj.last_name)}`.trim();
+      }
 
       parsed.push(obj);
     }
@@ -647,6 +699,7 @@ Deno.serve(async (req) => {
         status: "VALIDATED",
         summary: {
           run_type: effectiveRunType,
+          property_id,
           required_fields: required,
           errors_count: errors.length,
         },
@@ -668,12 +721,13 @@ Deno.serve(async (req) => {
 
     const nowTs = todayIsoTs();
 
-    // 6) Create import_batch
+    // 8) Create import_batch
     const { data: batchRow, error: bErr } = await admin
       .from("debacu_eval_import_batches")
       .insert({
         org_id,
-        import_type, // ✅ YA MAPEADO -> pasa el check constraint
+        property_id,
+        import_type,
         total_rows: totalRows,
         processed_rows: totalRows,
         error_rows: 0,
@@ -685,35 +739,45 @@ Deno.serve(async (req) => {
 
     if (bErr || !batchRow?.id) {
       await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
-      return json(req, 500, { ok: false, error: "import_batch_create_failed", detail: bErr?.message });
+      return json(req, 500, {
+        ok: false,
+        error: "import_batch_create_failed",
+        detail: bErr?.message,
+      });
     }
 
     const importBatchId = String(batchRow.id);
 
-    // 7) Create screening_run
+    // 9) Create screening_run
     const { data: run, error: runErr } = await admin
       .from("screening_runs")
       .insert({
         org_id,
+        property_id,
         import_job_id: job.id,
         run_type: effectiveRunType,
         total_analyzed: 0,
         high_count: 0,
         medium_count: 0,
         low_count: 0,
+        created_by: userId,
       })
       .select("id")
       .single();
 
     if (runErr || !run?.id) {
       await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
-      return json(req, 500, { ok: false, error: "screening_run_create_failed", detail: runErr?.message });
+      return json(req, 500, {
+        ok: false,
+        error: "screening_run_create_failed",
+        detail: runErr?.message,
+      });
     }
 
     const runId = String(run.id);
-    const prevRunId = await getPreviousRunId(admin, org_id, effectiveRunType, runId);
+    const prevRunId = await getPreviousRunId(admin, org_id, property_id, effectiveRunType, runId);
 
-    // Prev snapshot map
+    // 10) Previous snapshot
     const prevMap = new Map<string, { incidents: number; loss: number; band: string }>();
     if (prevRunId) {
       const { data: prevRows, error: prevErr } = await admin
@@ -735,8 +799,10 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Preload guest_index
-    const uniqueIdentityKeys = Array.from(new Set(validRows.map((r) => String(r.identity_key || "")).filter(Boolean)));
+    // 11) Preload guest_index (ORG level)
+    const uniqueIdentityKeys = Array.from(
+      new Set(validRows.map((r) => String(r.identity_key || "")).filter(Boolean)),
+    );
 
     type GuestIndexRow = {
       identity_key: string;
@@ -762,7 +828,11 @@ Deno.serve(async (req) => {
 
       if (idxErr) {
         await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
-        return json(req, 500, { ok: false, error: "guest_index_preload_failed", detail: idxErr.message });
+        return json(req, 500, {
+          ok: false,
+          error: "guest_index_preload_failed",
+          detail: idxErr.message,
+        });
       }
 
       (idxRows || []).forEach((r: any) => {
@@ -800,7 +870,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Consolidation
+    // 12) Consolidation
     type Agg = {
       identity_key: string;
       checkin_date: string;
@@ -906,7 +976,9 @@ Deno.serve(async (req) => {
         });
       } else {
         if (row_number < existing.row_number) existing.row_number = row_number;
-        if (checkout_date && (!existing.checkout_date || checkout_date > existing.checkout_date)) existing.checkout_date = checkout_date;
+        if (checkout_date && (!existing.checkout_date || checkout_date > existing.checkout_date)) {
+          existing.checkout_date = checkout_date;
+        }
 
         const mc = String(r.match_confidence || "LOW");
         if (confRank(mc) > confRank(existing.match_confidence)) {
@@ -920,64 +992,85 @@ Deno.serve(async (req) => {
           existing.prev_risk_band = prev_band;
         }
 
-        if (delta_incidents > existing.delta_incidents_count) existing.delta_incidents_count = delta_incidents;
-        if (delta_loss > existing.delta_total_net_loss) existing.delta_total_net_loss = delta_loss;
+        if (delta_incidents > existing.delta_incidents_count) {
+          existing.delta_incidents_count = delta_incidents;
+        }
+        if (delta_loss > existing.delta_total_net_loss) {
+          existing.delta_total_net_loss = delta_loss;
+        }
 
         if (!existing.doc_key && doc_key) existing.doc_key = doc_key;
         if (!existing.email_key && email_key) existing.email_key = email_key;
         if (!existing.phone_key && phone_key) existing.phone_key = phone_key;
 
-        const prio = (x: string) => (x === "CHECKED_IN" ? 5 : x === "PLANNED" ? 4 : x === "COMPLETED" ? 3 : x === "NO_SHOW" ? 2 : 1);
-        if (prio(stay_status) > prio(existing.stay_status)) existing.stay_status = stay_status;
+        const prio = (x: string) =>
+          x === "CHECKED_IN" ? 5 : x === "PLANNED" ? 4 : x === "COMPLETED" ? 3 : x === "NO_SHOW" ? 2 : 1;
+        if (prio(stay_status) > prio(existing.stay_status)) {
+          existing.stay_status = stay_status;
+        }
       }
     }
 
     const consolidated = Array.from(agg.values());
 
-    let high = 0, med = 0, lowc = 0;
+    let high = 0;
+    let med = 0;
+    let lowc = 0;
     for (const a of consolidated) {
       if (a.risk_band === "HIGH") high++;
       else if (a.risk_band === "MEDIUM") med++;
       else lowc++;
     }
 
-    // ------------------------------------------------------------
-    // ✅ UPSERT STAYS (NO DUPLICADOS)
-    // Requiere UNIQUE INDEX: (org_id, identity_key, checkin_date)
-    // ------------------------------------------------------------
+    // 13) UPSERT STAYS (PROPERTY level)
     for (const part of chunk(consolidated, STAYS_CHUNK)) {
       const batch = part.map((a) => ({
         org_id,
+        property_id,
         identity_key: a.identity_key,
         full_name: a.full_name || null,
         checkin_date: a.checkin_date,
         checkout_date: a.checkout_date,
         stay_status: a.stay_status,
         import_batch_id: importBatchId,
-        updated_at: nowTs, // ✅ tu tabla tiene updated_at
+        updated_at: nowTs,
       }));
 
       const { error: sErr } = await admin
         .from("debacu_eval_guest_stays")
-        .upsert(batch, { onConflict: "org_id,identity_key,checkin_date" });
+        .upsert(batch, { onConflict: "org_id,property_id,identity_key,checkin_date" });
 
       if (sErr) {
         await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
-        return json(req, 500, { ok: false, error: "guest_stays_upsert_failed", detail: sErr.message });
+        return json(req, 500, {
+          ok: false,
+          error: "guest_stays_upsert_failed",
+          detail: sErr.message,
+        });
       }
     }
 
-    // ------------------------------------------------------------
-    // ✅ UPSERT guest_index (stays_count + seen_dates)
-    // ⚠️ Nota: si quieres que NO sume stays_count al reimportar el mismo CSV,
-    // hay que calcular "stays_added" = filas realmente nuevas. Esto es otro paso.
-    // ------------------------------------------------------------
-    type StayAgg = { stays_added: number; min_ci: string | null; max_co: string | null; doc_key: string | null; email_key: string | null; phone_key: string | null };
+    // 14) UPSERT guest_index (ORG level)
+    type StayAgg = {
+      stays_added: number;
+      min_ci: string | null;
+      max_co: string | null;
+      doc_key: string | null;
+      email_key: string | null;
+      phone_key: string | null;
+    };
     const perIdentity = new Map<string, StayAgg>();
 
     for (const a of consolidated) {
       const ik = a.identity_key;
-      const cur = perIdentity.get(ik) || { stays_added: 0, min_ci: null, max_co: null, doc_key: null, email_key: null, phone_key: null };
+      const cur = perIdentity.get(ik) || {
+        stays_added: 0,
+        min_ci: null,
+        max_co: null,
+        doc_key: null,
+        email_key: null,
+        phone_key: null,
+      };
       cur.stays_added += 1;
       cur.min_ci = minDate(cur.min_ci, a.checkin_date);
       cur.max_co = maxDate(cur.max_co, a.checkout_date || a.checkin_date);
@@ -1029,15 +1122,20 @@ Deno.serve(async (req) => {
 
       if (uErr) {
         await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
-        return json(req, 500, { ok: false, error: "guest_index_upsert_failed", detail: uErr.message });
+        return json(req, 500, {
+          ok: false,
+          error: "guest_index_upsert_failed",
+          detail: uErr.message,
+        });
       }
     }
 
-    // screening_results
+    // 15) screening_results
     for (const part of chunk(consolidated, RESULTS_CHUNK)) {
       const batch = part.map((a) => ({
         run_id: runId,
         org_id,
+        property_id,
         identity_key: a.identity_key,
         row_number: a.row_number,
         checkin_date: a.checkin_date,
@@ -1058,11 +1156,15 @@ Deno.serve(async (req) => {
       const { error: insErr } = await admin.from("screening_results").insert(batch);
       if (insErr) {
         await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
-        return json(req, 500, { ok: false, error: "screening_results_insert_failed", detail: insErr.message });
+        return json(req, 500, {
+          ok: false,
+          error: "screening_results_insert_failed",
+          detail: insErr.message,
+        });
       }
     }
 
-    // alerts
+    // 16) alerts
     const alertsAll = consolidated
       .filter((a) => a.delta_incidents_count > 0 || a.delta_total_net_loss > 0 || a.risk_band_changed || a.risk_band === "HIGH")
       .map((a) => {
@@ -1077,6 +1179,7 @@ Deno.serve(async (req) => {
 
         return {
           org_id,
+          property_id,
           run_id: runId,
           identity_key: a.identity_key,
           row_number: a.row_number,
@@ -1089,10 +1192,15 @@ Deno.serve(async (req) => {
       const { error: aErr } = await admin.from("screening_alerts").insert(part);
       if (aErr) {
         await admin.from("import_jobs").update({ status: "FAILED" }).eq("id", job.id);
-        return json(req, 500, { ok: false, error: "screening_alerts_insert_failed", detail: aErr.message });
+        return json(req, 500, {
+          ok: false,
+          error: "screening_alerts_insert_failed",
+          detail: aErr.message,
+        });
       }
     }
 
+    // 17) Update run
     await admin
       .from("screening_runs")
       .update({
@@ -1103,13 +1211,16 @@ Deno.serve(async (req) => {
       })
       .eq("id", runId);
 
+    // 18) Update job
     await admin
       .from("import_jobs")
       .update({
+        run_id: runId,
         status: "COMMITTED",
         summary: {
           run_id: runId,
           prev_run_id: prevRunId,
+          property_id,
           total_rows: totalRows,
           valid_rows: validRows.length,
           invalid_rows: totalRows - validRows.length,
@@ -1130,6 +1241,7 @@ Deno.serve(async (req) => {
       import_batch_id: importBatchId,
       run_id: runId,
       prev_run_id: prevRunId,
+      property_id,
       total_rows: totalRows,
       valid_rows: validRows.length,
       invalid_rows: totalRows - validRows.length,
@@ -1144,8 +1256,12 @@ Deno.serve(async (req) => {
     console.error("import_validate_commit error:", e);
     const msg = String(e?.message || e);
 
-    if (msg.startsWith("MISSING_ENV:")) return json(req, 500, { ok: false, error: "missing_env", detail: msg });
-    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") return json(req, 401, { ok: false, error: "UNAUTHENTICATED" });
+    if (msg.startsWith("MISSING_ENV:")) {
+      return json(req, 500, { ok: false, error: "missing_env", detail: msg });
+    }
+    if (msg === "UNAUTHENTICATED" || msg === "UNAUTHORIZED") {
+      return json(req, 401, { ok: false, error: "UNAUTHENTICATED" });
+    }
 
     return json(req, 500, { ok: false, error: "request_failed", detail: msg });
   }

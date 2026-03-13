@@ -19,6 +19,7 @@ import AlertsPanel from "@/components/AlertsPanel";
 type Props = {
   orgId: string;
   runId: string | null;
+  propertyName?: string | null;
 };
 
 function fmtTs(ts?: string | null) {
@@ -28,8 +29,13 @@ function fmtTs(ts?: string | null) {
   return d.toLocaleString();
 }
 
-export default function RunDetail({ orgId, runId }: Props) {
-  // orgId se mantiene por consistencia/posibles usos futuros (por ahora no hace falta aquí)
+function clean(v?: string | null) {
+  const s = String(v || "").trim();
+  return s.length > 0 ? s : "";
+}
+
+export default function RunDetail({ orgId, runId, propertyName }: Props) {
+  // orgId se mantiene por consistencia y posibles validaciones futuras
   void orgId;
 
   const [riskBand, setRiskBand] = useState<string>("");
@@ -49,6 +55,24 @@ export default function RunDetail({ orgId, runId }: Props) {
     const low = Number(run?.low_count ?? 0);
     return { total, high, med, low };
   }, [run]);
+
+  const effectivePropertyLabel = useMemo(() => {
+    const byPropName = clean(propertyName);
+    if (byPropName) return byPropName;
+
+    // por si screening_runs ya devuelve property_name en el futuro
+    const runAny = run as any;
+    const runPropertyName = clean(runAny?.property_name);
+    if (runPropertyName) return runPropertyName;
+
+    const runPropertyCode = clean(runAny?.property_code);
+    if (runPropertyCode) return runPropertyCode;
+
+    const runPropertyId = clean(runAny?.property_id);
+    if (runPropertyId) return runPropertyId;
+
+    return "";
+  }, [propertyName, run]);
 
   if (!runId) {
     return (
@@ -71,9 +95,17 @@ export default function RunDetail({ orgId, runId }: Props) {
               <Typography variant="subtitle1">
                 Run: {String(run?.run_type || "").toUpperCase()}
               </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {run?.id || runId} {run?.created_at ? `· ${fmtTs(run.created_at)}` : ""}
+
+              <Typography variant="caption" color="text.secondary" display="block">
+                {run?.id || runId}
+                {run?.created_at ? ` · ${fmtTs(run.created_at)}` : ""}
               </Typography>
+
+              {effectivePropertyLabel ? (
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                  Propiedad: {effectivePropertyLabel}
+                </Typography>
+              ) : null}
             </Box>
 
             <Chip
@@ -149,18 +181,14 @@ export default function RunDetail({ orgId, runId }: Props) {
         </CardContent>
       </Card>
 
-      {/* ✅ Layout pro: resultados a ancho flexible + alertas ancho fijo */}
       <Stack
         direction={{ xs: "column", lg: "row" }}
         spacing={2}
         alignItems="flex-start"
         sx={{ width: "100%" }}
       >
-        {/* IMPORTANTÍSIMO: minWidth: 0 para que el overflowX funcione en flex */}
         <Box sx={{ flex: 1, width: "100%", minWidth: 0 }}>
-          {/* Scroll horizontal SOLO dentro de resultados */}
           <Box sx={{ width: "100%", overflowX: "auto" }}>
-            {/* Si tu tabla es muy ancha, fuerza que tenga “mínimo contenido” */}
             <Box sx={{ minWidth: 900 }}>
               <ResultsTable loading={loading} results={results} />
             </Box>

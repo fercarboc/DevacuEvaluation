@@ -72,6 +72,37 @@ type BuildExportResponse = {
 };
 
 /** ======================================================
+ * Revenue Alerts (test interno)
+ * ====================================================== */
+type RevenueAlertPreviewItem = {
+  org_id: string;
+  property_id: string;
+  stay_date: string;
+  alert_type: string;
+  severity: string;
+  metric_value: number | null;
+  threshold_value: number | null;
+  title: string;
+  description: string;
+  source: string;
+};
+
+type RevenueAlertsGenerateResponse = {
+  ok: boolean;
+  data: RevenueAlertPreviewItem[] | any[];
+  meta?: {
+    orgId?: string;
+    propertyId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    rowsRead?: number;
+    alertsDetected?: number;
+    alertsInserted?: number;
+    action?: "PREVIEW" | "GENERATE";
+  };
+};
+
+/** ======================================================
  * Helpers
  * ====================================================== */
 function toISODate(d: Date) {
@@ -119,6 +150,14 @@ function triggerDownload(url: string) {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+function getActivePropertyIdFromStorage() {
+  return (
+    localStorage.getItem("revenue_active_property_id") ||
+    localStorage.getItem("debacu_eval_property_id") ||
+    null
+  );
+}
+
 /** ======================================================
  * Modal base (simple)
  * ====================================================== */
@@ -134,11 +173,12 @@ function Modal({
   onClose: () => void;
 }) {
   if (!open) return null;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl border border-slate-200">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+      <div className="relative w-full max-w-xl rounded-2xl border border-slate-200 bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
           <div className="font-bold text-slate-800">{title}</div>
           <button className="text-slate-500 hover:text-slate-700" onClick={onClose} aria-label="Cerrar">
             ✕
@@ -153,15 +193,23 @@ function Modal({
 /** ======================================================
  * Fetch real (Edge)
  * ====================================================== */
-async function fetchOperationalStats(params: { from: string; to: string; orgId: string }): Promise<OperationalStatsResponse> {
+async function fetchOperationalStats(params: {
+  from: string;
+  to: string;
+  orgId: string;
+}): Promise<OperationalStatsResponse> {
   const res = await callEvalFn("client_operational_stats", {
     org_id: params.orgId,
     period_from: params.from,
     period_to: params.to,
   });
 
-  if (!res || typeof res !== "object") throw new Error("Respuesta inválida del servidor.");
-  if (!Boolean((res as any).ok)) throw new Error((res as any).error ?? "No se pudo cargar estadísticas.");
+  if (!res || typeof res !== "object") {
+    throw new Error("Respuesta inválida del servidor.");
+  }
+  if (!Boolean((res as any).ok)) {
+    throw new Error((res as any).error ?? "No se pudo cargar estadísticas.");
+  }
 
   return res as OperationalStatsResponse;
 }
@@ -174,9 +222,45 @@ async function buildAuditExport(params: {
   filters?: { period_field?: "evaluation_date" | "created_at"; use_created_at?: boolean } | null;
 }): Promise<BuildExportResponse> {
   const res = await callEvalFn("customer_audit_export_build", params);
-  if (!res || typeof res !== "object") throw new Error("Respuesta inválida del servidor (export).");
-  if (!(res as any).ok) throw new Error((res as any).error ?? (res as any).detail ?? "No se pudo generar el export.");
+
+  if (!res || typeof res !== "object") {
+    throw new Error("Respuesta inválida del servidor (export).");
+  }
+  if (!(res as any).ok) {
+    throw new Error((res as any).error ?? (res as any).detail ?? "No se pudo generar el export.");
+  }
+
   return res as BuildExportResponse;
+}
+
+async function runRevenueAlerts(params: {
+  action: "PREVIEW" | "GENERATE";
+  orgId: string;
+  propertyId: string;
+  from: string;
+  to: string;
+}): Promise<RevenueAlertsGenerateResponse> {
+  const res = await callEvalFn("debacu_eval_revenue_alerts_generate", {
+    action: params.action,
+    org_id: params.orgId,
+    property_id: params.propertyId,
+    date_from: params.from,
+    date_to: params.to,
+  });
+
+  if (!res || typeof res !== "object") {
+    throw new Error("Respuesta inválida del servidor (revenue alerts).");
+  }
+
+  if (!(res as any).ok) {
+    throw new Error(
+      (res as any).detail ??
+        (res as any).error ??
+        "No se pudo ejecutar la generación de alertas."
+    );
+  }
+
+  return res as RevenueAlertsGenerateResponse;
 }
 
 /** ======================================================
@@ -282,7 +366,9 @@ function ExportDialog({
         </div>
 
         {err ? (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{err}</div>
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {err}
+          </div>
         ) : null}
 
         {result ? (
@@ -293,7 +379,7 @@ function ExportDialog({
                 {" "}
                 ·{" "}
                 <button
-                  className="underline font-semibold"
+                  className="font-semibold underline"
                   onClick={() => result.download_url && triggerDownload(result.download_url)}
                 >
                   Descargar
@@ -334,16 +420,26 @@ interface StatsViewAuditorProps {
 type Preset = "LAST_7" | "LAST_30" | "YEAR";
 
 const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
+  void currentPlan;
+
   /** ---------------------------
-   * orgId (desde localStorage)
+   * orgId / propertyId (localStorage)
    * --------------------------- */
   const [orgId, setOrgId] = useState<string | null>(() => localStorage.getItem("debacu_eval_org_id"));
+  const [propertyId, setPropertyId] = useState<string | null>(() => getActivePropertyIdFromStorage());
 
   useEffect(() => {
     setOrgId(localStorage.getItem("debacu_eval_org_id"));
+    setPropertyId(getActivePropertyIdFromStorage());
 
     const onStorage = (e: StorageEvent) => {
-      if (e.key === "debacu_eval_org_id") setOrgId(e.newValue);
+      if (e.key === "debacu_eval_org_id") {
+        setOrgId(e.newValue);
+      }
+
+      if (e.key === "revenue_active_property_id" || e.key === "debacu_eval_property_id") {
+        setPropertyId(getActivePropertyIdFromStorage());
+      }
     };
 
     window.addEventListener("storage", onStorage);
@@ -361,6 +457,7 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
 
   useEffect(() => {
     const today = startOfToday();
+
     if (preset === "LAST_7") {
       setFrom(toISODate(addDays(today, -6)));
       setTo(toISODate(today));
@@ -391,14 +488,14 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
       setError(null);
 
       try {
-                if (!orgId) {
+        if (!orgId) {
           setError("No hay orgId activo.");
           setResp(null);
           setLoading(false);
           return;
         }
 
-const data = await fetchOperationalStats({ from, to, orgId });
+        const data = await fetchOperationalStats({ from, to, orgId });
         if (cancelled) return;
         setResp(data);
       } catch (e: any) {
@@ -412,19 +509,54 @@ const data = await fetchOperationalStats({ from, to, orgId });
 
     const fromD = parseISODateOnly(from);
     const toD = parseISODateOnly(to);
+
     if (fromD > toD) {
       setError("El rango es inválido: 'Desde' es posterior a 'Hasta'.");
+      setResp(null);
       return;
     }
 
     void load();
+
     return () => {
       cancelled = true;
     };
-  }, [from, to]);
+  }, [from, to, orgId]);
 
   const daily = resp?.daily ?? [];
   const hourly = resp?.hourly ?? null;
+
+  /** ---------------------------
+   * Revenue alerts test states
+   * --------------------------- */
+  const [alertsBusy, setAlertsBusy] = useState(false);
+  const [alertsError, setAlertsError] = useState<string | null>(null);
+  const [alertsResult, setAlertsResult] = useState<RevenueAlertsGenerateResponse | null>(null);
+
+  const handleRevenueAlerts = async (action: "PREVIEW" | "GENERATE") => {
+    try {
+      setAlertsBusy(true);
+      setAlertsError(null);
+      setAlertsResult(null);
+
+      if (!orgId) throw new Error("No hay orgId activo.");
+      if (!propertyId) throw new Error("No hay propertyId activo.");
+
+      const res = await runRevenueAlerts({
+        action,
+        orgId,
+        propertyId,
+        from,
+        to,
+      });
+
+      setAlertsResult(res);
+    } catch (e: any) {
+      setAlertsError(e?.message ?? "No se pudo ejecutar revenue alerts.");
+    } finally {
+      setAlertsBusy(false);
+    }
+  };
 
   /** ---------------------------
    * Chart data
@@ -446,12 +578,20 @@ const data = await fetchOperationalStats({ from, to, orgId });
 
     for (let d = new Date(fromD); d <= toD; d = addDays(d, 1)) {
       const key = toISODate(d);
-      map.set(key, { x: mmdd(key), count: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0, records: 0 });
+      map.set(key, {
+        x: mmdd(key),
+        count: 0,
+        highRisk: 0,
+        mediumRisk: 0,
+        lowRisk: 0,
+        records: 0,
+      });
     }
 
     for (const p of daily) {
       const dayKey = (p.date ?? "").slice(0, 10);
       if (!dayKey) continue;
+
       map.set(dayKey, {
         x: mmdd(dayKey),
         count: Number(p.count ?? 0),
@@ -501,7 +641,7 @@ const data = await fetchOperationalStats({ from, to, orgId });
   return (
     <div className="space-y-8">
       {/* Header + filtros */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
         <div>
           <h2 className="text-2xl font-bold text-slate-800">Estadísticas Operativas</h2>
           <p className="text-slate-500">
@@ -514,7 +654,7 @@ const data = await fetchOperationalStats({ from, to, orgId });
           <select
             value={preset}
             onChange={(e) => setPreset(e.target.value as Preset)}
-            className="bg-white border border-slate-200 rounded-lg text-sm px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
           >
             <option value="LAST_7">Últimos 7 días</option>
             <option value="LAST_30">Últimos 30 días</option>
@@ -524,7 +664,7 @@ const data = await fetchOperationalStats({ from, to, orgId });
           <button
             type="button"
             onClick={() => setRangeOpen(true)}
-            className="p-2 bg-indigo-600 text-white rounded-lg shadow-md hover:bg-indigo-700 transition-colors"
+            className="rounded-lg bg-indigo-600 p-2 text-white shadow-md transition-colors hover:bg-indigo-700"
             title="Rango desde / hasta"
           >
             <CalendarRange size={20} />
@@ -533,26 +673,26 @@ const data = await fetchOperationalStats({ from, to, orgId });
       </div>
 
       {/* Layout: gráfico + panel derecho */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2 min-w-0 bg-white p-6 rounded-2xl border border-slate-200">
-          <div className="flex items-center justify-between mb-8">
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
+        <div className="min-w-0 rounded-2xl border border-slate-200 bg-white p-6 lg:col-span-2">
+          <div className="mb-8 flex items-center justify-between">
             <h3 className="font-bold text-slate-800">{isSingleDay ? "Consultas por hora" : "Consultas diarias"}</h3>
 
-            <div className="flex gap-4 flex-wrap justify-end">
+            <div className="flex flex-wrap justify-end gap-4">
               <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-indigo-500" />
+                <div className="h-2 w-2 rounded-full bg-indigo-500" />
                 <span className="text-[10px] font-bold text-slate-400">TOTAL</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-red-500" />
+                <div className="h-2 w-2 rounded-full bg-red-500" />
                 <span className="text-[10px] font-bold text-slate-400">ALTO</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-amber-500" />
+                <div className="h-2 w-2 rounded-full bg-amber-500" />
                 <span className="text-[10px] font-bold text-slate-400">MEDIO</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                <div className="h-2 w-2 rounded-full bg-emerald-500" />
                 <span className="text-[10px] font-bold text-slate-400">BAJO</span>
               </div>
             </div>
@@ -569,6 +709,7 @@ const data = await fetchOperationalStats({ from, to, orgId });
                 </defs>
 
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+
                 <XAxis
                   dataKey="x"
                   axisLine={false}
@@ -576,7 +717,12 @@ const data = await fetchOperationalStats({ from, to, orgId });
                   tick={{ fontSize: 12, fill: "#64748b" }}
                   interval={isSingleDay ? 1 : 0}
                 />
-                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: "#64748b" }} />
+
+                <YAxis
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{ fontSize: 12, fill: "#64748b" }}
+                />
 
                 <Tooltip
                   formatter={(value: any, name: any) => {
@@ -591,7 +737,14 @@ const data = await fetchOperationalStats({ from, to, orgId });
                   labelFormatter={(label) => label}
                 />
 
-                <Area type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={3} fillOpacity={1} fill="url(#colorCount)" />
+                <Area
+                  type="monotone"
+                  dataKey="count"
+                  stroke="#6366f1"
+                  strokeWidth={3}
+                  fillOpacity={1}
+                  fill="url(#colorCount)"
+                />
                 <Area type="monotone" dataKey="highRisk" stroke="#ef4444" strokeWidth={2} fillOpacity={0} />
                 <Area type="monotone" dataKey="mediumRisk" stroke="#f59e0b" strokeWidth={2} fillOpacity={0} />
                 <Area type="monotone" dataKey="lowRisk" stroke="#10b981" strokeWidth={2} fillOpacity={0} />
@@ -603,9 +756,9 @@ const data = await fetchOperationalStats({ from, to, orgId });
         </div>
 
         {/* Panel derecho */}
-        <div className="lg:col-span-1 min-w-0 space-y-6">
-          <div className="bg-white p-6 rounded-2xl border border-slate-200">
-            <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2">
+        <div className="min-w-0 space-y-6 lg:col-span-1">
+          <div className="rounded-2xl border border-slate-200 bg-white p-6">
+            <h3 className="mb-6 flex items-center gap-2 font-bold text-slate-800">
               <Activity size={18} className="text-indigo-600" />
               Resumen de Actividad
             </h3>
@@ -629,15 +782,15 @@ const data = await fetchOperationalStats({ from, to, orgId });
               <div className="mt-1 text-2xl font-extrabold text-slate-800">{summary.risky}</div>
 
               <div className="mt-2 grid grid-cols-3 gap-2">
-                <div className="rounded-lg bg-slate-50 border border-slate-200 p-2">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
                   <div className="text-[10px] font-bold uppercase text-slate-500">Alto</div>
                   <div className="text-sm font-extrabold text-slate-800">{summary.high}</div>
                 </div>
-                <div className="rounded-lg bg-slate-50 border border-slate-200 p-2">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
                   <div className="text-[10px] font-bold uppercase text-slate-500">Medio</div>
                   <div className="text-sm font-extrabold text-slate-800">{summary.medium}</div>
                 </div>
-                <div className="rounded-lg bg-slate-50 border border-slate-200 p-2">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
                   <div className="text-[10px] font-bold uppercase text-slate-500">Bajo</div>
                   <div className="text-sm font-extrabold text-slate-800">{summary.low}</div>
                 </div>
@@ -649,9 +802,10 @@ const data = await fetchOperationalStats({ from, to, orgId });
                 <div className="text-xs font-bold uppercase text-slate-500">Campo para informes</div>
                 <div className="text-[11px] text-slate-500">evaluation_date es lo recomendado</div>
               </div>
+
               <select
                 value={periodField}
-                onChange={(e) => setPeriodField(e.target.value as any)}
+                onChange={(e) => setPeriodField(e.target.value as "evaluation_date" | "created_at")}
                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none"
               >
                 <option value="evaluation_date">evaluation_date</option>
@@ -663,7 +817,7 @@ const data = await fetchOperationalStats({ from, to, orgId });
               <button
                 type="button"
                 onClick={() => setOpenDailyReport(true)}
-                className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
               >
                 <span className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <FileText size={16} className="text-indigo-600" />
@@ -675,7 +829,7 @@ const data = await fetchOperationalStats({ from, to, orgId });
               <button
                 type="button"
                 onClick={() => setOpenWeeklyReport(true)}
-                className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
               >
                 <span className="text-sm font-semibold text-slate-800">Informe semanal</span>
                 <span className="text-xs text-slate-500">Modal</span>
@@ -684,11 +838,89 @@ const data = await fetchOperationalStats({ from, to, orgId });
               <button
                 type="button"
                 onClick={() => setOpenEconomicReport(true)}
-                className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
               >
                 <span className="text-sm font-semibold text-slate-800">Impacto económico</span>
                 <span className="text-xs text-slate-500">Modal</span>
               </button>
+            </div>
+
+            {/* Revenue Alerts test interno */}
+            <div className="mt-6 rounded-xl border border-slate-200 p-4">
+              <div className="text-xs font-bold uppercase text-slate-500">Revenue Alerts (test interno)</div>
+
+              <div className="mt-1 text-[11px] text-slate-500">
+                Usa el rango actual: {from} → {to}
+              </div>
+
+              <div className="mt-1 text-[11px] text-slate-500">
+                orgId: {orgId ?? "—"}
+              </div>
+
+              <div className="mt-1 text-[11px] text-slate-500">
+                propertyId: {propertyId ?? "—"}
+              </div>
+
+              <div className="mt-3 space-y-2">
+                <button
+                  type="button"
+                  onClick={() => handleRevenueAlerts("PREVIEW")}
+                  disabled={alertsBusy || !orgId || !propertyId}
+                  className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {alertsBusy ? "Procesando..." : "Preview alertas revenue"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleRevenueAlerts("GENERATE")}
+                  disabled={alertsBusy || !orgId || !propertyId}
+                  className="w-full rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {alertsBusy ? "Procesando..." : "Generar alertas revenue"}
+                </button>
+              </div>
+
+              {alertsError ? (
+                <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {alertsError}
+                </div>
+              ) : null}
+
+              {alertsResult ? (
+                <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                  <div className="font-semibold">Acción: {alertsResult.meta?.action ?? "-"}</div>
+                  <div>Filas leídas: {alertsResult.meta?.rowsRead ?? 0}</div>
+                  <div>Detectadas: {alertsResult.meta?.alertsDetected ?? alertsResult.data?.length ?? 0}</div>
+                  <div>Insertadas: {alertsResult.meta?.alertsInserted ?? 0}</div>
+                </div>
+              ) : null}
+
+              {alertsResult?.data?.length ? (
+                <div className="mt-3 max-h-64 overflow-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2 text-left">Fecha</th>
+                        <th className="px-3 py-2 text-left">Tipo</th>
+                        <th className="px-3 py-2 text-left">Severidad</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(alertsResult.data as RevenueAlertPreviewItem[]).map((a, idx) => (
+                        <tr
+                          key={`${a.stay_date}-${a.alert_type}-${idx}`}
+                          className="border-t border-slate-100"
+                        >
+                          <td className="px-3 py-2">{a.stay_date}</td>
+                          <td className="px-3 py-2">{a.alert_type}</td>
+                          <td className="px-3 py-2">{a.severity}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -707,6 +939,7 @@ const data = await fetchOperationalStats({ from, to, orgId });
                 className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
               />
             </label>
+
             <label className="space-y-1">
               <div className="text-xs font-bold text-slate-500">Hasta</div>
               <input
@@ -725,6 +958,7 @@ const data = await fetchOperationalStats({ from, to, orgId });
             >
               Cancelar
             </button>
+
             <button
               onClick={() => {
                 const fixed = clampDateRange(from, to);
@@ -740,30 +974,30 @@ const data = await fetchOperationalStats({ from, to, orgId });
         </div>
       </Modal>
 
-      {/* ✅ DailyReportDialog (MUI) */}
+      {/* DailyReportDialog */}
       <DailyReportDialog
         open={openDailyReport}
         onClose={() => setOpenDailyReport(false)}
-        orgId={orgId ?? ""} // ✅ CLAVE
+        orgId={orgId ?? ""}
       />
 
-      {/* ✅ WeeklyReportDialog (MUI + Recharts) */}
+      {/* WeeklyReportDialog */}
       <WeeklyReportDialog
         open={openWeeklyReport}
         onClose={() => setOpenWeeklyReport(false)}
         defaultFrom={weeklyDialogRange.from}
         defaultTo={weeklyDialogRange.to}
         periodField={periodField}
-        orgId={orgId} // ya lo tenías
+        orgId={orgId}
       />
 
-      {/* ✅ EconomicImpactDialog (MUI) */}
+      {/* EconomicImpactDialog */}
       <EconomicImpactDialog
-  open={openEconomicReport}
-  onClose={() => setOpenEconomicReport(false)}
-  orgId={orgId ?? ""}   // ✅ CLAVE
-  periodField={periodField}
-/>
+        open={openEconomicReport}
+        onClose={() => setOpenEconomicReport(false)}
+        orgId={orgId ?? ""}
+        periodField={periodField}
+      />
     </div>
   );
 };
