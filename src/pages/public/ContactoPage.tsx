@@ -291,7 +291,7 @@ export default function ContactoPage() {
                     </button>
 
                     <p className="text-[11px] leading-relaxed text-slate-600">
-                      Esta solicitud llegará a contacto@debacu.com para revisión
+                      Esta solicitud llegará a contacto@debacu.com para su revisión
                       comercial y funcional. 
                     </p> <p>
                       Respuesta habitual en menos de 24 horas.
