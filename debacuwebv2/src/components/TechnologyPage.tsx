@@ -1,5 +1,6 @@
 import React from 'react';
-import { motion } from 'motion/react';
+import { motion } from "framer-motion";
+
 import { 
   Database, 
   Cpu, 
@@ -21,109 +22,130 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
-const TechDiagram = () => (
-  <div className="relative w-full max-w-5xl mx-auto py-12 md:py-20 overflow-hidden">
-    <div className="flex flex-col md:flex-row items-center justify-between gap-12 relative z-10">
-      {/* Data Sources */}
-      <motion.div 
+ const TechDiagram = () => (
+  <div className="relative mx-auto w-full max-w-6xl overflow-visible py-12 md:py-20">
+    <div className="relative z-10 flex flex-col items-center justify-center gap-8 md:flex-row md:flex-wrap md:gap-5 lg:gap-6">
+      <motion.div
         initial={{ opacity: 0, x: -20 }}
         whileInView={{ opacity: 1, x: 0 }}
-        className="flex flex-col gap-4 items-center"
+        viewport={{ once: true }}
+        className="flex shrink-0 flex-col items-center gap-4"
       >
-        <div className="glass-card p-4 border-blue-500/20 bg-blue-500/5 w-36 text-center shadow-lg shadow-blue-500/5">
+        <div className="w-32 rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 text-center shadow-lg shadow-blue-500/5 backdrop-blur-sm">
           <Database className="mx-auto mb-2 text-blue-400" size={24} />
-          <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300">Data Sources</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300">
+            Fuentes de datos
+          </span>
         </div>
-        <div className="flex flex-col gap-2 w-full">
-          {['PMS Systems', 'CSV Exports', 'Operational Data'].map((s) => (
-            <div key={s} className="px-3 py-1.5 rounded bg-white/5 border border-white/10 text-[9px] text-slate-400 font-mono text-center">{s}</div>
+
+        <div className="flex w-full flex-col gap-2">
+          {["PMS", "Exportaciones CSV", "Datos operativos"].map((s) => (
+            <div
+              key={s}
+              className="rounded border border-white/10 bg-white/5 px-3 py-1.5 text-center font-mono text-[9px] text-slate-400"
+            >
+              {s}
+            </div>
           ))}
         </div>
       </motion.div>
 
-      <div className="hidden md:flex flex-col items-center gap-2 text-slate-700">
-        <div className="w-12 h-[1px] bg-gradient-to-r from-blue-500/50 to-transparent" />
+      <div className="hidden shrink-0 flex-col items-center gap-2 text-slate-700 md:flex">
+        <div className="h-[1px] w-8 lg:w-10 bg-gradient-to-r from-blue-500/50 to-transparent" />
         <ArrowRight size={16} />
       </div>
 
-      {/* Processing */}
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, scale: 0.9 }}
         whileInView={{ opacity: 1, scale: 1 }}
-        className="glass-card p-6 border-violet-500/20 bg-violet-500/5 w-56 text-center relative"
+        viewport={{ once: true }}
+        className="relative w-44 shrink-0 rounded-2xl border border-violet-500/20 bg-violet-500/5 p-5 text-center backdrop-blur-sm lg:w-48"
       >
-        <div className="absolute -top-3 -right-3 w-8 h-8 bg-violet-600 rounded-full flex items-center justify-center shadow-lg shadow-violet-600/40 animate-pulse">
+        <div className="absolute -right-3 -top-3 flex h-8 w-8 animate-pulse items-center justify-center rounded-full bg-violet-600 shadow-lg shadow-violet-600/40">
           <Zap size={14} className="text-white" />
         </div>
-        <Cpu className="mx-auto mb-3 text-violet-400" size={36} />
-        <h4 className="text-xs font-bold uppercase mb-3 text-violet-300 tracking-widest">Processing Layer</h4>
+
+        <Cpu className="mx-auto mb-3 text-violet-400" size={34} />
+        <h4 className="mb-3 text-xs font-bold uppercase tracking-widest text-violet-300">
+          Capa de procesamiento
+        </h4>
+
         <div className="space-y-2">
-          <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
-            <motion.div 
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+            <motion.div
               initial={{ width: 0 }}
-              animate={{ width: '100%' }}
+              animate={{ width: "100%" }}
               transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
-              className="h-full bg-gradient-to-r from-violet-600 to-fuchsia-500" 
+              className="h-full bg-gradient-to-r from-violet-600 to-fuchsia-500"
             />
           </div>
-          <div className="flex justify-between text-[8px] font-mono text-slate-500">
-            <span>NORMALIZING</span>
+
+          <div className="flex justify-between font-mono text-[8px] text-slate-500">
+            <span>NORMALIZANDO</span>
             <span>74%</span>
           </div>
         </div>
       </motion.div>
 
-      <div className="hidden md:flex flex-col items-center gap-2 text-slate-700">
-        <div className="w-12 h-[1px] bg-gradient-to-r from-violet-500/50 to-transparent" />
+      <div className="hidden shrink-0 flex-col items-center gap-2 text-slate-700 md:flex">
+        <div className="h-[1px] w-8 lg:w-10 bg-gradient-to-r from-violet-500/50 to-transparent" />
         <ArrowRight size={16} />
       </div>
 
-      {/* AI Engines */}
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, scale: 0.9 }}
         whileInView={{ opacity: 1, scale: 1 }}
-        className="flex flex-col gap-4 items-center"
+        viewport={{ once: true }}
+        className="flex shrink-0 flex-col items-center gap-4"
       >
-        <div className="glass-card p-6 border-emerald-500/20 bg-emerald-500/5 w-56 text-center relative overflow-hidden group">
-          <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-          <BrainCircuit className="mx-auto mb-3 text-emerald-400" size={36} />
-          <h4 className="text-xs font-bold uppercase mb-3 text-emerald-300 tracking-widest">AI Engines</h4>
+        <div className="group relative w-44 overflow-hidden rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5 text-center backdrop-blur-sm lg:w-48">
+          <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
+          <BrainCircuit className="mx-auto mb-3 text-emerald-400" size={34} />
+          <h4 className="mb-3 text-xs font-bold uppercase tracking-widest text-emerald-300">
+            Capa analítica
+          </h4>
+
           <div className="grid grid-cols-4 gap-1.5">
             {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
-              <motion.div 
+              <motion.div
                 key={i}
                 animate={{ opacity: [0.3, 1, 0.3] }}
                 transition={{ duration: 1.5, delay: i * 0.2, repeat: Infinity }}
-                className="w-full h-2 bg-emerald-500/30 rounded-sm" 
+                className="h-2 w-full rounded-sm bg-emerald-500/30"
               />
             ))}
           </div>
         </div>
       </motion.div>
 
-      <div className="hidden md:flex flex-col items-center gap-2 text-slate-700">
-        <div className="w-12 h-[1px] bg-gradient-to-r from-emerald-500/50 to-transparent" />
+      <div className="hidden shrink-0 flex-col items-center gap-2 text-slate-700 md:flex">
+        <div className="h-[1px] w-8 lg:w-10 bg-gradient-to-r from-emerald-500/50 to-transparent" />
         <ArrowRight size={16} />
       </div>
 
-      {/* Dashboards */}
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, x: 20 }}
         whileInView={{ opacity: 1, x: 0 }}
-        className="glass-card p-4 border-blue-500/20 bg-blue-500/5 w-36 text-center"
+        viewport={{ once: true }}
+        className="w-28 shrink-0 rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 text-center backdrop-blur-sm lg:w-32"
       >
-        <LayoutDashboard className="mx-auto mb-2 text-blue-400" size={24} />
-        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300">Dashboards</span>
+        <LayoutDashboard className="mx-auto mb-2 text-blue-400" size={22} />
+        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300">
+          Dashboards
+        </span>
+
         <div className="mt-3 flex justify-center gap-1">
-          <div className="w-1 h-3 bg-blue-500/40 rounded-full" />
-          <div className="w-1 h-5 bg-blue-500/60 rounded-full" />
-          <div className="w-1 h-4 bg-blue-500/40 rounded-full" />
+          <div className="h-3 w-1 rounded-full bg-blue-500/40" />
+          <div className="h-5 w-1 rounded-full bg-blue-500/60" />
+          <div className="h-4 w-1 rounded-full bg-blue-500/40" />
         </div>
       </motion.div>
     </div>
 
-    {/* Connecting Lines (Background) */}
-    <svg className="absolute inset-0 w-full h-full -z-10 opacity-30" preserveAspectRatio="none">
+    <svg
+      className="absolute inset-0 -z-10 h-full w-full opacity-30"
+      preserveAspectRatio="none"
+    >
       <defs>
         <linearGradient id="lineGrad" x1="0%" y1="0%" x2="100%" y2="0%">
           <stop offset="0%" stopColor="#3B82F6" />
@@ -131,17 +153,18 @@ const TechDiagram = () => (
           <stop offset="100%" stopColor="#10B981" />
         </linearGradient>
       </defs>
-      <path 
-        d="M 150 150 L 850 150" 
-        stroke="url(#lineGrad)" 
-        strokeWidth="1" 
-        fill="none" 
+      <path
+        d="M 150 150 L 850 150"
+        stroke="url(#lineGrad)"
+        strokeWidth="1"
+        fill="none"
         strokeDasharray="10,10"
         className="animate-[dash_20s_linear_infinite]"
       />
     </svg>
   </div>
 );
+
 
 export const TechnologyPage = ({ setCurrentPage }: { setCurrentPage: (p: any) => void }) => {
   return (
@@ -173,10 +196,17 @@ export const TechnologyPage = ({ setCurrentPage }: { setCurrentPage: (p: any) =>
       {/* Architecture Section */}
       <section className="section-padding bg-slate-950/50">
         <div className="max-w-7xl mx-auto">
-          <div className="mb-16">
-            <h2 className="text-3xl md:text-5xl font-display font-bold mb-6">Arquitectura tecnológica de Debacu</h2>
-            <p className="text-slate-400 max-w-2xl">Diseñada para la escalabilidad, precisión y procesamiento en tiempo real de datos complejos del sector hospitality.</p>
-          </div>
+          <div className="mb-16 text-center">
+              <h2 className="mb-6 text-3xl font-bold text-white md:text-5xl">
+                Arquitectura tecnológica de Debacu
+              </h2>
+
+              <p className="mx-auto max-w-2xl text-slate-400">
+                Diseñada para la escalabilidad, precisión y procesamiento en
+                tiempo real de datos complejos del sector hospitality.
+              </p>
+            </div>
+
 
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-8">
             {[

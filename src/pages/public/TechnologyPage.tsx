@@ -25,16 +25,17 @@ import "@/styles/public.css";
 import WebNavbar from "@/pages/public/WebNavbar";
 import WebFooter from "@/pages/public/WebFooter";
 
-const TechDiagram = () => (
-  <div className="relative mx-auto w-full max-w-5xl overflow-hidden py-12 md:py-20">
-    <div className="relative z-10 flex flex-col items-center justify-between gap-12 md:flex-row">
+ const TechDiagram = () => (
+  <div className="relative mx-auto w-full max-w-[1180px] overflow-visible py-12 md:py-20">
+    <div className="relative z-10 flex flex-col items-center justify-center gap-8 md:flex-row md:flex-nowrap md:gap-5 lg:gap-6">
+      {/* 1. Fuentes */}
       <motion.div
         initial={{ opacity: 0, x: -20 }}
         whileInView={{ opacity: 1, x: 0 }}
         viewport={{ once: true }}
-        className="flex flex-col items-center gap-4"
+        className="flex shrink-0 flex-col items-center gap-4"
       >
-        <div className="w-36 rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 text-center shadow-lg shadow-blue-500/5 backdrop-blur-sm">
+        <div className="w-32 rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 text-center shadow-lg shadow-blue-500/5 backdrop-blur-sm">
           <Database className="mx-auto mb-2 text-blue-400" size={24} />
           <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300">
             Fuentes de datos
@@ -53,22 +54,24 @@ const TechDiagram = () => (
         </div>
       </motion.div>
 
-      <div className="hidden flex-col items-center gap-2 text-slate-700 md:flex">
-        <div className="h-[1px] w-12 bg-gradient-to-r from-blue-500/50 to-transparent" />
+      {/* Flecha 1 */}
+      <div className="hidden shrink-0 flex-col items-center gap-2 text-slate-700 md:flex">
+        <div className="h-[1px] w-8 lg:w-10 bg-gradient-to-r from-blue-500/50 to-transparent" />
         <ArrowRight size={16} />
       </div>
 
+      {/* 2. Procesamiento */}
       <motion.div
         initial={{ opacity: 0, scale: 0.9 }}
         whileInView={{ opacity: 1, scale: 1 }}
         viewport={{ once: true }}
-        className="relative w-56 rounded-2xl border border-violet-500/20 bg-violet-500/5 p-6 text-center backdrop-blur-sm"
+        className="relative w-44 shrink-0 rounded-2xl border border-violet-500/20 bg-violet-500/5 p-5 text-center backdrop-blur-sm lg:w-48"
       >
         <div className="absolute -right-3 -top-3 flex h-8 w-8 animate-pulse items-center justify-center rounded-full bg-violet-600 shadow-lg shadow-violet-600/40">
           <Zap size={14} className="text-white" />
         </div>
 
-        <Cpu className="mx-auto mb-3 text-violet-400" size={36} />
+        <Cpu className="mx-auto mb-3 text-violet-400" size={34} />
         <h4 className="mb-3 text-xs font-bold uppercase tracking-widest text-violet-300">
           Capa de procesamiento
         </h4>
@@ -90,20 +93,22 @@ const TechDiagram = () => (
         </div>
       </motion.div>
 
-      <div className="hidden flex-col items-center gap-2 text-slate-700 md:flex">
-        <div className="h-[1px] w-12 bg-gradient-to-r from-violet-500/50 to-transparent" />
+      {/* Flecha 2 */}
+      <div className="hidden shrink-0 flex-col items-center gap-2 text-slate-700 md:flex">
+        <div className="h-[1px] w-8 lg:w-10 bg-gradient-to-r from-violet-500/50 to-transparent" />
         <ArrowRight size={16} />
       </div>
 
+      {/* 3. Analítica */}
       <motion.div
         initial={{ opacity: 0, scale: 0.9 }}
         whileInView={{ opacity: 1, scale: 1 }}
         viewport={{ once: true }}
-        className="flex flex-col items-center gap-4"
+        className="flex shrink-0 flex-col items-center gap-4"
       >
-        <div className="group relative w-56 overflow-hidden rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-6 text-center backdrop-blur-sm">
+        <div className="group relative w-44 overflow-hidden rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5 text-center backdrop-blur-sm lg:w-48">
           <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
-          <BrainCircuit className="mx-auto mb-3 text-emerald-400" size={36} />
+          <BrainCircuit className="mx-auto mb-3 text-emerald-400" size={34} />
           <h4 className="mb-3 text-xs font-bold uppercase tracking-widest text-emerald-300">
             Capa analítica
           </h4>
@@ -121,19 +126,21 @@ const TechDiagram = () => (
         </div>
       </motion.div>
 
-      <div className="hidden flex-col items-center gap-2 text-slate-700 md:flex">
-        <div className="h-[1px] w-12 bg-gradient-to-r from-emerald-500/50 to-transparent" />
+      {/* Flecha 3 */}
+      <div className="hidden shrink-0 flex-col items-center gap-2 text-slate-700 md:flex">
+        <div className="h-[1px] w-8 lg:w-10 bg-gradient-to-r from-emerald-500/50 to-transparent" />
         <ArrowRight size={16} />
       </div>
 
+      {/* 4. Dashboards */}
       <motion.div
         initial={{ opacity: 0, x: 20 }}
         whileInView={{ opacity: 1, x: 0 }}
         viewport={{ once: true }}
-        className="w-36 rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 text-center backdrop-blur-sm"
+        className="w-28 shrink-0 rounded-2xl border border-blue-500/20 bg-blue-500/5 p-3 text-center backdrop-blur-sm lg:w-32"
       >
-        <LayoutDashboard className="mx-auto mb-2 text-blue-400" size={24} />
-        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300">
+        <LayoutDashboard className="mx-auto mb-2 text-blue-400" size={20} />
+        <span className="text-[9px] font-bold uppercase tracking-wider text-blue-300">
           Dashboards
         </span>
 
@@ -157,7 +164,7 @@ const TechDiagram = () => (
         </linearGradient>
       </defs>
       <path
-        d="M 150 150 L 850 150"
+        d="M 120 150 L 1030 150"
         stroke="url(#lineGrad)"
         strokeWidth="1"
         fill="none"
@@ -198,17 +205,17 @@ export default function TechnologyPage() {
               >
                 <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-xs font-bold uppercase tracking-widest text-blue-400">
                   <Cpu size={12} />
-                  Tecnología y analítica
+                  Engineering & AI
                 </div>
 
                 <h1 className="mb-8 text-4xl font-bold text-white md:text-6xl">
-                  Arquitectura tecnológica aplicada a la operativa hotelera
+                  Debacu AI — Inteligencia aplicada a la operativa hotelera
                 </h1>
 
                 <p className="mx-auto mb-12 max-w-3xl text-lg text-slate-400 md:text-xl">
-                  Debacu estructura datos operativos, señales de riesgo y métricas
-                  de revenue para convertir información dispersa en análisis útil,
-                  alertas y cuadros de decisión para el hotel.
+                  Debacu integra análisis de datos, motores analíticos y agentes
+                  inteligentes para transformar información operativa en
+                  decisiones accionables para el hotel.
                 </p>
               </motion.div>
 
@@ -219,38 +226,39 @@ export default function TechnologyPage() {
           {/* Architecture Section */}
           <section className="bg-slate-950/50 px-6 py-20">
             <div className="mx-auto max-w-7xl">
-              <div className="mb-16">
-                <h2 className="mb-6 text-3xl font-bold text-white md:text-5xl">
-                  Arquitectura tecnológica de Debacu
-                </h2>
-                <p className="max-w-2xl text-slate-400">
-                  Diseñada para procesar datos operativos hoteleros, estructurar
-                  señales analíticas y escalar a múltiples establecimientos con
-                  criterios homogéneos de análisis y seguridad.
-                </p>
-              </div>
+             <div className="mb-16 text-center">
+              <h2 className="mb-6 text-3xl font-bold text-white md:text-5xl">
+                Arquitectura tecnológica de Debacu
+              </h2>
+
+              <p className="mx-auto max-w-2xl text-slate-400">
+                Diseñada para la escalabilidad, precisión y procesamiento en
+                tiempo real de datos complejos del sector hospitality.
+              </p>
+            </div>
+
 
               <div className="grid gap-8 md:grid-cols-2 lg:grid-cols-4">
                 {[
                   {
                     icon: <Database className="text-blue-500" />,
-                    title: "Capa de ingestión",
-                    desc: "Captura de información desde PMS, exportaciones CSV, incidencias operativas y datos de reserva. Los datos se incorporan a un modelo analítico orientado al sector hotelero.",
+                    title: "Data ingestion layer",
+                    desc: "Captura de datos desde sistemas PMS, exportaciones CSV, incidencias operativas y datos de reservas. Los datos se normalizan y se almacenan en un modelo analítico diseñado para hospitality.",
                   },
                   {
                     icon: <Cpu className="text-violet-500" />,
-                    title: "Capa de procesamiento",
-                    desc: "Normalización, clasificación de eventos, estructuración de métricas y correlación entre distintas fuentes para construir una base de análisis consistente.",
+                    title: "Data processing layer",
+                    desc: "Procesamiento mediante normalización de datos, clasificación de eventos y generación de métricas operativas. Correlación entre diferentes fuentes para crear una base de conocimiento estructurada.",
                   },
                   {
                     icon: <BrainCircuit className="text-emerald-500" />,
-                    title: "Capa analítica",
-                    desc: "Motores especializados para detección de patrones, evaluación de señales, análisis de comportamiento y lectura operativa de indicadores relevantes.",
+                    title: "Intelligence layer",
+                    desc: "Motores analíticos para detección de patrones, clasificación de señales, análisis de comportamiento y revenue. Generación automática de indicadores y alertas operativas críticas.",
                   },
                   {
                     icon: <LayoutDashboard className="text-blue-400" />,
-                    title: "Capa de visualización",
-                    desc: "Presentación de resultados mediante dashboards, alertas, paneles de análisis y vistas orientadas a la toma de decisiones operativas y económicas.",
+                    title: "Visualization layer",
+                    desc: "Presentación de resultados en dashboards interactivos, alertas en tiempo real, paneles de inteligencia y recomendaciones operativas basadas en datos.",
                   },
                 ].map((layer, i) => (
                   <div
@@ -273,113 +281,117 @@ export default function TechnologyPage() {
             </div>
           </section>
 
-          {/* Core Intelligence Section */}
+          {/* Debacu AI Section */}
           <section className="px-6 py-20">
-            <div className="mx-auto grid max-w-7xl items-center gap-16 lg:grid-cols-2">
-              <motion.div
-                initial={{ opacity: 0, x: -20 }}
-                whileInView={{ opacity: 1, x: 0 }}
-                viewport={{ once: true }}
-              >
-                <h2 className="mb-8 text-3xl font-bold text-white md:text-5xl">
-                  Núcleo analítico de la plataforma
-                </h2>
+  <div className="mx-auto max-w-7xl">
+    <div className="mb-16 text-center">
+      <h2 className="mb-6 text-3xl font-bold leading-tight text-white md:text-5xl">
+        Debacu AI — Motor de inteligencia de la plataforma
+      </h2>
 
-                <p className="mb-8 text-lg text-slate-400">
-                  Debacu incorpora una capa analítica que procesa información
-                  operativa y comercial del hotel para detectar patrones,
-                  identificar desviaciones y generar señales útiles para la
-                  gestión diaria y la lectura del negocio.
-                </p>
+      <p className="mx-auto max-w-3xl text-lg text-slate-400">
+        Debacu AI es la capa de inteligencia que analiza datos operativos y
+        comerciales del hotel para detectar patrones, identificar anomalías y
+        generar recomendaciones.
+      </p>
+    </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  {[
-                    { icon: <Activity size={16} />, label: "Modelos analíticos" },
-                    { icon: <Lock size={16} />, label: "Reglas de clasificación" },
-                    { icon: <TrendingUp size={16} />, label: "Análisis estadístico" },
-                    { icon: <Users size={16} />, label: "Asistencia analítica" },
-                  ].map((item, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center gap-3 rounded-lg border border-white/[0.05] bg-white/[0.03] p-3"
-                    >
-                      <div className="text-blue-500">{item.icon}</div>
-                      <span className="text-xs font-medium text-slate-300">
-                        {item.label}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-
-                <p className="mt-8 text-sm italic text-slate-500">
-                  El objetivo no es sustituir al hotel, sino aportar una capa de
-                  análisis que ordene la información y mejore la capacidad de decisión.
-                </p>
-              </motion.div>
-
-              <div className="relative">
-                <div className="absolute -inset-4 rounded-full bg-blue-600/10 blur-3xl" />
-                <div className="relative rounded-2xl border border-white/[0.05] bg-slate-950/50 p-8 backdrop-blur-sm">
-                  <div className="mb-8 flex items-center justify-between">
-                    <div className="flex gap-1.5">
-                      <div className="h-2 w-2 rounded-full bg-red-500" />
-                      <div className="h-2 w-2 rounded-full bg-yellow-500" />
-                      <div className="h-2 w-2 rounded-full bg-green-500" />
-                    </div>
-                    <span className="font-mono text-[10px] text-slate-600">
-                      ANALYTICS_CORE_V2.4
-                    </span>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-3 font-mono text-xs text-blue-400">
-                      <span className="opacity-50">01</span>
-                      <span>INITIALIZING_PROCESSING_LAYERS...</span>
-                    </div>
-
-                    <div className="flex items-center gap-3 font-mono text-xs text-emerald-400">
-                      <span className="opacity-50">02</span>
-                      <span>PATTERN_ANALYSIS_ACTIVE [98.4%]</span>
-                    </div>
-
-                    <div className="flex items-center gap-3 font-mono text-xs text-slate-400">
-                      <span className="opacity-50">03</span>
-                      <span>SIGNAL_CLASSIFICATION_RUNNING</span>
-                    </div>
-
-                    <div className="flex h-24 w-full items-end gap-1 rounded border border-white/[0.05] bg-white/[0.02] p-2">
-                      {[30, 60, 45, 80, 55, 90, 70, 40, 85].map((h, i) => (
-                        <motion.div
-                          key={i}
-                          initial={{ height: 0 }}
-                          animate={{ height: `${h}%` }}
-                          transition={{
-                            delay: i * 0.1,
-                            repeat: Infinity,
-                            repeatType: "reverse",
-                            duration: 2,
-                          }}
-                          className="flex-1 rounded-t-[1px] bg-blue-500/30"
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
+    <div className="grid items-center gap-16 lg:grid-cols-2 lg:gap-20">
+      <motion.div
+        initial={{ opacity: 0, x: -20 }}
+        whileInView={{ opacity: 1, x: 0 }}
+        viewport={{ once: true }}
+        className="mx-auto w-full max-w-xl"
+      >
+        <div className="grid grid-cols-2 gap-4">
+          {[
+            { icon: <Activity size={16} />, label: "Modelos analíticos" },
+            { icon: <Lock size={16} />, label: "Reglas de clasificación" },
+            { icon: <TrendingUp size={16} />, label: "Análisis estadístico" },
+            { icon: <Users size={16} />, label: "Asistentes inteligentes" },
+          ].map((item, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-3 rounded-lg border border-white/[0.05] bg-white/[0.03] p-3"
+            >
+              <div className="text-blue-500">{item.icon}</div>
+              <span className="text-xs font-medium text-slate-300">
+                {item.label}
+              </span>
             </div>
-          </section>
+          ))}
+        </div>
+
+        <p className="mt-8 text-sm italic text-slate-500">
+          El objetivo es convertir datos dispersos en señales operativas útiles
+          para la toma de decisiones estratégicas.
+        </p>
+      </motion.div>
+
+      <div className="relative mx-auto w-full max-w-xl">
+        <div className="absolute -inset-4 rounded-full bg-blue-600/10 blur-3xl" />
+        <div className="relative rounded-2xl border border-white/[0.05] bg-slate-950/50 p-8 backdrop-blur-sm">
+          <div className="mb-8 flex items-center justify-between">
+            <div className="flex gap-1.5">
+              <div className="h-2 w-2 rounded-full bg-red-500" />
+              <div className="h-2 w-2 rounded-full bg-yellow-500" />
+              <div className="h-2 w-2 rounded-full bg-green-500" />
+            </div>
+            <span className="font-mono text-[10px] text-slate-600">
+              AI_ENGINE_CORE_V2.4
+            </span>
+          </div>
+
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 font-mono text-xs text-blue-400">
+              <span className="opacity-50">01</span>
+              <span>INITIALIZING_NEURAL_LAYERS...</span>
+            </div>
+
+            <div className="flex items-center gap-3 font-mono text-xs text-emerald-400">
+              <span className="opacity-50">02</span>
+              <span>PATTERN_RECOGNITION_ACTIVE [98.4%]</span>
+            </div>
+
+            <div className="flex items-center gap-3 font-mono text-xs text-slate-400">
+              <span className="opacity-50">03</span>
+              <span>ANOMALY_DETECTION: NO_THREATS_FOUND</span>
+            </div>
+
+            <div className="flex h-24 w-full items-end gap-1 rounded border border-white/[0.05] bg-white/[0.02] p-2">
+              {[30, 60, 45, 80, 55, 90, 70, 40, 85].map((h, i) => (
+                <motion.div
+                  key={i}
+                  initial={{ height: 0 }}
+                  animate={{ height: `${h}%` }}
+                  transition={{
+                    delay: i * 0.1,
+                    repeat: Infinity,
+                    repeatType: "reverse",
+                    duration: 2,
+                  }}
+                  className="flex-1 rounded-t-[1px] bg-blue-500/30"
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 
           {/* Intelligence Engines */}
           <section className="bg-slate-950/30 px-6 py-20">
             <div className="mx-auto max-w-7xl">
               <div className="mb-16 text-center">
                 <h2 className="mb-4 text-3xl font-bold text-white md:text-5xl">
-                  Motores analíticos de Debacu
+                  Motores de Inteligencia
                 </h2>
                 <p className="mx-auto max-w-2xl text-slate-400">
-                  Distintas capas especializadas trabajan sobre la misma base de
-                  datos para ofrecer una lectura más completa de la operativa y
-                  del rendimiento del hotel.
+                  Cuatro motores especializados trabajando en paralelo para una
+                  visión 360º de tu hotel.
                 </p>
               </div>
 
@@ -388,41 +400,41 @@ export default function TechnologyPage() {
                   {
                     icon: <ShieldAlert className="text-rose-500" />,
                     title: "Risk Intelligence Engine",
-                    desc: "Motor especializado en señales operativas, incidencias y patrones repetitivos que pueden afectar a la prevención, el control y la calidad operativa del establecimiento.",
+                    desc: "Motor especializado en evaluar señales operativas relacionadas con la actividad del hotel. Análisis de incidencias, detección de patrones repetitivos y generación de indicadores de riesgo preventivos.",
                     features: [
                       "Prevención operativa",
-                      "Control de incidencias",
-                      "Señales de riesgo",
+                      "Control de calidad",
+                      "Detección de fraude",
                     ],
                   },
                   {
                     icon: <TrendingUp className="text-blue-500" />,
                     title: "Revenue Intelligence Engine",
-                    desc: "Motor analítico centrado en producción, canal, segmento y comportamiento de reserva para detectar desviaciones, oportunidades de mejora y fugas de ingreso.",
+                    desc: "Motor analítico centrado en el rendimiento comercial. Analiza producción por canal, comportamiento de reserva y evolución de ingresos para detectar oportunidades de optimización.",
                     features: [
-                      "Canal y segmento",
-                      "Comportamiento de reserva",
-                      "Fugas de revenue",
+                      "Channel mix optimization",
+                      "Booking behavior",
+                      "Revenue leakage detection",
                     ],
                   },
                   {
                     icon: <Activity className="text-emerald-500" />,
                     title: "Behaviour Analysis Engine",
-                    desc: "Motor orientado a identificar tendencias, repeticiones y patrones de comportamiento relevantes a partir del histórico operativo y comercial del hotel.",
+                    desc: "Motor de análisis de comportamiento basado en datos históricos. Permite identificar tendencias recurrentes y señales relevantes que ayudan a comprender el funcionamiento real del hotel.",
                     features: [
-                      "Patrones recurrentes",
-                      "Tendencias temporales",
-                      "Lectura de comportamiento",
+                      "Guest profiling",
+                      "Seasonal trends",
+                      "Pattern recognition",
                     ],
                   },
                   {
                     icon: <Layers className="text-violet-500" />,
                     title: "Data Intelligence Engine",
-                    desc: "Motor responsable de estructurar la información de entrada, normalizar métricas y preparar la base de datos para análisis consistentes y comparables.",
+                    desc: "Motor encargado de procesar y estructurar los datos de entrada. Normalización de métricas, estructuración de información y preparación de datos para el análisis profundo.",
                     features: [
-                      "Normalización",
-                      "Estructuración",
-                      "Preparación analítica",
+                      "Data cleansing",
+                      "Metric normalization",
+                      "API integration",
                     ],
                   },
                 ].map((engine, i) => (
@@ -461,91 +473,104 @@ export default function TechnologyPage() {
             </div>
           </section>
 
-          {/* Assistants Section */}
-          <section className="px-6 py-20">
-            <div className="mx-auto grid max-w-7xl items-center gap-16 lg:grid-cols-2">
-              <div className="order-2 grid grid-cols-1 gap-4 lg:order-1">
-                {[
-                  {
-                    name: "Risk Analysis Assistant",
-                    icon: <ShieldAlert size={18} />,
-                    desc: "Ayuda a interpretar señales operativas y patrones de incidencias.",
-                    status: "Active",
-                  },
-                  {
-                    name: "Revenue Analysis Assistant",
-                    icon: <TrendingUp size={18} />,
-                    desc: "Ayuda a leer tendencias de ingresos y desviaciones comerciales.",
-                    status: "Monitoring",
-                  },
-                  {
-                    name: "Operational Insight Assistant",
-                    icon: <Zap size={18} />,
-                    desc: "Apoya la identificación de mejoras operativas y señales internas.",
-                    status: "Active",
-                  },
-                ].map((agent, i) => (
-                  <div
-                    key={i}
-                    className="group flex items-center justify-between rounded-2xl border border-white/[0.05] bg-white/[0.02] p-6 backdrop-blur-sm"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-600/10 text-blue-500">
-                        {agent.icon}
-                      </div>
-                      <div>
-                        <h4 className="text-sm font-bold text-white">
-                          {agent.name}
-                        </h4>
-                        <p className="text-xs text-slate-500">{agent.desc}</p>
-                      </div>
-                    </div>
+          {/* AI Agents Section */}
+    <section className="px-6 py-20">
+  <div className="mx-auto max-w-7xl">
+    <div className="mb-14 text-center">
+      <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-bold uppercase tracking-widest text-emerald-400">
+        <Bot size={12} />
+        AI Agents
+      </div>
 
-                    <div className="flex items-center gap-2">
-                      <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-                      <span className="text-[10px] font-bold uppercase text-slate-500">
-                        {agent.status}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+      <h2 className="mx-auto mb-6 max-w-4xl text-3xl font-bold text-white md:text-5xl">
+        Agentes inteligentes de Debacu
+      </h2>
+
+      <p className="mx-auto max-w-3xl text-lg leading-relaxed text-slate-400">
+        Debacu incorpora agentes inteligentes que ayudan a interpretar la
+        información y generar análisis automatizados. No sustituyen al
+        hotelero, sino que proporcionan asistencia inteligente basada en datos.
+      </p>
+    </div>
+
+    <div className="grid items-start gap-10 lg:grid-cols-2">
+      {/* Columna izquierda: tarjetas */}
+      <div className="grid grid-cols-1 gap-4">
+        {[
+          {
+            name: "Risk Analysis Agent",
+            icon: <ShieldAlert size={18} />,
+            desc: "Analiza señales operativas y patrones de incidencias.",
+            status: "Active",
+          },
+          {
+            name: "Revenue Analysis Agent",
+            icon: <TrendingUp size={18} />,
+            desc: "Evalúa tendencias de ingresos y desviaciones comerciales.",
+            status: "Monitoring",
+          },
+          {
+            name: "Operational Insight Agent",
+            icon: <Zap size={18} />,
+            desc: "Detecta mejoras posibles en procesos internos.",
+            status: "Active",
+          },
+        ].map((agent, i) => (
+          <div
+            key={i}
+            className="group flex items-center justify-between rounded-2xl border border-white/[0.05] bg-white/[0.02] p-6 backdrop-blur-sm"
+          >
+            <div className="flex items-center gap-4">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-600/10 text-blue-500">
+                {agent.icon}
               </div>
-
-              <div className="order-1 lg:order-2">
-                <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-bold uppercase tracking-widest text-emerald-400">
-                  <Bot size={12} />
-                  Asistencia analítica
-                </div>
-
-                <h2 className="mb-8 text-3xl font-bold text-white md:text-5xl">
-                  Asistentes analíticos de Debacu
-                </h2>
-
-                <p className="mb-8 text-lg text-slate-400">
-                  Debacu incorpora asistentes orientados a facilitar la lectura de
-                  la información y a generar análisis automatizados sobre la base
-                  de datos disponible. Son una capa de apoyo, no un sustituto del
-                  criterio del hotel.
-                </p>
-
-                <ul className="space-y-4">
-                  {[
-                    "Ayudar a interpretar métricas operativas",
-                    "Detectar anomalías y señales relevantes",
-                    "Resumir tendencias complejas",
-                    "Sugerir posibles acciones de revisión o prevención",
-                  ].map((item, i) => (
-                    <li key={i} className="flex items-center gap-3 text-slate-300">
-                      <div className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500/10">
-                        <CheckCircle2 size={12} className="text-emerald-500" />
-                      </div>
-                      {item}
-                    </li>
-                  ))}
-                </ul>
+              <div>
+                <h4 className="text-sm font-bold text-white">{agent.name}</h4>
+                <p className="text-xs text-slate-500">{agent.desc}</p>
               </div>
             </div>
-          </section>
+
+            <div className="flex items-center gap-2">
+              <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+              <span className="text-[10px] font-bold uppercase text-slate-500">
+                {agent.status}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Columna derecha: beneficios */}
+      <div className="rounded-2xl border border-white/[0.05] bg-white/[0.02] p-8 backdrop-blur-sm">
+        <h3 className="mb-6 text-xl font-bold text-white">
+          Qué aportan estos agentes
+        </h3>
+
+        <ul className="space-y-4">
+          {[
+            "Analizar métricas operativas automáticamente",
+            "Detectar anomalías en tiempo real",
+            "Interpretar tendencias complejas",
+            "Sugerir posibles acciones preventivas",
+          ].map((item, i) => (
+            <li key={i} className="flex items-center gap-3 text-slate-300">
+              <div className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500/10">
+                <CheckCircle2 size={12} className="text-emerald-500" />
+              </div>
+              {item}
+            </li>
+          ))}
+        </ul>
+
+        <p className="mt-8 text-sm leading-relaxed text-slate-500">
+          Su función es aportar una capa adicional de lectura, priorización y
+          apoyo analítico sobre la base de datos operativa del hotel.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
 
           {/* Scalability & SaaS */}
           <section className="bg-slate-950/30 px-6 py-20">
@@ -559,10 +584,9 @@ export default function TechnologyPage() {
                       Arquitectura SaaS escalable
                     </h2>
                     <p className="mb-8 text-slate-400">
-                      Debacu se desarrolla como una plataforma SaaS multi-tenant
-                      preparada para trabajar con múltiples hoteles o grupos,
-                      manteniendo separación lógica, consistencia analítica y
-                      capacidad de crecimiento.
+                      Debacu se desarrolla como una plataforma SaaS multiempresa
+                      diseñada para escalar a múltiples alojamientos con máxima
+                      eficiencia y seguridad.
                     </p>
 
                     <div className="grid grid-cols-2 gap-6">
@@ -570,15 +594,15 @@ export default function TechnologyPage() {
                         { icon: <Cloud size={20} />, label: "Cloud Native" },
                         {
                           icon: <Lock size={20} />,
-                          label: "Multi-tenant isolation",
+                          label: "Multi-tenant Isolation",
                         },
                         {
                           icon: <Server size={20} />,
-                          label: "Procesamiento eficiente",
+                          label: "Efficient Processing",
                         },
                         {
                           icon: <Network size={20} />,
-                          label: "Actualización continua",
+                          label: "Continuous Updates",
                         },
                       ].map((item, i) => (
                         <div key={i} className="flex items-center gap-3">
@@ -609,20 +633,20 @@ export default function TechnologyPage() {
           <section className="px-6 py-20">
             <div className="mx-auto max-w-7xl text-center">
               <h2 className="mb-8 text-3xl font-bold text-white md:text-5xl">
-                Tecnología aplicada a riesgo, operativa y revenue hotelero
+                Innovación tecnológica aplicada al sector hospitality
               </h2>
 
               <p className="mx-auto mb-12 max-w-3xl text-lg text-slate-400">
-                Debacu combina arquitectura SaaS, normalización de datos y capas
-                analíticas especializadas para crear una base tecnológica útil en
-                gestión operativa, prevención y lectura económica del hotel.
+                Debacu introduce una aproximación innovadora al combinar análisis
+                de datos operativos, evaluación estructurada de eventos e
+                inteligencia artificial aplicada.
               </p>
 
               <button
                 onClick={() => navigate("/documentacion")}
                 className="inline-flex items-center gap-2 rounded-full bg-blue-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-blue-600/20 transition-all hover:bg-blue-500"
               >
-                Explorar documentación técnica <ArrowRight size={16} />
+                Explorar Documentación Técnica <ArrowRight size={16} />
               </button>
             </div>
           </section>
