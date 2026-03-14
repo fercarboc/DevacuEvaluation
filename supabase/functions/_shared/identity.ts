@@ -110,3 +110,82 @@ export async function buildIdentityKey(input: {
     normalized_identifier: picked.normalized,
   };
 }
+
+export type ManualQueryType = "DOCUMENT" | "EMAIL" | "PHONE" | "FULL_NAME";
+
+export function maskDoc(q?: string | null) {
+  const v = String(q ?? "").trim().toUpperCase().replace(/\s+/g, "");
+  if (!v) return null;
+  if (v.length <= 4) return "*".repeat(v.length);
+  return `${v.slice(0, 4)}${"*".repeat(Math.max(1, v.length - 5))}${v.slice(-1)}`;
+}
+
+export function maskEmail(q?: string | null) {
+  const v = String(q ?? "").trim().toLowerCase();
+  if (!v || !v.includes("@")) return null;
+
+  const [user, domain = ""] = v.split("@");
+  const [host = "", tld = ""] = domain.split(".");
+
+  const mu = user.length <= 2 ? `${user[0] ?? "*"}*` : `${user.slice(0, 2)}***`;
+  const mh = host.length <= 2 ? `${host[0] ?? "*"}*` : `${host.slice(0, 2)}***`;
+
+  return `${mu}@${mh}${tld ? `.${tld}` : ""}`;
+}
+
+export function maskPhone(q?: string | null) {
+  const p = normalizePhoneDigits(String(q ?? ""));
+  if (!p) return null;
+  if (p.length <= 4) return "*".repeat(p.length);
+  return `${p.slice(0, 3)}****${p.slice(-2)}`;
+}
+
+export function maskFullName(q?: string | null) {
+  const v = String(q ?? "").trim().replace(/\s+/g, " ");
+  if (!v) return null;
+  if (v.length <= 4) return `${v[0] ?? ""}***`;
+  return `${v.slice(0, 2)}***`;
+}
+
+export function normalizeFullName(q: string) {
+  return q.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export function normalizeManualQuery(input: {
+  type: ManualQueryType;
+  value: string;
+}): { normalized: string; masked: string | null; confidence: number } {
+  const type = String(input.type).toUpperCase() as ManualQueryType;
+  const value = String(input.value ?? "").trim();
+
+  if (!value) throw new Error("EMPTY_QUERY");
+
+  switch (type) {
+    case "DOCUMENT": {
+      const d = normalizeDoc(value);
+      return { normalized: d, masked: maskDoc(d), confidence: 1 };
+    }
+    case "EMAIL": {
+      const e = normalizeEmail(value);
+      return { normalized: e, masked: maskEmail(e), confidence: 1 };
+    }
+    case "PHONE": {
+      const p = normalizePhoneDigits(value);
+      return { normalized: p, masked: maskPhone(p), confidence: 1 };
+    }
+    case "FULL_NAME": {
+      const n = normalizeFullName(value);
+      return { normalized: n, masked: maskFullName(n), confidence: 0.45 };
+    }
+    default:
+      throw new Error("INVALID_QUERY_TYPE");
+  }
+}
+
+export async function buildQueryHash(input: {
+  type: ManualQueryType;
+  normalized: string;
+}): Promise<string> {
+  const payload = `QUERY:${String(input.type).toUpperCase()}:${input.normalized}`;
+  return await hmacSha256Hex(PEPPER, payload);
+}

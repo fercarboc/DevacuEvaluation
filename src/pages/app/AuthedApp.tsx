@@ -103,6 +103,8 @@ function toPlanCode(plan: PlanTier): "FREE" | "BASIC" | "MEDIUM" | "PREMIUM" {
 function usesPropertySelector(v: AuthedView) {
   return (
     v === "aud_screening_csv" ||
+    v === "search" ||
+    v === "add" ||
     v === "rev_channels" ||
     v === "rev_risk" ||
     v === "rev_leakage" ||
@@ -416,19 +418,18 @@ export default function AuthedApp() {
   }, []);
 
   const headerLeft = React.useMemo(() => {
-    if (!canAccessRevenue) return null;
-    if (!usesPropertySelector(currentView)) return null;
-    if (propertiesLoading) return null;
-    if (!revenueProperties.length) return null;
+  if (!usesPropertySelector(currentView)) return null;
+  if (propertiesLoading) return null;
+  if (!revenueProperties.length) return null;
 
-    return (
-      <PropertySelector
-        properties={revenueProperties}
-        selectedId={selectedPropertyId}
-        onSelect={setSelectedPropertyId}
-      />
-    );
-  }, [canAccessRevenue, currentView, propertiesLoading, revenueProperties, selectedPropertyId]);
+  return (
+    <PropertySelector
+      properties={revenueProperties}
+      selectedId={selectedPropertyId}
+      onSelect={setSelectedPropertyId}
+    />
+  );
+}, [currentView, propertiesLoading, revenueProperties, selectedPropertyId]);
 
   return (
     <AppShell
@@ -459,14 +460,22 @@ export default function AuthedApp() {
         />
       )}
 
-      {currentView === "search" && <SearchRatings currentUser={user as any} />}
+      {currentView === "search" && (
+  <SearchRatings
+    currentUser={user as any}
+    selectedPropertyId={selectedPropertyId}
+    selectedPropertyName={selectedProperty?.name ?? null}
+  />
+)}
 
-      {currentView === "add" && (
-        <RatingForm
-          currentCustomerId={(user as any).id}
-          currentCustomerName={(user as any).fullName}
-        />
-      )}
+     {currentView === "add" && (
+  <RatingForm
+    currentCustomerId={(user as any).id}
+    currentCustomerName={(user as any).fullName}
+    selectedPropertyId={selectedPropertyId}
+    selectedPropertyName={selectedProperty?.name ?? null}
+  />
+)}
 
       {currentView === "account" && <MiCuenta user={user as any} />}
 
