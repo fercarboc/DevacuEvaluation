@@ -60,6 +60,16 @@ type BulkStateMode = "NO_CHANGE" | "OPEN" | "CLOSED";
 
 const DEFAULT_VISIBLE_DAYS = 15;
 
+const forcedFieldStyle: React.CSSProperties = {
+  color: "#111827",
+  caretColor: "#111827",
+  WebkitTextFillColor: "#111827",
+  opacity: 1,
+};
+
+const baseFieldClass =
+  "rounded-xl border border-gray-200 bg-white text-gray-900 caret-gray-900 placeholder:text-gray-400 outline-none transition-all focus:ring-2 focus:ring-blue-500";
+
 function formatDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -777,7 +787,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
 
   if (!selectedPropertyId) {
     return (
-      <div className="bg-white rounded-3xl border border-gray-200 p-10 text-center text-gray-500">
+      <div className="rounded-3xl border border-gray-200 bg-white p-10 text-center text-gray-500">
         Selecciona una propiedad para gestionar su calendario de precios.
       </div>
     );
@@ -785,11 +795,11 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
 
   return (
     <div className="space-y-3">
-      <div className="bg-white rounded-3xl border border-gray-100 shadow-sm">
-        <div className="px-4 py-3 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 border-b border-gray-100">
+      <div className="rounded-3xl border border-gray-100 bg-white shadow-sm">
+        <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
             <h1 className="text-xl font-bold text-gray-900">Calendario de Precios</h1>
-            <p className="text-xs text-gray-500 mt-0.5">
+            <p className="mt-0.5 text-xs text-gray-500">
               Pricing diario, estancia mínima y cierres para {propertyTitle}
             </p>
           </div>
@@ -798,7 +808,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
             <button
               type="button"
               onClick={() => shiftRange(-1)}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
+              className="inline-flex items-center gap-1 rounded-xl border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
             >
               <ChevronLeft size={13} />
               Día anterior
@@ -807,7 +817,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
             <button
               type="button"
               onClick={handleGoToday}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
+              className="inline-flex items-center gap-1 rounded-xl border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
             >
               <CalendarDays size={13} />
               Hoy
@@ -816,7 +826,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
             <button
               type="button"
               onClick={() => shiftRange(1)}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
+              className="inline-flex items-center gap-1 rounded-xl border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
             >
               Día siguiente
               <ChevronRight size={13} />
@@ -825,7 +835,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
             <button
               type="button"
               onClick={() => setRefreshTick((v) => v + 1)}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
+              className="inline-flex items-center gap-1 rounded-xl border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
             >
               <RefreshCcw size={13} />
               Recargar
@@ -833,47 +843,49 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
           </div>
         </div>
 
-        <div className="px-4 py-3 flex flex-wrap items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2 px-4 py-3">
           <div>
-            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1 ml-1">
+            <label className="mb-1 ml-1 block text-[10px] font-bold uppercase tracking-widest text-gray-400">
               Desde
             </label>
             <input
               type="date"
               value={dateFrom}
               onChange={(e) => setDateFrom(e.target.value)}
-              className="px-3 py-1.5 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+              className={`px-3 py-1.5 text-sm ${baseFieldClass}`}
+              style={forcedFieldStyle}
             />
           </div>
 
           <div>
-            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1 ml-1">
+            <label className="mb-1 ml-1 block text-[10px] font-bold uppercase tracking-widest text-gray-400">
               Hasta
             </label>
             <input
               type="date"
               value={dateTo}
               onChange={(e) => setDateTo(e.target.value)}
-              className="px-3 py-1.5 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+              className={`px-3 py-1.5 text-sm ${baseFieldClass}`}
+              style={forcedFieldStyle}
             />
           </div>
 
           <button
             type="button"
             onClick={handleApplyRange}
-            className="inline-flex items-center gap-2 px-4 py-1.5 bg-gray-900 text-white rounded-xl text-sm font-bold hover:bg-gray-800"
+            className="inline-flex items-center gap-2 rounded-xl bg-gray-900 px-4 py-1.5 text-sm font-bold text-white hover:bg-gray-800"
           >
             Aplicar rango
           </button>
 
-          <div className="flex flex-wrap items-center gap-2 ml-auto">
-            <div className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs">
               <span className="font-semibold text-slate-900">Desde:</span> {appliedFrom}
             </div>
-            <div className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs">
               <span className="font-semibold text-slate-900">Hasta:</span> {appliedTo}
             </div>
-            <div className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs">
               <span className="font-semibold text-slate-900">Días:</span> {dates.length}
             </div>
           </div>
@@ -881,30 +893,30 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
       </div>
 
       {pageError && (
-        <div className="flex items-center gap-3 bg-rose-50 text-rose-700 px-4 py-2.5 rounded-2xl border border-rose-100">
+        <div className="flex items-center gap-3 rounded-2xl border border-rose-100 bg-rose-50 px-4 py-2.5 text-rose-700">
           <AlertTriangle size={14} />
           <span className="text-xs font-semibold">{pageError}</span>
         </div>
       )}
 
-      <div className="bg-white rounded-3xl border border-gray-100 shadow-sm px-4 py-3">
+      <div className="rounded-3xl border border-gray-100 bg-white px-4 py-3 shadow-sm">
         <div className="flex flex-col gap-3">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => setBulkDrawerOpen(true)}
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
               >
                 <SlidersHorizontal size={13} />
                 Edición masiva
               </button>
 
               <div
-                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-2xl border text-xs font-semibold ${
+                className={`inline-flex items-center gap-2 rounded-2xl border px-3 py-1.5 text-xs font-semibold ${
                   hasPendingChanges
-                    ? "bg-amber-50 text-amber-700 border-amber-200"
-                    : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                    ? "border-amber-200 bg-amber-50 text-amber-700"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700"
                 }`}
               >
                 {hasPendingChanges ? <AlertTriangle size={13} /> : <CheckCircle2 size={13} />}
@@ -914,13 +926,19 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
               </div>
 
               <div className="relative">
-                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <Search
+                  size={13}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+                />
                 <input
                   type="text"
                   value={roomTypeFilter}
                   onChange={(e) => setRoomTypeFilter(e.target.value)}
                   placeholder="Filtrar tipo..."
-                  className="pl-8 pr-3 py-1.5 rounded-xl border border-gray-200 text-xs w-[170px] focus:ring-2 focus:ring-blue-500 outline-none"
+                  className={`w-[170px] pl-8 pr-3 py-1.5 text-xs ${baseFieldClass}`}
+                  style={forcedFieldStyle}
+                  autoComplete="off"
+                  spellCheck={false}
                 />
               </div>
             </div>
@@ -930,7 +948,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                 type="button"
                 onClick={handleDiscardChanges}
                 disabled={!hasPendingChanges || savingAll}
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
               >
                 <RotateCcw size={13} />
                 Descartar
@@ -940,7 +958,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                 type="button"
                 onClick={() => void handleSaveAll()}
                 disabled={!hasPendingChanges || savingAll}
-                className="inline-flex items-center gap-2 px-4 py-1.5 bg-blue-600 text-white rounded-xl text-xs font-bold hover:bg-blue-700 disabled:opacity-60"
+                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-60"
               >
                 {savingAll ? (
                   <>
@@ -968,7 +986,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                   title={`${item.name} · ${item.item_type}`}
                 >
                   <span
-                    className="w-3 h-3 rounded-full border border-slate-200"
+                    className="h-3 w-3 rounded-full border border-slate-200"
                     style={{ backgroundColor: item.color }}
                   />
                   <span>
@@ -982,9 +1000,9 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
         </div>
       </div>
 
-      <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
+      <div className="overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-sm">
         {(loadingRoomTypes || loadingPrices || loadingCalendarContext) && (
-          <div className="flex items-center justify-center gap-2 py-5 text-xs text-gray-500 border-b border-gray-100">
+          <div className="flex items-center justify-center gap-2 border-b border-gray-100 py-5 text-xs text-gray-500">
             <Loader2 className="h-4 w-4 animate-spin" />
             Cargando datos…
           </div>
@@ -993,7 +1011,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
         {!loadingRoomTypes && filteredRoomTypes.length === 0 ? (
           <div className="px-8 py-8 text-center text-gray-400">
             <Hotel size={32} className="mx-auto mb-3 opacity-20" />
-            <p className="font-bold text-sm">
+            <p className="text-sm font-bold">
               {roomTypeFilter
                 ? "No hay tipos que coincidan con el filtro"
                 : "No hay tipos de habitación configurados"}
@@ -1001,10 +1019,10 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
           </div>
         ) : (
           <div className="max-h-[68vh] overflow-auto">
-            <table className="w-full text-xs min-w-max border-collapse">
+            <table className="min-w-max w-full border-collapse text-xs">
               <thead className="sticky top-0 z-20">
-                <tr className="bg-gray-50 border-b border-gray-100">
-                  <th className="sticky left-0 z-30 bg-gray-50 text-left px-2 py-2 min-w-[160px] border-r border-gray-100">
+                <tr className="border-b border-gray-100 bg-gray-50">
+                  <th className="sticky left-0 z-30 min-w-[160px] border-r border-gray-100 bg-gray-50 px-2 py-2 text-left">
                     <div className="text-[9px] font-black uppercase tracking-widest text-gray-500">
                       Tipo habitación
                     </div>
@@ -1016,19 +1034,19 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                     return (
                       <th
                         key={date}
-                        className={`px-0.5 py-1 text-center min-w-[48px] border-l border-gray-100 ${
+                        className={`min-w-[48px] border-l border-gray-100 px-0.5 py-1 text-center ${
                           isWeekend(date) ? "bg-slate-100" : "bg-gray-50"
                         }`}
                       >
-                        <div className="text-[12px] font-bold text-gray-900 leading-none">
+                        <div className="text-[12px] font-bold leading-none text-gray-900">
                           {prettyDayLabel(date)}
                         </div>
-                        <div className="text-[9px] lowercase text-gray-500 font-semibold leading-none mt-0.5">
+                        <div className="mt-0.5 text-[9px] font-semibold lowercase leading-none text-gray-500">
                           {weekdayLabel(date)}
                         </div>
                         <div className="mt-1 flex items-center justify-center gap-1">
                           <span
-                            className="w-2.5 h-2.5 rounded-full border border-slate-200"
+                            className="h-2.5 w-2.5 rounded-full border border-slate-200"
                             style={{ backgroundColor: context?.color ?? "#CBD5E1" }}
                             title={
                               context
@@ -1039,7 +1057,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                         </div>
                         {context && (
                           <div
-                            className="mt-0.5 text-[8px] font-bold text-slate-500 leading-none"
+                            className="mt-0.5 text-[8px] font-bold leading-none text-slate-500"
                             title={getContextPricingLabel(context)}
                           >
                             {getContextPricingLabel(context)}
@@ -1054,14 +1072,14 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
               <tbody>
                 {filteredRoomTypes.map((roomType, rowIndex) => (
                   <tr key={roomType.id} className={rowIndex % 2 === 0 ? "bg-white" : "bg-slate-50/40"}>
-                    <td className="sticky left-0 z-10 px-2 py-2 align-middle border-r border-b border-gray-100 bg-inherit">
-                      <div className="font-bold text-gray-900 text-[11px] leading-tight">
+                    <td className="sticky left-0 z-10 border-r border-b border-gray-100 bg-inherit px-2 py-2 align-middle">
+                      <div className="text-[11px] font-bold leading-tight text-gray-900">
                         {roomType.name}
                       </div>
-                      <div className="mt-0.5 text-[9px] text-gray-500 leading-tight">
+                      <div className="mt-0.5 text-[9px] leading-tight text-gray-500">
                         {roomType.code} · {roomType.capacity ?? 0}p · {roomType.roomsCount ?? 0}h
                       </div>
-                      <div className="mt-0.5 text-[10px] font-bold text-gray-700 leading-tight">
+                      <div className="mt-0.5 text-[10px] font-bold leading-tight text-gray-700">
                         Base {Number(roomType.basePrice ?? 0).toFixed(0)}€
                       </div>
 
@@ -1069,7 +1087,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                         <button
                           type="button"
                           onClick={() => handleCopyRowBase(roomType)}
-                          className="inline-flex items-center gap-1 text-[9px] text-blue-600 font-bold hover:text-blue-700"
+                          className="inline-flex items-center gap-1 text-[9px] font-bold text-blue-600 hover:text-blue-700"
                           title="Copiar precio base a todos los días visibles"
                         >
                           <Copy size={10} />
@@ -1079,7 +1097,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                         <button
                           type="button"
                           onClick={() => handleCopyCalculatedRow(roomType)}
-                          className="inline-flex items-center gap-1 text-[9px] text-emerald-600 font-bold hover:text-emerald-700"
+                          className="inline-flex items-center gap-1 text-[9px] font-bold text-emerald-600 hover:text-emerald-700"
                           title="Copiar precio calculado por contexto a todos los días visibles"
                         >
                           <Wand2 size={10} />
@@ -1099,7 +1117,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                       return (
                         <td
                           key={date}
-                          className={`px-0 py-0 align-middle border-l border-b border-gray-100 ${
+                          className={`border-l border-b border-gray-100 px-0 py-0 align-middle ${
                             closed
                               ? "bg-slate-300/70"
                               : isWeekend(date)
@@ -1108,7 +1126,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                           }`}
                         >
                           <div
-                            className={`px-0.5 py-0.5 min-h-[56px] ${
+                            className={`min-h-[56px] px-0.5 py-0.5 ${
                               closed
                                 ? "bg-slate-300/70"
                                 : cell.dirty
@@ -1138,10 +1156,13 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                                   e.currentTarget.blur();
                                 }
                               }}
-                              className={`w-full bg-transparent text-center text-[10px] leading-none font-bold outline-none ${
+                              className={`w-full bg-transparent text-center text-[10px] font-bold leading-none outline-none ${
                                 closed ? "text-slate-600" : "text-gray-900"
                               }`}
+                              style={forcedFieldStyle}
                               title={`Precio ${date}`}
+                              autoComplete="off"
+                              spellCheck={false}
                             />
 
                             <div className="mt-0.5 flex items-center justify-center gap-1 text-[8px] font-semibold leading-none">
@@ -1157,7 +1178,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
 
                               {context ? (
                                 <span
-                                  className="truncate max-w-[34px] text-slate-500"
+                                  className="max-w-[34px] truncate text-slate-500"
                                   title={`${context.name}${getContextPricingLabel(context) ? ` · ${getContextPricingLabel(context)}` : ""}`}
                                 >
                                   {context.source_type === "EVENT" ? "evt" : "tmp"}
@@ -1165,7 +1186,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                               ) : null}
                             </div>
 
-                            <div className="mt-0.5 flex items-center justify-center gap-0.5 text-[9px] font-semibold text-gray-500 leading-none">
+                            <div className="mt-0.5 flex items-center justify-center gap-0.5 text-[9px] font-semibold leading-none text-gray-500">
                               <span>MS</span>
                               <input
                                 type="text"
@@ -1190,7 +1211,10 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                                 className={`w-4 bg-transparent text-center font-bold outline-none ${
                                   closed ? "text-slate-600" : "text-gray-700"
                                 }`}
+                                style={forcedFieldStyle}
                                 title={`Estancia mínima ${date}`}
+                                autoComplete="off"
+                                spellCheck={false}
                               />
                             </div>
 
@@ -1216,7 +1240,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                                 className={`inline-flex items-center justify-center rounded-md p-1.5 ${
                                   closed
                                     ? "text-slate-800 hover:bg-slate-400/40"
-                                    : "text-slate-500 hover:text-slate-700 hover:bg-slate-100"
+                                    : "text-slate-500 hover:bg-slate-100 hover:text-slate-700"
                                 }`}
                                 title={
                                   closed
@@ -1228,7 +1252,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                               </button>
                             </div>
 
-                            <div className="mt-0.5 h-[8px] flex items-center justify-center">
+                            <div className="mt-0.5 flex h-[8px] items-center justify-center">
                               {cell.saving ? (
                                 <Loader2 size={8} className="animate-spin text-blue-600" />
                               ) : cell.saved ? (
@@ -1256,11 +1280,11 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
             onClick={() => setBulkDrawerOpen(false)}
           />
 
-          <div className="absolute right-0 top-0 h-full w-full max-w-[460px] bg-white shadow-2xl border-l border-slate-200 flex flex-col">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div className="absolute right-0 top-0 flex h-full w-full max-w-[460px] flex-col border-l border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">Edición masiva</h2>
-                <p className="text-xs text-slate-500 mt-0.5">
+                <p className="mt-0.5 text-xs text-slate-500">
                   Aplica cambios a una fila, varias o todas las visibles.
                 </p>
               </div>
@@ -1268,15 +1292,15 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
               <button
                 type="button"
                 onClick={() => setBulkDrawerOpen(false)}
-                className="inline-flex items-center justify-center w-9 h-9 rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50"
               >
                 <X size={16} />
               </button>
             </div>
 
-            <div className="flex-1 overflow-auto px-5 py-4 space-y-4">
+            <div className="flex-1 space-y-4 overflow-auto px-5 py-4">
               <div className="rounded-2xl border border-slate-100 bg-slate-50/60 px-4 py-3">
-                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
+                <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
                   Alcance
                 </div>
 
@@ -1314,7 +1338,8 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                     <select
                       value={bulkOneRoomTypeId}
                       onChange={(e) => setBulkOneRoomTypeId(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                      className={`w-full px-3 py-2 text-sm ${baseFieldClass}`}
+                      style={forcedFieldStyle}
                     >
                       {roomTypes.map((rt) => (
                         <option key={rt.id} value={rt.id}>
@@ -1326,7 +1351,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                 )}
 
                 {bulkScope === "MULTIPLE" && (
-                  <div className="mt-3 max-h-40 overflow-auto rounded-xl border border-slate-200 bg-white p-3 space-y-2">
+                  <div className="mt-3 max-h-40 space-y-2 overflow-auto rounded-xl border border-slate-200 bg-white p-3">
                     {roomTypes.map((rt) => {
                       const checked = bulkMultipleRoomTypeIds.includes(rt.id);
                       return (
@@ -1350,7 +1375,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
               </div>
 
               <div className="rounded-2xl border border-slate-100 bg-slate-50/60 px-4 py-3">
-                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
+                <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
                   Fechas
                 </div>
 
@@ -1398,20 +1423,22 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                       type="date"
                       value={bulkCustomFrom}
                       onChange={(e) => setBulkCustomFrom(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                      className={`w-full px-3 py-2 text-sm ${baseFieldClass}`}
+                      style={forcedFieldStyle}
                     />
                     <input
                       type="date"
                       value={bulkCustomTo}
                       onChange={(e) => setBulkCustomTo(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                      className={`w-full px-3 py-2 text-sm ${baseFieldClass}`}
+                      style={forcedFieldStyle}
                     />
                   </div>
                 )}
               </div>
 
               <div className="rounded-2xl border border-slate-100 bg-slate-50/60 px-4 py-3">
-                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
+                <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
                   Cambios a aplicar
                 </div>
 
@@ -1432,7 +1459,10 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                     onChange={(e) => setBulkPrice(normalizePriceInput(e.target.value))}
                     placeholder="120"
                     disabled={!bulkApplyPrice}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-100"
+                    className={`w-full px-3 py-2 text-sm disabled:bg-slate-100 ${baseFieldClass}`}
+                    style={forcedFieldStyle}
+                    autoComplete="off"
+                    spellCheck={false}
                   />
 
                   <label className="flex items-center gap-2 text-sm">
@@ -1450,17 +1480,21 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
                     value={bulkMinStay}
                     onChange={(e) => setBulkMinStay(e.target.value.replace(/[^\d]/g, ""))}
                     disabled={!bulkApplyMinStay}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-100"
+                    className={`w-full px-3 py-2 text-sm disabled:bg-slate-100 ${baseFieldClass}`}
+                    style={forcedFieldStyle}
+                    autoComplete="off"
+                    spellCheck={false}
                   />
 
                   <div>
-                    <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
+                    <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-400">
                       Estado
                     </label>
                     <select
                       value={bulkStateMode}
                       onChange={(e) => setBulkStateMode(e.target.value as BulkStateMode)}
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                      className={`w-full px-3 py-2 text-sm ${baseFieldClass}`}
+                      style={forcedFieldStyle}
                     >
                       <option value="NO_CHANGE">No tocar</option>
                       <option value="OPEN">Abrir</option>
@@ -1471,10 +1505,10 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
               </div>
 
               <div className="rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-3">
-                <div className="text-[10px] font-black uppercase tracking-widest text-blue-700/70 mb-2">
+                <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-blue-700/70">
                   Aviso
                 </div>
-                <p className="text-xs text-slate-700 leading-relaxed">
+                <p className="text-xs leading-relaxed text-slate-700">
                   Si una celda no tiene precio grabado, el sistema muestra el precio calculado
                   desde la tarifa base del tipo de habitación y la regla activa de temporada o
                   evento. Cuando grabas manualmente una celda, ese precio pasa a mandar sobre la
@@ -1483,11 +1517,11 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
               </div>
             </div>
 
-            <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
+            <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-5 py-4">
               <button
                 type="button"
                 onClick={() => setBulkDrawerOpen(false)}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
               >
                 Cancelar
               </button>
@@ -1495,7 +1529,7 @@ const PriceCalendarPage: React.FC<PriceCalendarPageProps> = ({
               <button
                 type="button"
                 onClick={handleApplyBulk}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gray-900 text-white text-sm font-bold hover:bg-gray-800"
+                className="inline-flex items-center gap-2 rounded-xl bg-gray-900 px-4 py-2 text-sm font-bold text-white hover:bg-gray-800"
               >
                 <Wand2 size={14} />
                 Aplicar cambios

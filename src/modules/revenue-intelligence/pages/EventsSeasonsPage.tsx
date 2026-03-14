@@ -31,7 +31,7 @@ type FormMode = "EVENT" | "SEASON";
 type ImpactLevel = "LOW" | "MEDIUM" | "HIGH";
 
 type EventType = "FAIR" | "BRIDGE" | "HOLIDAY" | "CONGRESS" | "OTHER";
-type SeasonType = "LOW_SEASON" | "MID_SEASON" | "HIGH_SEASON" | "PEAK_SEASON" | "OTHER";
+type SeasonType = "LOW" | "MID" | "HIGH" | "PEAK" | "OTHER";
 
 const DEFAULT_EVENT_COLOR = "#10B981";
 const DEFAULT_SEASON_COLOR = "#3B82F6";
@@ -39,6 +39,7 @@ const DEFAULT_SEASON_COLOR = "#3B82F6";
 type EventsSeasonsPageProps = {
   selectedPropertyId: string | null;
   selectedPropertyName?: string | null;
+  selectedOrgId: string | null;
 };
 
 type EditingItem =
@@ -46,9 +47,57 @@ type EditingItem =
   | { mode: "SEASON"; id: string }
   | null;
 
+const forcedFieldStyle: React.CSSProperties = {
+  color: "#111827",
+  caretColor: "#111827",
+  WebkitTextFillColor: "#111827",
+  opacity: 1,
+};
+
+const baseFieldClass =
+  "w-full rounded-xl border border-gray-200 bg-white px-4 py-3 text-gray-900 caret-gray-900 placeholder:text-gray-400 outline-none transition-all focus:ring-2 focus:ring-blue-500";
+
+const baseSelectClass =
+  "w-full appearance-none rounded-xl border border-gray-200 bg-white px-4 py-3 text-gray-900 caret-gray-900 outline-none transition-all focus:ring-2 focus:ring-blue-500";
+
+function seasonTypeLabel(value?: string | null) {
+  switch (String(value ?? "").toUpperCase()) {
+    case "LOW":
+      return "Temporada Baja";
+    case "MID":
+      return "Temporada Media";
+    case "HIGH":
+      return "Temporada Alta";
+    case "PEAK":
+      return "Temporada Pico";
+    case "OTHER":
+      return "Otra";
+    default:
+      return value ?? "—";
+  }
+}
+
+function eventTypeLabel(value?: string | null) {
+  switch (String(value ?? "").toUpperCase()) {
+    case "FAIR":
+      return "Feria";
+    case "BRIDGE":
+      return "Puente";
+    case "HOLIDAY":
+      return "Festivo";
+    case "CONGRESS":
+      return "Congreso";
+    case "OTHER":
+      return "Otro";
+    default:
+      return value ?? "—";
+  }
+}
+
 const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
   selectedPropertyId,
   selectedPropertyName,
+  selectedOrgId,
 }) => {
   const [events, setEvents] = useState<RevenueEvent[]>([]);
   const [seasons, setSeasons] = useState<RevenueSeason[]>([]);
@@ -56,7 +105,7 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [error, setError] = useState<string>("");
+  const [error, setError] = useState("");
 
   const [showForm, setShowForm] = useState(false);
   const [mode, setMode] = useState<FormMode>("EVENT");
@@ -65,7 +114,7 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
   const [formData, setFormData] = useState({
     name: "",
     eventType: "FAIR" as EventType,
-    seasonType: "HIGH_SEASON" as SeasonType,
+    seasonType: "HIGH" as SeasonType,
     startDate: "",
     endDate: "",
     impactLevel: "MEDIUM" as ImpactLevel,
@@ -85,7 +134,7 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
       setFormData({
         name: "",
         eventType: "FAIR",
-        seasonType: "HIGH_SEASON",
+        seasonType: "HIGH",
         startDate: "",
         endDate: "",
         impactLevel: "MEDIUM",
@@ -115,7 +164,9 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
     } catch (err) {
       setEvents([]);
       setSeasons([]);
-      setError(err instanceof Error ? err.message : "No se pudieron cargar eventos y temporadas");
+      setError(
+        err instanceof Error ? err.message : "No se pudieron cargar eventos y temporadas"
+      );
     } finally {
       setLoading(false);
     }
@@ -147,12 +198,21 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
   };
 
   const handleEditSeason = (season: RevenueSeason) => {
+    const normalizedSeasonType = String(season.seasonType ?? "").toUpperCase();
+
     setMode("SEASON");
     setEditingItem({ mode: "SEASON", id: season.id });
     setFormData({
       name: season.name,
       eventType: "FAIR",
-      seasonType: (season.seasonType as SeasonType) ?? "HIGH_SEASON",
+      seasonType:
+        normalizedSeasonType === "LOW" ||
+        normalizedSeasonType === "MID" ||
+        normalizedSeasonType === "HIGH" ||
+        normalizedSeasonType === "PEAK" ||
+        normalizedSeasonType === "OTHER"
+          ? (normalizedSeasonType as SeasonType)
+          : "HIGH",
       startDate: season.startDate,
       endDate: season.endDate,
       impactLevel: (season.impactLevel as ImpactLevel) ?? "MEDIUM",
@@ -173,7 +233,7 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
     setFormData({
       name: event.name,
       eventType: (event.eventType as EventType) ?? "FAIR",
-      seasonType: "HIGH_SEASON",
+      seasonType: "HIGH",
       startDate: event.startDate,
       endDate: event.endDate,
       impactLevel: (event.impactLevel as ImpactLevel) ?? "MEDIUM",
@@ -191,8 +251,8 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!selectedPropertyId) {
-      setError("Selecciona una propiedad");
+    if (!selectedPropertyId || !selectedOrgId) {
+      setError("Falta la propiedad o la organización seleccionada");
       return;
     }
 
@@ -211,7 +271,10 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
       return;
     }
 
-    if (formData.pricingOperation === "SET" && formData.pricingAdjustmentType === "PERCENT") {
+    if (
+      formData.pricingOperation === "SET" &&
+      formData.pricingAdjustmentType === "PERCENT"
+    ) {
       setError("La operación FIJAR solo debe usarse con ajuste de tipo IMPORTE");
       return;
     }
@@ -224,6 +287,8 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
         if (editingItem?.mode === "EVENT") {
           await updateEvent({
             id: editingItem.id,
+            org_id: selectedOrgId,
+            property_id: selectedPropertyId,
             name: formData.name.trim(),
             event_type: formData.eventType,
             start_date: formData.startDate,
@@ -239,6 +304,7 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
           });
         } else {
           await createEvent({
+            org_id: selectedOrgId,
             property_id: selectedPropertyId,
             name: formData.name.trim(),
             event_type: formData.eventType,
@@ -258,6 +324,8 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
         if (editingItem?.mode === "SEASON") {
           await updateSeason({
             id: editingItem.id,
+            org_id: selectedOrgId,
+            property_id: selectedPropertyId,
             name: formData.name.trim(),
             season_type: formData.seasonType,
             start_date: formData.startDate,
@@ -273,6 +341,7 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
           });
         } else {
           await createSeason({
+            org_id: selectedOrgId,
             property_id: selectedPropertyId,
             name: formData.name.trim(),
             season_type: formData.seasonType,
@@ -333,13 +402,13 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
   const getImpactColor = (impact: ImpactLevel | null) => {
     switch (impact) {
       case "HIGH":
-        return "bg-rose-100 text-rose-700 border-rose-200";
+        return "border-rose-200 bg-rose-100 text-rose-700";
       case "MEDIUM":
-        return "bg-amber-100 text-amber-700 border-amber-200";
+        return "border-amber-200 bg-amber-100 text-amber-700";
       case "LOW":
-        return "bg-emerald-100 text-emerald-700 border-emerald-200";
+        return "border-emerald-200 bg-emerald-100 text-emerald-700";
       default:
-        return "bg-slate-100 text-slate-700 border-slate-200";
+        return "border-slate-200 bg-slate-100 text-slate-700";
     }
   };
 
@@ -351,9 +420,7 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
     if (!operation || !adjustmentType || adjustmentValue == null) return "-";
 
     const value =
-      adjustmentType === "PERCENT"
-        ? `${adjustmentValue}%`
-        : `${adjustmentValue} €`;
+      adjustmentType === "PERCENT" ? `${adjustmentValue}%` : `${adjustmentValue} €`;
 
     if (operation === "INCREASE") return `+ ${value}`;
     if (operation === "DECREASE") return `- ${value}`;
@@ -446,7 +513,9 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
 
           <form onSubmit={handleSubmit} className="grid grid-cols-1 gap-6 md:grid-cols-3">
             <div className="md:col-span-2">
-              <label className="mb-2 block text-sm font-bold text-gray-700">Nombre</label>
+              <label className="mb-2 block text-sm font-bold text-gray-700">
+                {mode === "EVENT" ? "Nombre del evento" : "Tipo de temporada"}
+              </label>
               <input
                 type="text"
                 required
@@ -455,24 +524,31 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                 placeholder={
                   mode === "EVENT"
                     ? "Ej: Feria de Abril, Puente de Mayo..."
-                    : "Ej: Temporada Alta Verano, Temporada Baja..."
+                    : "Ej: Temporada Alta Verano"
                 }
-                className="w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-blue-500"
+                className={baseFieldClass}
+                style={forcedFieldStyle}
+                autoComplete="off"
+                spellCheck={false}
               />
             </div>
 
             <div>
               <label className="mb-2 block text-sm font-bold text-gray-700">
-                {mode === "EVENT" ? "Tipo de evento" : "Tipo de temporada"}
+                {mode === "EVENT" ? "Tipo de evento" : "Clasificación"}
               </label>
 
               {mode === "EVENT" ? (
                 <select
                   value={formData.eventType}
                   onChange={(e) =>
-                    setFormData((prev) => ({ ...prev, eventType: e.target.value as EventType }))
+                    setFormData((prev) => ({
+                      ...prev,
+                      eventType: e.target.value as EventType,
+                    }))
                   }
-                  className="w-full appearance-none rounded-xl border border-gray-200 bg-white px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-blue-500"
+                  className={baseSelectClass}
+                  style={forcedFieldStyle}
                 >
                   <option value="FAIR">Feria</option>
                   <option value="BRIDGE">Puente</option>
@@ -484,14 +560,18 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                 <select
                   value={formData.seasonType}
                   onChange={(e) =>
-                    setFormData((prev) => ({ ...prev, seasonType: e.target.value as SeasonType }))
+                    setFormData((prev) => ({
+                      ...prev,
+                      seasonType: e.target.value as SeasonType,
+                    }))
                   }
-                  className="w-full appearance-none rounded-xl border border-gray-200 bg-white px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-blue-500"
+                  className={baseSelectClass}
+                  style={forcedFieldStyle}
                 >
-                  <option value="LOW_SEASON">Temporada Baja</option>
-                  <option value="MID_SEASON">Temporada Media</option>
-                  <option value="HIGH_SEASON">Temporada Alta</option>
-                  <option value="PEAK_SEASON">Temporada Pico</option>
+                  <option value="LOW">Temporada Baja</option>
+                  <option value="MID">Temporada Media</option>
+                  <option value="HIGH">Temporada Alta</option>
+                  <option value="PEAK">Temporada Pico</option>
                   <option value="OTHER">Otra</option>
                 </select>
               )}
@@ -504,7 +584,8 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                 required
                 value={formData.startDate}
                 onChange={(e) => setFormData((prev) => ({ ...prev, startDate: e.target.value }))}
-                className="w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-blue-500"
+                className={baseFieldClass}
+                style={forcedFieldStyle}
               />
             </div>
 
@@ -515,7 +596,8 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                 required
                 value={formData.endDate}
                 onChange={(e) => setFormData((prev) => ({ ...prev, endDate: e.target.value }))}
-                className="w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-blue-500"
+                className={baseFieldClass}
+                style={forcedFieldStyle}
               />
             </div>
 
@@ -529,7 +611,8 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                     impactLevel: e.target.value as ImpactLevel,
                   }))
                 }
-                className="w-full appearance-none rounded-xl border border-gray-200 bg-white px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-blue-500"
+                className={baseSelectClass}
+                style={forcedFieldStyle}
               >
                 <option value="HIGH">Alto</option>
                 <option value="MEDIUM">Medio</option>
@@ -559,12 +642,15 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                     priority: Number(e.target.value || 0),
                   }))
                 }
-                className="w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-blue-500"
+                className={baseFieldClass}
+                style={forcedFieldStyle}
               />
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-bold text-gray-700">Operación precio</label>
+              <label className="mb-2 block text-sm font-bold text-gray-700">
+                Operación precio
+              </label>
               <select
                 value={formData.pricingOperation}
                 onChange={(e) =>
@@ -575,7 +661,8 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                       e.target.value === "SET" ? "FIXED" : prev.pricingAdjustmentType,
                   }))
                 }
-                className="w-full appearance-none rounded-xl border border-gray-200 bg-white px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-blue-500"
+                className={baseSelectClass}
+                style={forcedFieldStyle}
               >
                 <option value="INCREASE">Subir</option>
                 <option value="DECREASE">Bajar</option>
@@ -594,7 +681,8 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                   }))
                 }
                 disabled={formData.pricingOperation === "SET"}
-                className="w-full appearance-none rounded-xl border border-gray-200 bg-white px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:bg-slate-50"
+                className="w-full appearance-none rounded-xl border border-gray-200 bg-white px-4 py-3 text-gray-900 outline-none transition-all focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:bg-slate-50"
+                style={forcedFieldStyle}
               >
                 <option value="PERCENT">%</option>
                 <option value="FIXED">Importe fijo</option>
@@ -614,16 +702,21 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                     pricingAdjustmentValue: Number(e.target.value || 0),
                   }))
                 }
-                className="w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-blue-500"
+                className={baseFieldClass}
+                style={forcedFieldStyle}
               />
             </div>
 
             <div className="md:col-span-3">
-              <label className="mb-2 block text-sm font-bold text-gray-700">Notas (Opcional)</label>
+              <label className="mb-2 block text-sm font-bold text-gray-700">
+                Notas (Opcional)
+              </label>
               <textarea
                 value={formData.note}
                 onChange={(e) => setFormData((prev) => ({ ...prev, note: e.target.value }))}
-                className="h-24 w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-blue-500"
+                className="h-24 w-full rounded-xl border border-gray-200 bg-white px-4 py-3 text-gray-900 caret-gray-900 placeholder:text-gray-400 outline-none transition-all focus:ring-2 focus:ring-blue-500"
+                style={forcedFieldStyle}
+                spellCheck={false}
               />
             </div>
 
@@ -646,7 +739,8 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                 className="inline-flex items-center gap-2 rounded-2xl bg-gray-900 px-8 py-3 font-bold text-white transition-all hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {saving && <Loader2 size={16} className="animate-spin" />}
-                {editingItem ? "Actualizar" : "Guardar"} {mode === "EVENT" ? "Evento" : "Temporada"}
+                {editingItem ? "Actualizar" : "Guardar"}{" "}
+                {mode === "EVENT" ? "Evento" : "Temporada"}
               </button>
             </div>
           </form>
@@ -695,7 +789,10 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                               <div className="flex items-center gap-3">
                                 <div
                                   className="flex h-10 w-10 items-center justify-center rounded-xl"
-                                  style={{ backgroundColor: `${season.color}20`, color: season.color }}
+                                  style={{
+                                    backgroundColor: `${season.color}20`,
+                                    color: season.color,
+                                  }}
                                 >
                                   <CalendarIcon size={18} />
                                 </div>
@@ -709,11 +806,15 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                             </td>
                             <td className="px-6 py-5">
                               <span className="rounded-lg bg-gray-100 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-600">
-                                {season.seasonType?.replaceAll("_", " ") ?? "SEASON"}
+                                {seasonTypeLabel(season.seasonType)}
                               </span>
                             </td>
-                            <td className="px-6 py-5 font-medium text-gray-600">{season.startDate}</td>
-                            <td className="px-6 py-5 font-medium text-gray-600">{season.endDate}</td>
+                            <td className="px-6 py-5 font-medium text-gray-600">
+                              {season.startDate}
+                            </td>
+                            <td className="px-6 py-5 font-medium text-gray-600">
+                              {season.endDate}
+                            </td>
                             <td className="px-6 py-5">
                               <span
                                 className={`rounded-lg border px-3 py-1 text-[10px] font-bold ${getImpactColor(
@@ -730,7 +831,9 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                                 season.pricingAdjustmentValue
                               )}
                             </td>
-                            <td className="px-6 py-5 font-medium text-gray-600">{season.priority}</td>
+                            <td className="px-6 py-5 font-medium text-gray-600">
+                              {season.priority}
+                            </td>
                             <td className="px-8 py-5 text-right">
                               <div className="flex justify-end gap-2">
                                 <button
@@ -795,7 +898,10 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                               <div className="flex items-center gap-3">
                                 <div
                                   className="flex h-10 w-10 items-center justify-center rounded-xl"
-                                  style={{ backgroundColor: `${event.color}20`, color: event.color }}
+                                  style={{
+                                    backgroundColor: `${event.color}20`,
+                                    color: event.color,
+                                  }}
                                 >
                                   <CalendarIcon size={18} />
                                 </div>
@@ -809,11 +915,15 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                             </td>
                             <td className="px-6 py-5">
                               <span className="rounded-lg bg-gray-100 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-600">
-                                {event.eventType.replaceAll("_", " ")}
+                                {eventTypeLabel(event.eventType)}
                               </span>
                             </td>
-                            <td className="px-6 py-5 font-medium text-gray-600">{event.startDate}</td>
-                            <td className="px-6 py-5 font-medium text-gray-600">{event.endDate}</td>
+                            <td className="px-6 py-5 font-medium text-gray-600">
+                              {event.startDate}
+                            </td>
+                            <td className="px-6 py-5 font-medium text-gray-600">
+                              {event.endDate}
+                            </td>
                             <td className="px-6 py-5">
                               <span
                                 className={`rounded-lg border px-3 py-1 text-[10px] font-bold ${getImpactColor(
@@ -830,7 +940,9 @@ const EventsSeasonsPage: React.FC<EventsSeasonsPageProps> = ({
                                 event.pricingAdjustmentValue
                               )}
                             </td>
-                            <td className="px-6 py-5 font-medium text-gray-600">{event.priority}</td>
+                            <td className="px-6 py-5 font-medium text-gray-600">
+                              {event.priority}
+                            </td>
                             <td className="px-8 py-5 text-right">
                               <div className="flex justify-end gap-2">
                                 <button

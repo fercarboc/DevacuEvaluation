@@ -64,6 +64,10 @@ import {
 import { PlanType } from "@/types/types";
 import { PlanTier } from "../../../auditor";
 
+const ACTIVE_PROPERTY_STORAGE_KEY = "revenue_active_property_id";
+const PROPERTIES_CHANGED_EVENT = "revenue:properties-changed";
+const ACTIVE_PROPERTY_CHANGED_EVENT = "revenue:active-property-changed";
+
 function toPlanTier(planLike: any): PlanTier {
   const s = String(planLike ?? "").toUpperCase();
   if (s === "FREE") return PlanTier.FREE;
@@ -171,55 +175,97 @@ export default function AuthedApp() {
   const currentPlanCode = toPlanCode(currentPlan);
   const canAccessRevenue = currentPlan === PlanTier.MEDIUM || currentPlan === PlanTier.PREMIUM;
 
-  React.useEffect(() => {
-    let cancelled = false;
-
-    async function loadRevenueProperties() {
+  const loadRevenueProperties = React.useCallback(
+    async (preferredPropertyId?: string | null) => {
       if (!canAccessRevenue) {
         setRevenueProperties([]);
         setSelectedPropertyId(null);
+        localStorage.removeItem(ACTIVE_PROPERTY_STORAGE_KEY);
         return;
       }
 
       try {
         setPropertiesLoading(true);
+
         const rows = await getProperties();
-
-        if (cancelled) return;
-
         setRevenueProperties(rows);
 
-        const savedId = localStorage.getItem("revenue_active_property_id");
-        if (savedId && rows.some((p) => p.id === savedId)) {
-          setSelectedPropertyId(savedId);
-        } else if (rows.length > 0) {
-          setSelectedPropertyId(rows[0].id);
-        } else {
+        if (!rows.length) {
           setSelectedPropertyId(null);
+          localStorage.removeItem(ACTIVE_PROPERTY_STORAGE_KEY);
+          return;
         }
+
+        const savedId = localStorage.getItem(ACTIVE_PROPERTY_STORAGE_KEY);
+        const currentSelected = selectedPropertyId;
+
+        const candidateId =
+          preferredPropertyId ??
+          currentSelected ??
+          savedId ??
+          null;
+
+        if (candidateId && rows.some((p) => p.id === candidateId)) {
+          setSelectedPropertyId(candidateId);
+          localStorage.setItem(ACTIVE_PROPERTY_STORAGE_KEY, candidateId);
+          return;
+        }
+
+        setSelectedPropertyId(rows[0].id);
+        localStorage.setItem(ACTIVE_PROPERTY_STORAGE_KEY, rows[0].id);
       } catch (error) {
         console.error("loadRevenueProperties error:", error);
-        if (!cancelled) {
-          setRevenueProperties([]);
-          setSelectedPropertyId(null);
-        }
+        setRevenueProperties([]);
+        setSelectedPropertyId(null);
       } finally {
-        if (!cancelled) setPropertiesLoading(false);
+        setPropertiesLoading(false);
       }
-    }
+    },
+    [canAccessRevenue, selectedPropertyId],
+  );
 
+  React.useEffect(() => {
     void loadRevenueProperties();
+  }, [loadRevenueProperties]);
+
+  React.useEffect(() => {
+    const handlePropertiesChanged = () => {
+      const preferredId = localStorage.getItem(ACTIVE_PROPERTY_STORAGE_KEY);
+      void loadRevenueProperties(preferredId);
+    };
+
+    const handleActivePropertyChanged = (event: Event) => {
+      const customEvent = event as CustomEvent<{ propertyId?: string }>;
+      const propertyId = customEvent.detail?.propertyId ?? null;
+
+      if (propertyId) {
+        setSelectedPropertyId(propertyId);
+        localStorage.setItem(ACTIVE_PROPERTY_STORAGE_KEY, propertyId);
+      }
+
+      void loadRevenueProperties(propertyId);
+    };
+
+    window.addEventListener(PROPERTIES_CHANGED_EVENT, handlePropertiesChanged);
+    window.addEventListener(
+      ACTIVE_PROPERTY_CHANGED_EVENT,
+      handleActivePropertyChanged as EventListener,
+    );
 
     return () => {
-      cancelled = true;
+      window.removeEventListener(PROPERTIES_CHANGED_EVENT, handlePropertiesChanged);
+      window.removeEventListener(
+        ACTIVE_PROPERTY_CHANGED_EVENT,
+        handleActivePropertyChanged as EventListener,
+      );
     };
-  }, [canAccessRevenue]);
+  }, [loadRevenueProperties]);
 
   React.useEffect(() => {
     if (selectedPropertyId) {
-      localStorage.setItem("revenue_active_property_id", selectedPropertyId);
+      localStorage.setItem(ACTIVE_PROPERTY_STORAGE_KEY, selectedPropertyId);
     } else {
-      localStorage.removeItem("revenue_active_property_id");
+      localStorage.removeItem(ACTIVE_PROPERTY_STORAGE_KEY);
     }
   }, [selectedPropertyId]);
 
@@ -418,18 +464,18 @@ export default function AuthedApp() {
   }, []);
 
   const headerLeft = React.useMemo(() => {
-  if (!usesPropertySelector(currentView)) return null;
-  if (propertiesLoading) return null;
-  if (!revenueProperties.length) return null;
+    if (!usesPropertySelector(currentView)) return null;
+    if (propertiesLoading) return null;
+    if (!revenueProperties.length) return null;
 
-  return (
-    <PropertySelector
-      properties={revenueProperties}
-      selectedId={selectedPropertyId}
-      onSelect={setSelectedPropertyId}
-    />
-  );
-}, [currentView, propertiesLoading, revenueProperties, selectedPropertyId]);
+    return (
+      <PropertySelector
+        properties={revenueProperties}
+        selectedId={selectedPropertyId}
+        onSelect={setSelectedPropertyId}
+      />
+    );
+  }, [currentView, propertiesLoading, revenueProperties, selectedPropertyId]);
 
   return (
     <AppShell
@@ -461,21 +507,21 @@ export default function AuthedApp() {
       )}
 
       {currentView === "search" && (
-  <SearchRatings
-    currentUser={user as any}
-    selectedPropertyId={selectedPropertyId}
-    selectedPropertyName={selectedProperty?.name ?? null}
-  />
-)}
+        <SearchRatings
+          currentUser={user as any}
+          selectedPropertyId={selectedPropertyId}
+          selectedPropertyName={selectedProperty?.name ?? null}
+        />
+      )}
 
-     {currentView === "add" && (
-  <RatingForm
-    currentCustomerId={(user as any).id}
-    currentCustomerName={(user as any).fullName}
-    selectedPropertyId={selectedPropertyId}
-    selectedPropertyName={selectedProperty?.name ?? null}
-  />
-)}
+      {currentView === "add" && (
+        <RatingForm
+          currentCustomerId={(user as any).id}
+          currentCustomerName={(user as any).fullName}
+          selectedPropertyId={selectedPropertyId}
+          selectedPropertyName={selectedProperty?.name ?? null}
+        />
+      )}
 
       {currentView === "account" && <MiCuenta user={user as any} />}
 
@@ -562,11 +608,12 @@ export default function AuthedApp() {
       )}
 
       {currentView === "rev_events_seasons" && canAccessRevenue && (
-        <EventsSeasonsPage
-          selectedPropertyId={selectedPropertyId}
-          selectedPropertyName={selectedProperty?.name ?? null}
-        />
-      )}
+  <EventsSeasonsPage
+    selectedPropertyId={selectedPropertyId}
+    selectedPropertyName={selectedProperty?.name ?? null}
+    selectedOrgId={selectedProperty?.orgId ?? null}
+  />
+)}
 
       {currentView === "aud_stats" && <StatsViewAuditor currentPlan={currentPlan} />}
       {currentView === "aud_history" && <HistoryViewAuditor />}

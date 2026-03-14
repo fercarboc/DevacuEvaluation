@@ -43,6 +43,7 @@ export type RevenueSeason = {
 };
 
 export type CreateSeasonInput = {
+  org_id: string;
   property_id: string;
   name: string;
   season_type?: string | null;
@@ -60,6 +61,8 @@ export type CreateSeasonInput = {
 
 export type UpdateSeasonInput = {
   id: string;
+  org_id?: string;
+  property_id?: string;
   name?: string;
   season_type?: string | null;
   start_date?: string;
@@ -130,6 +133,7 @@ export async function createSeason(input: CreateSeasonInput): Promise<RevenueSea
   const response = await sb
     .from("debacu_eval_property_seasons")
     .insert({
+      org_id: input.org_id,
       property_id: input.property_id,
       name: input.name,
       season_type: input.season_type ?? null,
@@ -155,6 +159,8 @@ export async function createSeason(input: CreateSeasonInput): Promise<RevenueSea
 export async function updateSeason(input: UpdateSeasonInput): Promise<RevenueSeason> {
   const payload: Record<string, unknown> = {};
 
+  if (input.org_id !== undefined) payload.org_id = input.org_id;
+  if (input.property_id !== undefined) payload.property_id = input.property_id;
   if (input.name !== undefined) payload.name = input.name;
   if (input.season_type !== undefined) payload.season_type = input.season_type;
   if (input.start_date !== undefined) payload.start_date = input.start_date;

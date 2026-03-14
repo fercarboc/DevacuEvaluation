@@ -43,6 +43,7 @@ export type RevenueEvent = {
 };
 
 export type CreateEventInput = {
+  org_id: string;
   property_id: string;
   name: string;
   event_type: string;
@@ -60,6 +61,8 @@ export type CreateEventInput = {
 
 export type UpdateEventInput = {
   id: string;
+  org_id?: string;
+  property_id?: string;
   name?: string;
   event_type?: string;
   start_date?: string;
@@ -130,6 +133,7 @@ export async function createEvent(input: CreateEventInput): Promise<RevenueEvent
   const response = await sb
     .from("debacu_eval_revenue_events")
     .insert({
+      org_id: input.org_id,
       property_id: input.property_id,
       name: input.name,
       event_type: input.event_type,
@@ -155,6 +159,8 @@ export async function createEvent(input: CreateEventInput): Promise<RevenueEvent
 export async function updateEvent(input: UpdateEventInput): Promise<RevenueEvent> {
   const payload: Record<string, unknown> = {};
 
+  if (input.org_id !== undefined) payload.org_id = input.org_id;
+  if (input.property_id !== undefined) payload.property_id = input.property_id;
   if (input.name !== undefined) payload.name = input.name;
   if (input.event_type !== undefined) payload.event_type = input.event_type;
   if (input.start_date !== undefined) payload.start_date = input.start_date;

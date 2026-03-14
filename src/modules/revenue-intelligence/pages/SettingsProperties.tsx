@@ -32,6 +32,10 @@ const VISUAL_PLAN_LIMITS: Record<PlanCode, number> = {
   PREMIUM: 4,
 };
 
+const ACTIVE_PROPERTY_STORAGE_KEY = "revenue_active_property_id";
+const PROPERTIES_CHANGED_EVENT = "revenue:properties-changed";
+const ACTIVE_PROPERTY_CHANGED_EVENT = "revenue:active-property-changed";
+
 const SettingsProperties: React.FC<SettingsPropertiesProps> = ({ user }) => {
   const [properties, setProperties] = useState<RevenueProperty[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,6 +50,19 @@ const SettingsProperties: React.FC<SettingsPropertiesProps> = ({ user }) => {
   useEffect(() => {
     void loadProperties();
   }, []);
+
+  const notifyPropertiesChanged = () => {
+    window.dispatchEvent(new CustomEvent(PROPERTIES_CHANGED_EVENT));
+  };
+
+  const setActiveProperty = (propertyId: string) => {
+    localStorage.setItem(ACTIVE_PROPERTY_STORAGE_KEY, propertyId);
+    window.dispatchEvent(
+      new CustomEvent(ACTIVE_PROPERTY_CHANGED_EVENT, {
+        detail: { propertyId },
+      }),
+    );
+  };
 
   async function loadProperties() {
     try {
@@ -114,7 +131,20 @@ const SettingsProperties: React.FC<SettingsPropertiesProps> = ({ user }) => {
 
       const res = await deleteProperty({ id });
 
-      setProperties((prev) => prev.filter((p) => p.id !== id));
+      const updated = properties.filter((p) => p.id !== id);
+      setProperties(updated);
+
+      const currentActiveId = localStorage.getItem(ACTIVE_PROPERTY_STORAGE_KEY);
+      if (currentActiveId === id) {
+        if (updated.length > 0) {
+          setActiveProperty(updated[0].id);
+        } else {
+          localStorage.removeItem(ACTIVE_PROPERTY_STORAGE_KEY);
+          notifyPropertiesChanged();
+        }
+      } else {
+        notifyPropertiesChanged();
+      }
 
       if (res.meta) {
         setPlanMeta({
@@ -150,6 +180,8 @@ const SettingsProperties: React.FC<SettingsPropertiesProps> = ({ user }) => {
         setProperties((prev) => prev.map((p) => (p.id === res.data!.id ? res.data! : p)));
       }
 
+      notifyPropertiesChanged();
+
       if (res.meta) {
         setPlanMeta({
           planCode: res.meta.planCode,
@@ -183,6 +215,8 @@ const SettingsProperties: React.FC<SettingsPropertiesProps> = ({ user }) => {
           setProperties((prev) => prev.map((p) => (p.id === res.data!.id ? res.data! : p)));
         }
 
+        notifyPropertiesChanged();
+
         if (res.meta) {
           setPlanMeta({
             planCode: res.meta.planCode,
@@ -203,6 +237,11 @@ const SettingsProperties: React.FC<SettingsPropertiesProps> = ({ user }) => {
 
         if (res.data) {
           setProperties((prev) => [...prev, res.data!]);
+
+          // dejar la nueva propiedad seleccionada arriba
+          setActiveProperty(res.data.id);
+        } else {
+          notifyPropertiesChanged();
         }
 
         if (res.meta) {
@@ -248,7 +287,7 @@ const SettingsProperties: React.FC<SettingsPropertiesProps> = ({ user }) => {
 
   return (
     <div className="space-y-8">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Configuración de Propiedades</h1>
           <p className="text-gray-500">Gestiona las propiedades de Revenue Intelligence</p>
@@ -257,10 +296,10 @@ const SettingsProperties: React.FC<SettingsPropertiesProps> = ({ user }) => {
         <button
           onClick={handleAdd}
           disabled={isLimitReached || loading || saving}
-          className={`flex items-center gap-2 px-6 py-3 rounded-2xl font-bold transition-all shadow-lg ${
+          className={`flex items-center gap-2 rounded-2xl px-6 py-3 font-bold transition-all shadow-lg ${
             isLimitReached || loading || saving
-              ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-              : "bg-blue-600 text-white hover:bg-blue-700 shadow-blue-200"
+              ? "cursor-not-allowed bg-gray-100 text-gray-400"
+              : "bg-blue-600 text-white shadow-blue-200 hover:bg-blue-700"
           }`}
         >
           {saving ? <Loader2 size={20} className="animate-spin" /> : <Plus size={20} />}
@@ -269,32 +308,32 @@ const SettingsProperties: React.FC<SettingsPropertiesProps> = ({ user }) => {
       </div>
 
       {error && (
-        <div className="flex items-center gap-3 bg-rose-50 text-rose-700 px-4 py-3 rounded-2xl border border-rose-100">
+        <div className="flex items-center gap-3 rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-rose-700">
           <AlertTriangle size={18} />
           <span className="text-sm font-semibold">{error}</span>
         </div>
       )}
 
-      <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col md:flex-row md:items-center justify-between gap-6">
+      <div className="flex flex-col justify-between gap-6 rounded-3xl border border-gray-100 bg-white p-6 shadow-sm md:flex-row md:items-center">
         <div className="flex items-center gap-4">
-          <div className="bg-indigo-100 p-3 rounded-2xl text-indigo-600">
+          <div className="rounded-2xl bg-indigo-100 p-3 text-indigo-600">
             <Crown size={24} />
           </div>
 
           <div>
-            <div className="text-sm font-bold text-gray-400 uppercase tracking-wider">
+            <div className="text-sm font-bold uppercase tracking-wider text-gray-400">
               Uso del Plan {currentPlanCode}
             </div>
 
             <div className="flex items-end gap-2">
               <span className="text-2xl font-bold text-gray-900">{usedProperties}</span>
-              <span className="text-gray-400 font-medium pb-1">/ {maxProperties} propiedades</span>
+              <span className="pb-1 font-medium text-gray-400">/ {maxProperties} propiedades</span>
             </div>
           </div>
         </div>
 
-        <div className="flex-1 max-w-md">
-          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+        <div className="max-w-md flex-1">
+          <div className="h-2 overflow-hidden rounded-full bg-gray-100">
             <div
               className={`h-full transition-all duration-500 ${
                 isLimitReached ? "bg-rose-500" : "bg-indigo-600"
@@ -305,7 +344,7 @@ const SettingsProperties: React.FC<SettingsPropertiesProps> = ({ user }) => {
         </div>
 
         {isLimitReached && (
-          <div className="flex items-center gap-3 bg-rose-50 text-rose-700 px-4 py-2 rounded-xl border border-rose-100">
+          <div className="flex items-center gap-3 rounded-xl border border-rose-100 bg-rose-50 px-4 py-2 text-rose-700">
             <AlertTriangle size={18} />
             <span className="text-sm font-bold">Límite alcanzado. Actualiza tu plan.</span>
           </div>
@@ -313,26 +352,26 @@ const SettingsProperties: React.FC<SettingsPropertiesProps> = ({ user }) => {
       </div>
 
       {loading ? (
-        <div className="bg-white p-12 rounded-3xl border border-gray-100 flex flex-col items-center text-center">
-          <Loader2 size={32} className="animate-spin text-blue-600 mb-4" />
-          <p className="text-gray-500 font-medium">Cargando propiedades...</p>
+        <div className="flex flex-col items-center rounded-3xl border border-gray-100 bg-white p-12 text-center">
+          <Loader2 size={32} className="mb-4 animate-spin text-blue-600" />
+          <p className="font-medium text-gray-500">Cargando propiedades...</p>
         </div>
       ) : properties.length === 0 ? (
-        <div className="bg-white p-12 rounded-3xl border border-dashed border-gray-300 flex flex-col items-center text-center">
-          <div className="bg-gray-50 p-6 rounded-full text-gray-300 mb-4">
+        <div className="flex flex-col items-center rounded-3xl border border-dashed border-gray-300 bg-white p-12 text-center">
+          <div className="mb-4 rounded-full bg-gray-50 p-6 text-gray-300">
             <Building2 size={48} />
           </div>
-          <h3 className="text-lg font-bold text-gray-900 mb-2">No hay propiedades configuradas</h3>
-          <p className="text-gray-500 max-w-sm mb-8">
+          <h3 className="mb-2 text-lg font-bold text-gray-900">No hay propiedades configuradas</h3>
+          <p className="mb-8 max-w-sm text-gray-500">
             Comienza añadiendo tu primera propiedad para empezar a analizar tus datos de revenue.
           </p>
           <button
             onClick={handleAdd}
             disabled={isLimitReached || saving}
-            className={`px-8 py-3 rounded-2xl font-bold transition-all shadow-lg ${
+            className={`rounded-2xl px-8 py-3 font-bold transition-all shadow-lg ${
               isLimitReached || saving
-                ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                : "bg-blue-600 text-white hover:bg-blue-700 shadow-blue-200"
+                ? "cursor-not-allowed bg-gray-100 text-gray-400"
+                : "bg-blue-600 text-white shadow-blue-200 hover:bg-blue-700"
             }`}
           >
             Añadir mi primera propiedad

@@ -94,6 +94,7 @@ type ManualCheckResponse = {
   mineSummary: ManualCheckMineSummary | null;
   previousRiskLevel: RiskLevel | null;
   currentRiskLevel: RiskLevel | null;
+  debug?: Record<string, unknown> | null;
 };
 
 interface SearchRatingsProps {
@@ -208,7 +209,12 @@ function calcPercentListWithCounts(map: Record<string, number>) {
     .filter((x) => x.count > 0);
 
   const total = entries.reduce((acc, x) => acc + x.count, 0);
-  if (!total) return { list: [] as Array<{ key: string; count: number; pct: number }>, total: 0 };
+  if (!total) {
+    return {
+      list: [] as Array<{ key: string; count: number; pct: number }>,
+      total: 0,
+    };
+  }
 
   const list = entries
     .map((x) => ({ key: x.key, count: x.count, pct: (x.count / total) * 100 }))
@@ -329,10 +335,40 @@ async function manualCheckScreening(payload: {
     value: string;
   };
 }): Promise<ManualCheckResponse> {
-  const res = await callEvalFn("debacu_eval_manual_check", payload);
-  if (!res?.ok) throw new Error(res?.detail || "manual_check_failed");
-  if (!res?.data) throw new Error("manual_check_empty_response");
-  return res.data as ManualCheckResponse;
+  const functionName =
+    payload.mode === "MINE"
+      ? "debacu_eval_manual_check_mine"
+      : "debacu_eval_manual_check";
+
+  const requestBody =
+    payload.mode === "MINE"
+      ? {
+          property_id: payload.property_id,
+          criteria: payload.criteria,
+        }
+      : {
+          property_id: payload.property_id,
+          mode: payload.mode,
+          criteria: payload.criteria,
+        };
+
+  const res = await callEvalFn(functionName, requestBody);
+
+  if (!res?.ok) {
+    throw new Error(res?.detail || `${functionName}_failed`);
+  }
+
+  if (!res?.data) {
+    throw new Error(`${functionName}_empty_response`);
+  }
+
+  return {
+    globalSummary: null,
+    mineSummary: null,
+    previousRiskLevel: null,
+    currentRiskLevel: null,
+    ...res.data,
+  } as ManualCheckResponse;
 }
 
 export const SearchRatings: React.FC<SearchRatingsProps> = ({
@@ -359,6 +395,10 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({
   const activePropertyName = useMemo(() => {
     return clean(selectedPropertyName) || clean(window.localStorage.getItem("selectedPropertyName")) || "Propiedad activa";
   }, [selectedPropertyName]);
+
+  useEffect(() => {
+    void currentUser;
+  }, [currentUser]);
 
   useEffect(() => {
     const load = async () => {
@@ -415,6 +455,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
+
     const q = clean(query);
     if (!q) return;
 
@@ -872,41 +913,41 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({
                               </div>
                             </div>
 
-<div className="rounded-2xl border border-slate-300 bg-white p-4">
-  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-    Contexto temporal
-  </div>
+                            <div className="rounded-2xl border border-slate-300 bg-white p-4">
+                              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                Contexto temporal
+                              </div>
 
-  <div className="space-y-1.5 text-[13px]">
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-slate-600">Vent.</span>
-      <span className="text-right font-semibold leading-tight text-slate-900">
-        {formatTimeWindow(globalSummary.lastIncidentAt ?? globalSummary.lastSeenDate)}
-      </span>
-    </div>
+                              <div className="space-y-1.5 text-[13px]">
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className="text-slate-600">Vent.</span>
+                                  <span className="text-right font-semibold leading-tight text-slate-900">
+                                    {formatTimeWindow(globalSummary.lastIncidentAt ?? globalSummary.lastSeenDate)}
+                                  </span>
+                                </div>
 
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-slate-600">Orgs</span>
-      <span className="font-semibold text-slate-900">
-        {globalSummary.distinctOrgsCount ?? 0}
-      </span>
-    </div>
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className="text-slate-600">Orgs</span>
+                                  <span className="font-semibold text-slate-900">
+                                    {globalSummary.distinctOrgsCount ?? 0}
+                                  </span>
+                                </div>
 
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-slate-600">Props</span>
-      <span className="font-semibold text-slate-900">
-        {globalSummary.distinctPropertiesCount ?? 0}
-      </span>
-    </div>
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className="text-slate-600">Props</span>
+                                  <span className="font-semibold text-slate-900">
+                                    {globalSummary.distinctPropertiesCount ?? 0}
+                                  </span>
+                                </div>
 
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-slate-600">Match</span>
-      <span className="font-semibold text-slate-900">
-        {globalSummary.hasSignals ? "Sí" : "No"}
-      </span>
-    </div>
-  </div>
-</div>
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className="text-slate-600">Match</span>
+                                  <span className="font-semibold text-slate-900">
+                                    {globalSummary.hasSignals ? "Sí" : "No"}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
                           </div>
 
                           <div className="mb-3 text-xs text-slate-600">
