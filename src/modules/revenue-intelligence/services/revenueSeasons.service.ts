@@ -2,6 +2,13 @@ import { supabase } from "@/services/supabaseClient";
 
 const sb: any = supabase;
 
+async function invokeSeasonsManage(body: Record<string, unknown>) {
+  const { data, error } = await sb.functions.invoke("debacu_eval_revenue_seasons_manage", { body });
+  if (error) throw error;
+  if (!data?.ok) throw new Error(data?.error ?? "seasons_manage_failed");
+  return data;
+}
+
 export type PricingOperation = "INCREASE" | "DECREASE" | "SET";
 export type PricingAdjustmentType = "PERCENT" | "FIXED";
 export type ImpactLevel = "LOW" | "MEDIUM" | "HIGH";
@@ -130,71 +137,15 @@ export async function getSeasons(propertyId: string): Promise<RevenueSeason[]> {
 }
 
 export async function createSeason(input: CreateSeasonInput): Promise<RevenueSeason> {
-  const response = await sb
-    .from("debacu_eval_property_seasons")
-    .insert({
-      org_id: input.org_id,
-      property_id: input.property_id,
-      name: input.name,
-      season_type: input.season_type ?? null,
-      start_date: input.start_date,
-      end_date: input.end_date,
-      color: input.color ?? "#3B82F6",
-      priority: input.priority ?? 100,
-      impact_level: input.impact_level ?? "MEDIUM",
-      note: input.note ?? null,
-      is_active: input.is_active ?? true,
-      pricing_operation: input.pricing_operation ?? null,
-      pricing_adjustment_type: input.pricing_adjustment_type ?? null,
-      pricing_adjustment_value: input.pricing_adjustment_value ?? null,
-    })
-    .select(SELECT_FIELDS)
-    .single();
-
-  if (response.error) throw response.error;
-
-  return mapRow(response.data as RevenueSeasonRow);
+  const result = await invokeSeasonsManage({ action: "CREATE", ...input });
+  return mapRow(result.data as RevenueSeasonRow);
 }
 
 export async function updateSeason(input: UpdateSeasonInput): Promise<RevenueSeason> {
-  const payload: Record<string, unknown> = {};
-
-  if (input.org_id !== undefined) payload.org_id = input.org_id;
-  if (input.property_id !== undefined) payload.property_id = input.property_id;
-  if (input.name !== undefined) payload.name = input.name;
-  if (input.season_type !== undefined) payload.season_type = input.season_type;
-  if (input.start_date !== undefined) payload.start_date = input.start_date;
-  if (input.end_date !== undefined) payload.end_date = input.end_date;
-  if (input.color !== undefined) payload.color = input.color;
-  if (input.priority !== undefined) payload.priority = input.priority;
-  if (input.impact_level !== undefined) payload.impact_level = input.impact_level;
-  if (input.note !== undefined) payload.note = input.note;
-  if (input.is_active !== undefined) payload.is_active = input.is_active;
-  if (input.pricing_operation !== undefined) payload.pricing_operation = input.pricing_operation;
-  if (input.pricing_adjustment_type !== undefined) {
-    payload.pricing_adjustment_type = input.pricing_adjustment_type;
-  }
-  if (input.pricing_adjustment_value !== undefined) {
-    payload.pricing_adjustment_value = input.pricing_adjustment_value;
-  }
-
-  const response = await sb
-    .from("debacu_eval_property_seasons")
-    .update(payload)
-    .eq("id", input.id)
-    .select(SELECT_FIELDS)
-    .single();
-
-  if (response.error) throw response.error;
-
-  return mapRow(response.data as RevenueSeasonRow);
+  const result = await invokeSeasonsManage({ action: "UPDATE", ...input });
+  return mapRow(result.data as RevenueSeasonRow);
 }
 
 export async function deleteSeason(id: string): Promise<void> {
-  const response = await sb
-    .from("debacu_eval_property_seasons")
-    .update({ is_active: false })
-    .eq("id", id);
-
-  if (response.error) throw response.error;
+  await invokeSeasonsManage({ action: "DELETE", id });
 }

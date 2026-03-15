@@ -81,6 +81,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
     const role = String(membership?.role ?? "");
     const isAdmin = role === "OWNER" || role === "ADMIN";
+    const isPlatformAdmin = role === "PLATFORM_ADMIN";
 
     const email = String(authUser?.email ?? customer?.email ?? "")
       .trim()
@@ -101,6 +102,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       email,
       plan,
       isAdmin,
+      isPlatformAdmin,
     };
 
     return u;
@@ -125,7 +127,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       }
 
       const accessToken = data.session.access_token ?? "";
-      localStorage.setItem("debacu_eval_auth_token", accessToken);
 
       const post = await evalPostLogin(accessToken);
 

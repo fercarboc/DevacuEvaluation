@@ -2,7 +2,6 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from "
 import { supabase } from "@/services/supabaseClient";
 import type { User } from "@/types/types";
 
-const TOKEN_KEY = "debacu_eval_token";
 const USER_KEY = "debacu_eval_user";
 
 type EvalAuthState = {
@@ -50,7 +49,6 @@ export function EvalAuthProvider({ children }: { children: React.ReactNode }) {
       setToken(session?.access_token ?? null);
       if (!session) {
         setUser(null);
-        localStorage.removeItem(TOKEN_KEY);
         localStorage.removeItem(USER_KEY);
       }
     });
@@ -64,7 +62,6 @@ export function EvalAuthProvider({ children }: { children: React.ReactNode }) {
   const signIn = (t: string, u: User) => {
     setToken(t);
     setUser(u);
-    localStorage.setItem(TOKEN_KEY, t);
     localStorage.setItem(USER_KEY, JSON.stringify(u));
   };
 
@@ -77,7 +74,6 @@ export function EvalAuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
     setToken(null);
     setUser(null);
-    localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
   };
 

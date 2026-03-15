@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
   Search,
@@ -54,6 +55,7 @@ export type AuthedView =
 
 export type NavItem = {
   view: AuthedView;
+  path: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   disabled?: boolean;
@@ -64,8 +66,6 @@ export type NavItem = {
 type Props = {
   userEmail?: string;
   userName?: string;
-  activeView: AuthedView;
-  onNavigate: (view: AuthedView) => void;
   onLogout: () => void;
   title?: string;
   subtitle?: string;
@@ -149,8 +149,6 @@ const SectionBlock: React.FC<{
 export default function AppShell({
   userEmail,
   userName,
-  activeView,
-  onNavigate,
   onLogout,
   title,
   subtitle,
@@ -160,6 +158,8 @@ export default function AppShell({
   currentPlanCode,
   headerLeft,
 }: Props) {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const plan = (currentPlanCode ?? "").toUpperCase();
@@ -167,12 +167,13 @@ export default function AppShell({
 
   const nav = useMemo<NavItem[]>(() => {
     const base: NavItem[] = [
-      { view: "dashboard", label: "Dashboard", icon: LayoutDashboard, section: "OPERATIVA" },
-      { view: "search", label: "Consultar", icon: Search, section: "OPERATIVA" },
-      { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
+      { view: "dashboard", path: "/app", label: "Dashboard", icon: LayoutDashboard, section: "OPERATIVA" },
+      { view: "search", path: "/app/buscar", label: "Consultar", icon: Search, section: "OPERATIVA" },
+      { view: "add", path: "/app/registrar", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
 
       {
         view: "rev_channels",
+        path: "/app/revenue/canales",
         label: "Análisis por Canal",
         icon: BarChart3,
         section: "REVENUE",
@@ -180,6 +181,7 @@ export default function AppShell({
       },
       {
         view: "rev_risk",
+        path: "/app/revenue/riesgo",
         label: "Nivel de Riesgo",
         icon: ShieldAlert,
         section: "REVENUE",
@@ -187,6 +189,7 @@ export default function AppShell({
       },
       {
         view: "rev_leakage",
+        path: "/app/revenue/fugas",
         label: "Fugas de Revenue",
         icon: TrendingDown,
         section: "REVENUE",
@@ -194,6 +197,7 @@ export default function AppShell({
       },
       {
         view: "rev_import",
+        path: "/app/revenue/importar",
         label: "Importación Revenue",
         icon: Upload,
         section: "REVENUE",
@@ -201,6 +205,7 @@ export default function AppShell({
       },
       {
         view: "rev_day_by_day",
+        path: "/app/revenue/dia-x-dia",
         label: "Día x Día",
         icon: CalendarClock,
         section: "REVENUE",
@@ -208,6 +213,7 @@ export default function AppShell({
       },
       {
         view: "rev_monthly",
+        path: "/app/revenue/mensual",
         label: "Mensual",
         icon: LineChart,
         section: "REVENUE",
@@ -215,6 +221,7 @@ export default function AppShell({
       },
       {
         view: "rev_channels_segments",
+        path: "/app/revenue/canales-segmentos",
         label: "Canales & Segmentos",
         icon: Layers3,
         section: "REVENUE",
@@ -222,6 +229,7 @@ export default function AppShell({
       },
       {
         view: "rev_properties",
+        path: "/app/revenue/propiedades",
         label: "Propiedades",
         icon: Building2,
         section: "REVENUE",
@@ -229,6 +237,7 @@ export default function AppShell({
       },
       {
         view: "rev_room_types",
+        path: "/app/revenue/tipos-habitacion",
         label: "Tipos de habitación",
         icon: BedDouble,
         section: "REVENUE",
@@ -236,6 +245,7 @@ export default function AppShell({
       },
       {
         view: "rev_price_calendar",
+        path: "/app/revenue/calendario-precios",
         label: "Calendario de precios",
         icon: CalendarRange,
         section: "REVENUE",
@@ -243,21 +253,22 @@ export default function AppShell({
       },
       {
         view: "rev_events_seasons",
+        path: "/app/revenue/eventos-temporadas",
         label: "Eventos y temporadas",
         icon: CalendarDays,
         section: "REVENUE",
         locked: !canAccessRevenue,
       },
 
-      { view: "aud_screening_csv", label: "Screening CSV", icon: FileText, section: "AUDITORIA" },
-      { view: "aud_summary", label: "Resumen", icon: FileText, section: "AUDITORIA" },
-      { view: "aud_risk", label: "Auditoría de riesgo", icon: Shield, section: "AUDITORIA" },
-      { view: "aud_stats", label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
-      { view: "aud_history", label: "Histórico", icon: Clock, section: "AUDITORIA" },
-      { view: "aud_exports", label: "Exportaciones", icon: Download, section: "AUDITORIA" },
-      { view: "aud_config", label: "Configuración-Avisos", icon: Settings, section: "AUDITORIA" },
+      { view: "aud_screening_csv", path: "/app/screening", label: "Screening CSV", icon: FileText, section: "AUDITORIA" },
+      { view: "aud_summary", path: "/app/auditoria/resumen", label: "Resumen", icon: FileText, section: "AUDITORIA" },
+      { view: "aud_risk", path: "/app/auditoria/riesgo", label: "Auditoría de riesgo", icon: Shield, section: "AUDITORIA" },
+      { view: "aud_stats", path: "/app/auditoria/estadisticas", label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
+      { view: "aud_history", path: "/app/auditoria/historico", label: "Histórico", icon: Clock, section: "AUDITORIA" },
+      { view: "aud_exports", path: "/app/auditoria/exportaciones", label: "Exportaciones", icon: Download, section: "AUDITORIA" },
+      { view: "aud_config", path: "/app/auditoria/configuracion", label: "Configuración-Avisos", icon: Settings, section: "AUDITORIA" },
 
-      { view: "account", label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
+      { view: "account", path: "/app/cuenta", label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
     ];
 
     const src = navItems ?? base;
@@ -285,8 +296,8 @@ export default function AppShell({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [mobileMenuOpen]);
 
-  const handleNavigate = (view: AuthedView) => {
-    onNavigate(view);
+  const handleNavigate = (item: NavItem) => {
+    navigate(item.path);
     setMobileMenuOpen(false);
   };
 
@@ -299,10 +310,10 @@ export default function AppShell({
         icon={i.icon}
         disabled={i.disabled}
         locked={i.locked}
-        active={activeView === i.view}
+        active={location.pathname === i.path}
         onClick={() => {
           if (i.disabled) return;
-          handleNavigate(i.view);
+          handleNavigate(i);
         }}
       />
     ));
@@ -450,7 +461,7 @@ export default function AppShell({
               {showAccountActions && (
                 <button
                   type="button"
-                  onClick={() => onNavigate("account")}
+                  onClick={() => navigate("/app/cuenta")}
                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
                 >
                   Mi cuenta

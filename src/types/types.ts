@@ -17,6 +17,7 @@ export interface User {
 
   // flags de UI
   isAdmin?: boolean;
+  isPlatformAdmin?: boolean;
 
   // opcionales útiles
   customerId?: string;       // si quieres duplicarlo (normalmente = id)

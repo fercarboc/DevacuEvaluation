@@ -6,17 +6,19 @@ const ALLOWED_ORIGINS = new Set<string>([
   "http://localhost:5173",
   "https://debacu.com",
   "https://www.debacu.com",
-
-  // ✅ Tu Vercel (prod)
   "https://devacu-evaluation.vercel.app",
 ]);
 
-function isAllowedVercelOrigin(origin: string) {
-  // ✅ Permite previews tipo: https://xxx.vercel.app
-  // Si NO quieres permitir previews, borra esta función y su uso.
+// Solo permite previews del proyecto propio (debacu-evaluation-*)
+// No permite cualquier *.vercel.app para evitar orígenes externos arbitrarios
+function isAllowedVercelPreview(origin: string) {
   try {
     const u = new URL(origin);
-    return u.protocol === "https:" && u.hostname.endsWith(".vercel.app");
+    return (
+      u.protocol === "https:" &&
+      u.hostname.endsWith(".vercel.app") &&
+      u.hostname.startsWith("debacu-evaluation-")
+    );
   } catch {
     return false;
   }
@@ -24,14 +26,12 @@ function isAllowedVercelOrigin(origin: string) {
 
 function getAllowOrigin(req: Request): string {
   const origin = req.headers.get("Origin") ?? "";
-  if (!origin) return ""; // non-browser / server-to-server
+  if (!origin) return "";
 
   if (ALLOWED_ORIGINS.has(origin)) return origin;
+  if (isAllowedVercelPreview(origin)) return origin;
 
-  // ✅ opcional: permitir todos los subdominios de vercel.app
-  if (isAllowedVercelOrigin(origin)) return origin;
-
-  return ""; // IMPORTANT: si no está permitido, NO devuelvas debacu.com
+  return "";
 }
 
 export function corsHeaders(req: Request): Headers {

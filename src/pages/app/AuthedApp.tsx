@@ -1,5 +1,5 @@
 import React from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Navigate, useNavigate, useLocation } from "react-router-dom";
 
 import { SearchRatings } from "@/components/SearchRatings";
 import { RatingForm } from "@/components/RatingForm";
@@ -14,7 +14,7 @@ import RiskAnalysis from "@/views/RiskAnalysis";
 import Leaks from "@/views/Leaks";
 import DayByDay from "@/modules/revenue-intelligence/pages/DayByDay";
 import MonthlyComparison from "@/modules/revenue-intelligence/pages/MonthlyComparison";
-import RevenueChannelsSegments from "@/modules/revenue-intelligence/pages/revenueChannelsSegments";
+import RevenueChannelsSegments from "@/modules/revenue-intelligence/pages/RevenueChannelsSegments";
 import PickupAdvanced from "@/modules/revenue-intelligence/pages/PickupAdvanced";
 import SettingsProperties from "@/modules/revenue-intelligence/pages/SettingsProperties";
 import RoomTypesPage from "@/modules/revenue-intelligence/pages/RoomTypesPage";
@@ -62,11 +62,47 @@ import {
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
+import { LS_KEYS } from "@/services/storageKeys";
 import { PlanTier } from "../../../auditor";
 
-const ACTIVE_PROPERTY_STORAGE_KEY = "revenue_active_property_id";
+const ACTIVE_PROPERTY_STORAGE_KEY = LS_KEYS.ACTIVE_PROPERTY_ID;
 const PROPERTIES_CHANGED_EVENT = "revenue:properties-changed";
 const ACTIVE_PROPERTY_CHANGED_EVENT = "revenue:active-property-changed";
+
+const VIEW_PATHS: Record<AuthedView, string> = {
+  dashboard:             "/app",
+  search:                "/app/buscar",
+  add:                   "/app/registrar",
+  account:               "/app/cuenta",
+  admin:                 "/app/admin/dashboard",
+  aud_screening_csv:     "/app/screening",
+  rev_channels:          "/app/revenue/canales",
+  rev_risk:              "/app/revenue/riesgo",
+  rev_leakage:           "/app/revenue/fugas",
+  rev_import:            "/app/revenue/importar",
+  rev_day_by_day:        "/app/revenue/dia-x-dia",
+  rev_monthly:           "/app/revenue/mensual",
+  rev_channels_segments: "/app/revenue/canales-segmentos",
+  rev_pickup_advanced:   "/app/revenue/pickup",
+  rev_properties:        "/app/revenue/propiedades",
+  rev_room_types:        "/app/revenue/tipos-habitacion",
+  rev_price_calendar:    "/app/revenue/calendario-precios",
+  rev_events_seasons:    "/app/revenue/eventos-temporadas",
+  aud_summary:           "/app/auditoria/resumen",
+  aud_risk:              "/app/auditoria/riesgo",
+  aud_stats:             "/app/auditoria/estadisticas",
+  aud_history:           "/app/auditoria/historico",
+  aud_exports:           "/app/auditoria/exportaciones",
+  aud_config:            "/app/auditoria/configuracion",
+};
+
+const PATH_TO_VIEW = Object.fromEntries(
+  Object.entries(VIEW_PATHS).map(([v, p]) => [p, v as AuthedView])
+) as Record<string, AuthedView>;
+
+function viewFromPath(pathname: string): AuthedView {
+  return PATH_TO_VIEW[pathname] ?? "dashboard";
+}
 
 function toPlanTier(planLike: any): PlanTier {
   const s = String(planLike ?? "").toUpperCase();
@@ -144,8 +180,9 @@ function isRevenueFeatureView(v: AuthedView) {
 export default function AuthedApp() {
   const { user, loading, signOut } = useEvalAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
-  const [currentView, setCurrentView] = React.useState<AuthedView>("dashboard");
+  const currentView = viewFromPath(location.pathname);
   const [revenueProperties, setRevenueProperties] = React.useState<RevenueProperty[]>([]);
   const [selectedPropertyId, setSelectedPropertyId] = React.useState<string | null>(null);
   const [propertiesLoading, setPropertiesLoading] = React.useState(false);
@@ -158,8 +195,7 @@ export default function AuthedApp() {
   if (loading) return null;
   if (!user) return <Navigate to="/login" replace />;
 
-  const email = String((user as any).email ?? "").toLowerCase();
-  const isPlatformAdmin = email === "admin@debacu.com";
+  const isPlatformAdmin = (user as any).isPlatformAdmin === true;
 
   if (isPlatformAdmin) {
     return <Navigate to="/app/admin/solicitudes-acceso" replace />;
@@ -275,94 +311,29 @@ export default function AuthedApp() {
 
   const navItems: NavItem[] = React.useMemo(
     () => [
-      { view: "dashboard", label: "Dashboard", icon: LayoutDashboard, section: "OPERATIVA" },
-      {
-        view: "aud_screening_csv",
-        label: "Consulta automática (CSV)",
-        icon: FileSpreadsheet,
-        section: "OPERATIVA",
-      },
-      { view: "search", label: "Consulta manual", icon: Search, section: "OPERATIVA" },
-      { view: "add", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
+      { view: "dashboard",         path: VIEW_PATHS.dashboard,         label: "Dashboard",                  icon: LayoutDashboard, section: "OPERATIVA" },
+      { view: "aud_screening_csv", path: VIEW_PATHS.aud_screening_csv, label: "Consulta automática (CSV)",  icon: FileSpreadsheet, section: "OPERATIVA" },
+      { view: "search",            path: VIEW_PATHS.search,            label: "Consulta manual",            icon: Search,          section: "OPERATIVA" },
+      { view: "add",               path: VIEW_PATHS.add,               label: "Registrar incidencia",       icon: PlusCircle,      section: "OPERATIVA" },
 
-      {
-        view: "rev_channels",
-        label: "Análisis por Canal",
-        icon: BarChart3,
-        section: "REVENUE",
-      },
-      {
-        view: "rev_risk",
-        label: "Nivel de Riesgo",
-        icon: ShieldAlert,
-        section: "REVENUE",
-      },
-      {
-        view: "rev_leakage",
-        label: "Fugas de Revenue",
-        icon: TrendingDown,
-        section: "REVENUE",
-      },
-      {
-        view: "rev_import",
-        label: "Importación Revenue",
-        icon: Upload,
-        section: "REVENUE",
-      },
-      {
-        view: "rev_day_by_day",
-        label: "Día x Día",
-        icon: CalendarClock,
-        section: "REVENUE",
-      },
-      {
-        view: "rev_monthly",
-        label: "Mensual",
-        icon: LineChart,
-        section: "REVENUE",
-      },
-      {
-        view: "rev_channels_segments",
-        label: "Canales & Segmentos",
-        icon: Layers3,
-        section: "REVENUE",
-      },
-      {
-        view: "rev_pickup_advanced",
-        label: "Pickup Avanzado",
-        icon: TrendingUp,
-        section: "REVENUE",
-      },
-      {
-        view: "rev_properties",
-        label: "Propiedades",
-        icon: Building2,
-        section: "REVENUE",
-      },
-      {
-        view: "rev_room_types",
-        label: "Tipos de habitación",
-        icon: BedDouble,
-        section: "REVENUE",
-      },
-      {
-        view: "rev_price_calendar",
-        label: "Calendario de precios",
-        icon: CalendarRange,
-        section: "REVENUE",
-      },
-      {
-        view: "rev_events_seasons",
-        label: "Eventos y temporadas",
-        icon: CalendarDays,
-        section: "REVENUE",
-      },
+      { view: "rev_channels",          path: VIEW_PATHS.rev_channels,          label: "Análisis por Canal",       icon: BarChart3,    section: "REVENUE" },
+      { view: "rev_risk",              path: VIEW_PATHS.rev_risk,              label: "Nivel de Riesgo",          icon: ShieldAlert,  section: "REVENUE" },
+      { view: "rev_leakage",           path: VIEW_PATHS.rev_leakage,           label: "Fugas de Revenue",         icon: TrendingDown, section: "REVENUE" },
+      { view: "rev_import",            path: VIEW_PATHS.rev_import,            label: "Importación Revenue",      icon: Upload,       section: "REVENUE" },
+      { view: "rev_day_by_day",        path: VIEW_PATHS.rev_day_by_day,        label: "Día x Día",                icon: CalendarClock, section: "REVENUE" },
+      { view: "rev_monthly",           path: VIEW_PATHS.rev_monthly,           label: "Mensual",                  icon: LineChart,    section: "REVENUE" },
+      { view: "rev_channels_segments", path: VIEW_PATHS.rev_channels_segments, label: "Canales & Segmentos",      icon: Layers3,      section: "REVENUE" },
+      { view: "rev_pickup_advanced",   path: VIEW_PATHS.rev_pickup_advanced,   label: "Pickup Avanzado",          icon: TrendingUp,   section: "REVENUE" },
+      { view: "rev_properties",        path: VIEW_PATHS.rev_properties,        label: "Propiedades",              icon: Building2,    section: "REVENUE" },
+      { view: "rev_room_types",        path: VIEW_PATHS.rev_room_types,        label: "Tipos de habitación",      icon: BedDouble,    section: "REVENUE" },
+      { view: "rev_price_calendar",    path: VIEW_PATHS.rev_price_calendar,    label: "Calendario de precios",    icon: CalendarRange, section: "REVENUE" },
+      { view: "rev_events_seasons",    path: VIEW_PATHS.rev_events_seasons,    label: "Eventos y temporadas",     icon: CalendarDays, section: "REVENUE" },
 
-      { view: "aud_stats", label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
-      { view: "aud_history", label: "Histórico", icon: Clock, section: "AUDITORIA" },
-      { view: "aud_exports", label: "Exportaciones", icon: Download, section: "AUDITORIA" },
+      { view: "aud_stats",    path: VIEW_PATHS.aud_stats,    label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
+      { view: "aud_history",  path: VIEW_PATHS.aud_history,  label: "Histórico",               icon: Clock,    section: "AUDITORIA" },
+      { view: "aud_exports",  path: VIEW_PATHS.aud_exports,  label: "Exportaciones",           icon: Download, section: "AUDITORIA" },
 
-      { view: "account", label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
+      { view: "account", path: VIEW_PATHS.account, label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
     ],
     [],
   );
@@ -460,8 +431,8 @@ export default function AuthedApp() {
   }, [currentView]);
 
   const handleNavigate = React.useCallback((view: AuthedView) => {
-    setCurrentView(view);
-  }, []);
+    navigate(VIEW_PATHS[view]);
+  }, [navigate]);
 
   const headerLeft = React.useMemo(() => {
     if (!usesPropertySelector(currentView)) return null;
@@ -481,8 +452,6 @@ export default function AuthedApp() {
     <AppShell
       userEmail={(user as any).email}
       userName={(user as any).fullName}
-      activeView={currentView}
-      onNavigate={handleNavigate}
       onLogout={handleLogout}
       title={title}
       subtitle={subtitle}
@@ -490,13 +459,7 @@ export default function AuthedApp() {
       currentPlanCode={currentPlanCode}
       headerLeft={headerLeft}
     >
-      {currentView === "dashboard" && (
-        <DashboardHome
-          onNavigate={(v) => {
-            handleNavigate(v as any);
-          }}
-        />
-      )}
+      {currentView === "dashboard" && <DashboardHome />}
 
       {currentView === "aud_screening_csv" && (
         <ScreeningCsv
@@ -528,7 +491,7 @@ export default function AuthedApp() {
       {isRevenueFeatureView(currentView) && !canAccessRevenue && (
         <RevenueLockedDemo
           currentPlan={currentPlan}
-          onGoPlans={() => setCurrentView("account")}
+          onGoPlans={() => navigate(VIEW_PATHS.account)}
         />
       )}
 

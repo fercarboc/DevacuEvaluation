@@ -51,16 +51,12 @@ function getBearer(req: Request) {
 // ================================
 
 export async function requireUser(req: Request) {
-  console.log("[auth.ts] VERSION 2026-02-23-B");
-
   const jwt = getBearer(req);
 
   if (!jwt) {
     console.error("[requireUser] No Bearer token found");
     throw new Error("UNAUTHORIZED_NO_BEARER");
   }
-
-  console.log("[requireUser] JWT prefix:", jwt.slice(0, 20));
 
   const sb = supabaseServiceClient();
 

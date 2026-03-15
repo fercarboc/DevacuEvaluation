@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/services/supabase";
 import { orgInviteFinalize } from "@/services/orgInviteFinalize.service";
+import { LS_KEYS } from "@/services/storageKeys";
 
 // ✅ Ajusta la ruta real donde guardes el cartel
 import cartel3 from "@/img/cartel3.png";
@@ -17,7 +18,6 @@ function pickOrgIdFromQuery(sp: URLSearchParams) {
   return v && isUuid(v) ? v : "";
 }
 
-const LS_ORG_ID = "debacu_eval_org_id";
 
 export default function ResetPasswordPage() {
   const nav = useNavigate();
@@ -80,7 +80,7 @@ export default function ResetPasswordPage() {
       //    Requiere org_id. Lo intentamos desde:
       //    - URL (?org_id=... o ?orgId=...)
       //    - localStorage (debacu_eval_org_id)
-      const orgIdCandidate = (orgIdFromLink || localStorage.getItem(LS_ORG_ID) || "").trim();
+      const orgIdCandidate = (orgIdFromLink || localStorage.getItem(LS_KEYS.ORG_ID) || "").trim();
 
       if (orgIdCandidate && isUuid(orgIdCandidate)) {
         try {
@@ -281,7 +281,7 @@ export default function ResetPasswordPage() {
                   origin: {window.location.origin}
                   {"\n"}reset_redirect: {`${window.location.origin}/auth/reset`}
                   {"\n"}org_id_from_link: {orgIdFromLink || "—"}
-                  {"\n"}org_id_from_ls: {localStorage.getItem(LS_ORG_ID) || "—"}
+                  {"\n"}org_id_from_ls: {localStorage.getItem(LS_KEYS.ORG_ID) || "—"}
                 </pre>
               ) : null}
             </div>

@@ -1,9 +1,7 @@
 // src/pages/app/ScreeningCsv.tsx
 import React, { useMemo } from "react";
 import ScreeningCsvPage from "@/components/ScreeningCsvPage";
-
-const LS_ORG_ID = "debacu_eval_org_id";
-const LS_PROPERTY_ID = "revenue_active_property_id";
+import { LS_KEYS } from "@/services/storageKeys";
 
 type Props = {
   orgId?: string | null;
@@ -20,13 +18,13 @@ export default function ScreeningCsv(props: Props) {
   const orgId = useMemo(() => {
     const fromProps = clean(props.orgId);
     if (fromProps) return fromProps;
-    return clean(localStorage.getItem(LS_ORG_ID));
+    return clean(localStorage.getItem(LS_KEYS.ORG_ID));
   }, [props.orgId]);
 
   const propertyId = useMemo(() => {
     const fromProps = clean(props.propertyId);
     if (fromProps) return fromProps;
-    return clean(localStorage.getItem(LS_PROPERTY_ID));
+    return clean(localStorage.getItem(LS_KEYS.ACTIVE_PROPERTY_ID));
   }, [props.propertyId]);
 
   const propertyName = useMemo(() => {

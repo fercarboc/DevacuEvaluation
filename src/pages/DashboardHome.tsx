@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ShieldCheck,
   CreditCard,
@@ -12,11 +13,6 @@ import {
 import { getClientDashboard, type ClientDashboardData } from "@/services/clientService";
 import { getRevenueMonthSummary, type RevenueMonthSummary } from "@/services/revenueService";
 
-type AuthedView = "rev_leakage";
-
-type Props = {
-  onNavigate?: (view: AuthedView) => void;
-};
 
 function format_billing_frequency(v?: string | null) {
   const x = (v ?? "").toUpperCase();
@@ -86,7 +82,8 @@ function impactTone(net: number) {
   };
 }
 
-export default function DashboardHome({ onNavigate }: Props) {
+export default function DashboardHome() {
+  const navigate = useNavigate();
   const [loading, set_loading] = useState(true);
   const [error, set_error] = useState<string | null>(null);
 
@@ -170,7 +167,7 @@ export default function DashboardHome({ onNavigate }: Props) {
   const tone = impactTone(rev.impact.net_loss);
   const ToneIcon = tone.icon;
 
-  const goLeakage = () => onNavigate?.("rev_leakage");
+  const goLeakage = () => navigate("/app/revenue/fugas");
 
   return (
     <div className="space-y-8">

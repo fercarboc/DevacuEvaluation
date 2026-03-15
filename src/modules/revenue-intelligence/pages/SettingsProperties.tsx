@@ -4,6 +4,7 @@ import type { User, PlanCode } from "@/types/types";
 import { planTypeToPlanCode } from "@/types/types";
 
 import PropertiesList from "../components/PropertiesList";
+import { LS_KEYS } from "@/services/storageKeys";
 import PropertyForm, { PropertyFormValues } from "../components/PropertyForm";
 
 import {
@@ -32,7 +33,7 @@ const VISUAL_PLAN_LIMITS: Record<PlanCode, number> = {
   PREMIUM: 4,
 };
 
-const ACTIVE_PROPERTY_STORAGE_KEY = "revenue_active_property_id";
+const ACTIVE_PROPERTY_STORAGE_KEY = LS_KEYS.ACTIVE_PROPERTY_ID;
 const PROPERTIES_CHANGED_EVENT = "revenue:properties-changed";
 const ACTIVE_PROPERTY_CHANGED_EVENT = "revenue:active-property-changed";
 

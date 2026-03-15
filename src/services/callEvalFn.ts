@@ -1,10 +1,9 @@
 // src/services/callEvalFn.ts
 import { supabase } from "@/services/supabaseClient";
+import { LS_KEYS } from "@/services/storageKeys";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
 const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-
-const LS_ORG_ID = "debacu_eval_org_id";
 
 /* ======================================================
  * Helpers org_id
@@ -13,11 +12,11 @@ const LS_ORG_ID = "debacu_eval_org_id";
 export function setEvalOrgId(orgId: string | null | undefined) {
   const v = String(orgId ?? "").trim();
   if (!v) return;
-  localStorage.setItem(LS_ORG_ID, v);
+  localStorage.setItem(LS_KEYS.ORG_ID, v);
 }
 
 export function getEvalOrgId(): string {
-  return localStorage.getItem(LS_ORG_ID) || "";
+  return localStorage.getItem(LS_KEYS.ORG_ID) || "";
 }
 
 /* ======================================================

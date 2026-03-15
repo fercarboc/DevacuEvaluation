@@ -3,6 +3,7 @@ import { PlanTier } from "../../auditor";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { CalendarRange, Activity, FileText } from "lucide-react";
 import { callEvalFn } from "@/services/callEvalFn";
+import { LS_KEYS } from "@/services/storageKeys";
 import { EconomicImpactDialog } from "@/components/reports/EconomicImpactDialog";
 import { DailyReportDialog } from "@/components/reports/DailyReportDialog";
 import { WeeklyReportDialog } from "@/components/reports/WeeklyReportDialog";
@@ -152,8 +153,7 @@ function triggerDownload(url: string) {
 
 function getActivePropertyIdFromStorage() {
   return (
-    localStorage.getItem("revenue_active_property_id") ||
-    localStorage.getItem("debacu_eval_property_id") ||
+    localStorage.getItem(LS_KEYS.ACTIVE_PROPERTY_ID) ||
     null
   );
 }
@@ -425,11 +425,11 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
   /** ---------------------------
    * orgId / propertyId (localStorage)
    * --------------------------- */
-  const [orgId, setOrgId] = useState<string | null>(() => localStorage.getItem("debacu_eval_org_id"));
+  const [orgId, setOrgId] = useState<string | null>(() => localStorage.getItem(LS_KEYS.ORG_ID));
   const [propertyId, setPropertyId] = useState<string | null>(() => getActivePropertyIdFromStorage());
 
   useEffect(() => {
-    setOrgId(localStorage.getItem("debacu_eval_org_id"));
+    setOrgId(localStorage.getItem(LS_KEYS.ORG_ID));
     setPropertyId(getActivePropertyIdFromStorage());
 
     const onStorage = (e: StorageEvent) => {

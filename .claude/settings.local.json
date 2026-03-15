@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep:*)",
+      "Bash(grep -r ^import.*froms*['']../ c:/DebacuEvaluation/src/modules/revenue-intelligence --include=*.tsx --include=*.ts)",
+      "Bash(grep -r ^import.*froms*['']./ c:/DebacuEvaluation/src/modules/revenue-intelligence --include=*.tsx --include=*.ts)",
+      "Bash(grep -r \"^import\\\\|^export\" /c/DebacuEvaluation/src/modules/revenue-intelligence/ --include=*.tsx --include=*.ts)",
+      "Bash(grep -r from.*[''] /c/DebacuEvaluation/src/modules/revenue-intelligence/ --include=*.tsx --include=*.ts)",
+      "Bash(SRC_ASSETS=\"c:/DebacuEvaluation/src/assets\")",
+      "Bash(SRC_IMG=\"c:/DebacuEvaluation/src/img\")",
+      "Bash(PUBLIC_IMG=\"c:/DebacuEvaluation/public/img\")",
+      "Bash(__NEW_LINE_65a991aac1eefa8f__ echo:*)",
+      "Bash(rm -f \"$SRC_ASSETS/1000144122.png\" \"$SRC_ASSETS/1000144124.png\" \"$SRC_ASSETS/1000144126.png\" \"$SRC_ASSETS/1000144127.png\" \"$SRC_ASSETS/1000144132.png\" \"$SRC_ASSETS/ChatGPT Image 13 feb 2026, 10_48_01.png\" \"$SRC_ASSETS/analisiscanal.png\" \"$SRC_ASSETS/debacuenazul.png\" \"$SRC_ASSETS/debacuenblanco.png\" \"$SRC_ASSETS/debacuevaluation copy.png\" \"$SRC_ASSETS/debacuevaluation2.png\" \"$SRC_ASSETS/debacuevaluation2 copy.png\" \"$SRC_ASSETS/debacuevaluation360.png\" \"$SRC_ASSETS/debacuevaluation360 copy.png\" \"$SRC_ASSETS/debaculogoazul.png\" \"$SRC_ASSETS/logodebacublanco.png\" \"$SRC_ASSETS/debacuevaluation.png\" \"$SRC_ASSETS/fondopantalla.png\" \"$SRC_ASSETS/revenueinteligence.png\")",
+      "Bash(rm -f \"$SRC_IMG/1000144124.png\" \"$SRC_IMG/1000144126.png\" \"$SRC_IMG/1000144127.png\" \"$SRC_IMG/1000144132.png\" \"$SRC_IMG/ChatGPT Image 13 feb 2026, 10_48_01.png\" \"$SRC_IMG/activate-hero.png\" \"$SRC_IMG/analisiscanal.png\" \"$SRC_IMG/cartel1.png\" \"$SRC_IMG/cartel2.png\" \"$SRC_IMG/cartel4.png\" \"$SRC_IMG/cartelbienvenida.png\" \"$SRC_IMG/cartelrevenuepng.png\" \"$SRC_IMG/cartelx1png.png\" \"$SRC_IMG/debacu-logo.png\" \"$SRC_IMG/debacuevaluation2.png\" \"$SRC_IMG/debacuevaluation360.png\" \"$SRC_IMG/logo.png\" \"$SRC_IMG/fondopantalla.png\" \"$SRC_IMG/revenueinteligence.png\" \"$SRC_IMG/debacuevaluation.png\")",
+      "Bash(rm -rf \"$SRC_IMG/cards\")",
+      "Bash(rm -f \"$PUBLIC_IMG/1000144122.png\" \"$PUBLIC_IMG/1000144124.png\" \"$PUBLIC_IMG/1000144126.png\" \"$PUBLIC_IMG/1000144127.png\" \"$PUBLIC_IMG/1000144132.png\" \"$PUBLIC_IMG/ChatGPT Image 13 feb 2026, 10_48_01.png\" \"$PUBLIC_IMG/activate-hero.png\" \"$PUBLIC_IMG/analisiscanal.png\" \"$PUBLIC_IMG/debacu-logo.png\" \"$PUBLIC_IMG/debacuevaluation.png\" \"$PUBLIC_IMG/debacuevaluation2.png\" \"$PUBLIC_IMG/debacuevaluation360.png\" \"$PUBLIC_IMG/fondopantalla copy.png\" \"$PUBLIC_IMG/logo.png\")",
+      "Read(//c/DebacuEvaluation/**)",
+      "Bash(xargs head:*)"
+    ]
+  }
+}

@@ -2,6 +2,8 @@
 // deno-lint-ignore-file no-explicit-any
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { requireUser, supabaseServiceClient } from "../_shared/auth.ts";
+import { json, preflight } from "../_shared/cors.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -59,17 +61,42 @@ async function generateIdentityKey(identifier: string) {
 // ----------------------
 
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, { error: "method_not_allowed" });
+
+  // 1. Verificar JWT
+  let authUser: any;
+  try {
+    authUser = await requireUser(req);
+  } catch {
+    return json(req, 401, { error: "UNAUTHORIZED" });
+  }
+
   try {
     const body = await req.json();
     const rows = body?.rows ?? [];
     const org_id = body?.org_id;
 
     if (!org_id) {
-      return new Response(JSON.stringify({ error: "org_id required" }), { status: 400 });
+      return json(req, 400, { error: "org_id required" });
+    }
+
+    // 2. Verificar que el usuario pertenece a la org
+    const sb = supabaseServiceClient();
+    const { data: member, error: memberError } = await sb
+      .from("debacu_eval_org_members")
+      .select("org_id, role, status")
+      .eq("user_id", authUser.id)
+      .eq("org_id", org_id)
+      .eq("status", "ACTIVE")
+      .maybeSingle();
+
+    if (memberError || !member?.org_id) {
+      return json(req, 403, { error: "FORBIDDEN" });
     }
 
     if (!Array.isArray(rows) || rows.length === 0) {
-      return new Response(JSON.stringify({ error: "rows required" }), { status: 400 });
+      return json(req, 400, { error: "rows required" });
     }
 
     // Crear batch
@@ -186,16 +213,13 @@ Deno.serve(async (req) => {
       });
     }
 
-    return new Response(
-      JSON.stringify({
-        batch_id: batch.id,
-        processed: results.length,
-        results,
-      }),
-      { headers: { "Content-Type": "application/json" } }
-    );
+    return json(req, 200, {
+      batch_id: batch.id,
+      processed: results.length,
+      results,
+    });
   } catch (err) {
     console.error(err);
-    return new Response(JSON.stringify({ error: "import_failed" }), { status: 500 });
+    return json(req, 500, { error: "import_failed" });
   }
 });

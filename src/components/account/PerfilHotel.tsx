@@ -81,6 +81,8 @@ type HotelProfileRow = {
   has_parking: boolean | null;
   allows_pets: boolean | null;
 
+  pms_key: string | null;
+
   profile_completed: boolean | null;
   profile_completed_at: string | null;
 };
@@ -137,6 +139,8 @@ const DEFAULTS: Omit<HotelProfileRow, "customer_id" | "app_id"> = {
   has_spa: false,
   has_parking: false,
   allows_pets: false,
+
+  pms_key: null,
 
   profile_completed: false,
   profile_completed_at: null,
@@ -562,6 +566,8 @@ export function PerfilHotel({ user }: Props) {
         has_spa: Boolean(normalized.has_spa),
         has_parking: Boolean(normalized.has_parking),
         allows_pets: Boolean(normalized.allows_pets),
+
+        pms_key: trimOrNull(normalized.pms_key),
       };
 
       const completeAfterSave = Boolean(
@@ -731,7 +737,7 @@ export function PerfilHotel({ user }: Props) {
               <div>
                 <label className="text-[11px] font-semibold text-slate-500">Nombre del hotel</label>
                 <input
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                   value={profile.hotel_name ?? ""}
                   onBlur={() => {
                     markTouched("hotel_name");
@@ -749,7 +755,7 @@ export function PerfilHotel({ user }: Props) {
                   <select
                     className={errCls(
                       "property_type",
-                      "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                      "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                     )}
                     value={profile.property_type ?? ""}
                     onBlur={() => markTouched("property_type")}
@@ -769,7 +775,7 @@ export function PerfilHotel({ user }: Props) {
                 <div>
                   <label className="text-[11px] font-semibold text-slate-500">Categoría</label>
                   <select
-                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                     value={profile.hotel_category ?? 3}
                     onChange={(e) => setField("hotel_category", Number(e.target.value))}
                   >
@@ -786,7 +792,7 @@ export function PerfilHotel({ user }: Props) {
               <div>
                 <label className="text-[11px] font-semibold text-slate-500">Moneda</label>
                 <select
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                   value={profile.currency ?? "EUR"}
                   onChange={(e) => setField("currency", e.target.value || "EUR")}
                 >
@@ -794,6 +800,32 @@ export function PerfilHotel({ user }: Props) {
                   <option value="USD">USD</option>
                   <option value="GBP">GBP</option>
                 </select>
+              </div>
+
+              {/* fila 4 — PMS */}
+              <div>
+                <label className="text-[11px] font-semibold text-slate-500">PMS</label>
+                <select
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
+                  value={profile.pms_key ?? ""}
+                  onChange={(e) => setField("pms_key", e.target.value ? e.target.value : null)}
+                >
+                  <option value="">Sin especificar</option>
+                  <option value="MEWS">Mews</option>
+                  <option value="OPERA">Opera Cloud</option>
+                  <option value="CLOUDBEDS">Cloudbeds</option>
+                  <option value="ULYSES">Ulyses Cloud</option>
+                  <option value="PROTEL">Protel</option>
+                  <option value="SIHOT">Sihot</option>
+                  <option value="ROOMKEY">RoomKey</option>
+                  <option value="HOTELOGIX">Hotelogix</option>
+                  <option value="BEDS24">Beds24</option>
+                  <option value="HOSPWARE">Hospware</option>
+                  <option value="OTHER">Otro</option>
+                </select>
+                <p className="mt-1 text-[10px] text-slate-400">
+                  Se usa para aplicar automáticamente el formato de importación CSV de tu PMS.
+                </p>
               </div>
             </div>
           </div>
@@ -814,7 +846,7 @@ export function PerfilHotel({ user }: Props) {
                 <input
                   className={errCls(
                     "country",
-                    "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                    "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                   )}
                   value={profile.country ?? ""}
                   onBlur={() => {
@@ -833,7 +865,7 @@ export function PerfilHotel({ user }: Props) {
                   <input
                     className={errCls(
                       "province",
-                      "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                      "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                     )}
                     value={profile.province ?? ""}
                     onBlur={() => {
@@ -851,7 +883,7 @@ export function PerfilHotel({ user }: Props) {
                   <input
                     className={errCls(
                       "city",
-                      "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                      "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                     )}
                     value={profile.city ?? ""}
                     onBlur={() => {
@@ -869,7 +901,7 @@ export function PerfilHotel({ user }: Props) {
               <div>
                 <label className="text-[11px] font-semibold text-slate-500">Domicilio</label>
                 <input
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                   value={profile.address ?? ""}
                   onBlur={() => {
                     markTouched("address");
@@ -888,7 +920,7 @@ export function PerfilHotel({ user }: Props) {
                     autoComplete="postal-code"
                     className={errCls(
                       "postal_code",
-                      "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                      "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                     )}
                     value={profile.postal_code ?? ""}
                     onBlur={() => {
@@ -929,7 +961,7 @@ export function PerfilHotel({ user }: Props) {
                   autoComplete="email"
                   className={errCls(
                     "contact_email",
-                    "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                    "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                   )}
                   value={profile.contact_email ?? ""}
                   onBlur={() => {
@@ -949,7 +981,7 @@ export function PerfilHotel({ user }: Props) {
                   autoComplete="tel"
                   className={errCls(
                     "contact_phone",
-                    "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                    "mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                   )}
                   value={profile.contact_phone ?? ""}
                   onBlur={() => {
@@ -971,7 +1003,7 @@ export function PerfilHotel({ user }: Props) {
                   <div className="relative">
                     <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
                     <input
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                       value={profile.contact_person ?? ""}
                       onBlur={() => {
                         markTouched("contact_person");
@@ -990,7 +1022,7 @@ export function PerfilHotel({ user }: Props) {
                   <div className="relative">
                     <IdCard className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
                     <input
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm outline-none focus:bg-white focus:border-slate-300"
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm text-slate-900 outline-none focus:bg-white focus:border-slate-300"
                       value={profile.contact_role ?? ""}
                       onBlur={() => {
                         markTouched("contact_role");
@@ -1023,7 +1055,7 @@ export function PerfilHotel({ user }: Props) {
               <input
                 type="number"
                 min={0}
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 value={profile.monthly_stays_estimated ?? ""}
                 onChange={(e) => setField("monthly_stays_estimated", toNumOrNull(e.target.value))}
                 placeholder="Ej: 140"
@@ -1036,7 +1068,7 @@ export function PerfilHotel({ user }: Props) {
                 type="number"
                 min={0}
                 step="0.01"
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 value={profile.adr_real ?? ""}
                 onChange={(e) => setField("adr_real", toNumOrNull(e.target.value))}
                 placeholder="Ej: 95.00"
@@ -1050,7 +1082,7 @@ export function PerfilHotel({ user }: Props) {
                   type="number"
                   step="0.01"
                   min={0}
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                   value={profile.season_mult_high ?? ""}
                   onChange={(e) => setField("season_mult_high", toNumOrNull(e.target.value))}
                 />
@@ -1061,7 +1093,7 @@ export function PerfilHotel({ user }: Props) {
                   type="number"
                   step="0.01"
                   min={0}
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                   value={profile.season_mult_low ?? ""}
                   onChange={(e) => setField("season_mult_low", toNumOrNull(e.target.value))}
                 />
@@ -1088,7 +1120,7 @@ export function PerfilHotel({ user }: Props) {
             <div>
               <label className="text-xs font-semibold text-slate-600">Zona horaria</label>
               <input
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 value={profile.timezone ?? ""}
                 onBlur={() => {
                   markTouched("timezone");
@@ -1106,7 +1138,7 @@ export function PerfilHotel({ user }: Props) {
                 type="time"
                 className={errCls(
                   "checkin_time",
-                  "mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  "mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 )}
                 value={profile.checkin_time ?? ""}
                 onBlur={() => markTouched("checkin_time")}
@@ -1121,7 +1153,7 @@ export function PerfilHotel({ user }: Props) {
                 type="time"
                 className={errCls(
                   "checkout_time",
-                  "mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  "mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 )}
                 value={profile.checkout_time ?? ""}
                 onBlur={() => markTouched("checkout_time")}
@@ -1136,7 +1168,7 @@ export function PerfilHotel({ user }: Props) {
                 type="number"
                 min={0}
                 step="1"
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 value={profile.rooms_count ?? ""}
                 onChange={(e) => setField("rooms_count", toNumOrNull(e.target.value))}
                 placeholder="Ej: 25"
@@ -1150,7 +1182,7 @@ export function PerfilHotel({ user }: Props) {
                 type="number"
                 min={0}
                 step="1"
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 value={profile.max_occupancy ?? ""}
                 onChange={(e) => setField("max_occupancy", toNumOrNull(e.target.value))}
                 placeholder="Ej: 60"
@@ -1163,7 +1195,7 @@ export function PerfilHotel({ user }: Props) {
                 type="number"
                 min={0}
                 step="0.01"
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 value={profile.monthly_revenue_estimate ?? ""}
                 onChange={(e) => setField("monthly_revenue_estimate", toNumOrNull(e.target.value))}
                 placeholder="Ej: 42000"
@@ -1172,7 +1204,7 @@ export function PerfilHotel({ user }: Props) {
           </div>
 
           <div className="mt-4 grid gap-3 md:grid-cols-4">
-            <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+            <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 text-slate-700">
               <Utensils className="w-4 h-4 text-slate-600" />
               <input
                 type="checkbox"
@@ -1182,7 +1214,7 @@ export function PerfilHotel({ user }: Props) {
               Restaurante
             </label>
 
-            <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+            <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 text-slate-700">
               <Waves className="w-4 h-4 text-slate-600" />
               <input
                 type="checkbox"
@@ -1192,7 +1224,7 @@ export function PerfilHotel({ user }: Props) {
               Spa
             </label>
 
-            <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+            <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 text-slate-700">
               <Car className="w-4 h-4 text-slate-600" />
               <input
                 type="checkbox"
@@ -1202,7 +1234,7 @@ export function PerfilHotel({ user }: Props) {
               Parking
             </label>
 
-            <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+            <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 text-slate-700">
               <Dog className="w-4 h-4 text-slate-600" />
               <input
                 type="checkbox"
@@ -1233,7 +1265,7 @@ export function PerfilHotel({ user }: Props) {
                 min={0}
                 max={100}
                 step="1"
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 value={occupancyPct ?? ""}
                 onChange={(e) => {
                   const pct = toNumOrNull(e.target.value);
@@ -1250,7 +1282,7 @@ export function PerfilHotel({ user }: Props) {
                 min={0}
                 max={100}
                 step="1"
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 value={cancelPct ?? ""}
                 onChange={(e) => {
                   const pct = toNumOrNull(e.target.value);
@@ -1266,7 +1298,7 @@ export function PerfilHotel({ user }: Props) {
                 type="number"
                 min={0}
                 step="0.01"
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 value={profile.revpar_target ?? ""}
                 onChange={(e) => setField("revpar_target", toNumOrNull(e.target.value))}
                 placeholder="Ej: 65.00"

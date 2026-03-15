@@ -227,6 +227,48 @@ export type Database = {
         }
         Relationships: []
       }
+      admin_users: {
+        Row: {
+          created_at: string
+          is_active: boolean
+          note: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          is_active?: boolean
+          note?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          is_active?: boolean
+          note?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      app_settings: {
+        Row: {
+          debacu_global_pepper: string
+          id: boolean
+          updated_at: string
+        }
+        Insert: {
+          debacu_global_pepper: string
+          id?: boolean
+          updated_at?: string
+        }
+        Update: {
+          debacu_global_pepper?: string
+          id?: boolean
+          updated_at?: string
+        }
+        Relationships: []
+      }
       apps: {
         Row: {
           description: string | null
@@ -459,21 +501,146 @@ export type Database = {
         }
         Relationships: []
       }
+      customer_audit_export_downloads: {
+        Row: {
+          downloaded_at: string
+          downloaded_by_email: string | null
+          downloaded_by_user_id: string
+          export_id: string
+          id: string
+          ip_address: string | null
+          org_id: string
+          user_agent: string | null
+        }
+        Insert: {
+          downloaded_at?: string
+          downloaded_by_email?: string | null
+          downloaded_by_user_id: string
+          export_id: string
+          id?: string
+          ip_address?: string | null
+          org_id: string
+          user_agent?: string | null
+        }
+        Update: {
+          downloaded_at?: string
+          downloaded_by_email?: string | null
+          downloaded_by_user_id?: string
+          export_id?: string
+          id?: string
+          ip_address?: string | null
+          org_id?: string
+          user_agent?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "customer_audit_export_downloads_export_id_fkey"
+            columns: ["export_id"]
+            isOneToOne: false
+            referencedRelation: "customer_audit_exports"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "customer_audit_export_downloads_export_id_fkey"
+            columns: ["export_id"]
+            isOneToOne: false
+            referencedRelation: "v_customer_audit_exports_with_last_download"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      customer_audit_exports: {
+        Row: {
+          app_id: string
+          created_at: string
+          error_code: string | null
+          error_message: string | null
+          export_scope: string
+          export_type: string
+          file_size_bytes: number | null
+          filters: Json
+          id: string
+          org_id: string
+          period_from: string
+          period_to: string
+          requested_by_email: string | null
+          requested_by_role: string | null
+          requested_by_user_id: string
+          row_count: number | null
+          sha256: string | null
+          status: string
+          storage_bucket: string
+          storage_path: string
+        }
+        Insert: {
+          app_id?: string
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          export_scope: string
+          export_type: string
+          file_size_bytes?: number | null
+          filters?: Json
+          id?: string
+          org_id: string
+          period_from: string
+          period_to: string
+          requested_by_email?: string | null
+          requested_by_role?: string | null
+          requested_by_user_id: string
+          row_count?: number | null
+          sha256?: string | null
+          status?: string
+          storage_bucket?: string
+          storage_path: string
+        }
+        Update: {
+          app_id?: string
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          export_scope?: string
+          export_type?: string
+          file_size_bytes?: number | null
+          filters?: Json
+          id?: string
+          org_id?: string
+          period_from?: string
+          period_to?: string
+          requested_by_email?: string | null
+          requested_by_role?: string | null
+          requested_by_user_id?: string
+          row_count?: number | null
+          sha256?: string | null
+          status?: string
+          storage_bucket?: string
+          storage_path?: string
+        }
+        Relationships: []
+      }
       customers: {
         Row: {
           address: string | null
           api_token: string | null
           app_id: string | null
+          auth_user_id: string | null
           bank_address: string | null
           bank_name: string | null
+          billing_email: string | null
           billing_frequency: string | null
+          billing_phone: string | null
           city: string | null
+          commercial_name: string | null
+          contact_person: string | null
+          contact_role: string | null
           country: string | null
           created_at: string
           email: string | null
           iban: string | null
           id: string
           is_active: boolean
+          legacy_code: string | null
+          legal_name: string | null
           name: string | null
           nif: string | null
           phone: string | null
@@ -494,16 +661,24 @@ export type Database = {
           address?: string | null
           api_token?: string | null
           app_id?: string | null
+          auth_user_id?: string | null
           bank_address?: string | null
           bank_name?: string | null
+          billing_email?: string | null
           billing_frequency?: string | null
+          billing_phone?: string | null
           city?: string | null
+          commercial_name?: string | null
+          contact_person?: string | null
+          contact_role?: string | null
           country?: string | null
           created_at?: string
           email?: string | null
           iban?: string | null
           id?: string
           is_active?: boolean
+          legacy_code?: string | null
+          legal_name?: string | null
           name?: string | null
           nif?: string | null
           phone?: string | null
@@ -524,16 +699,24 @@ export type Database = {
           address?: string | null
           api_token?: string | null
           app_id?: string | null
+          auth_user_id?: string | null
           bank_address?: string | null
           bank_name?: string | null
+          billing_email?: string | null
           billing_frequency?: string | null
+          billing_phone?: string | null
           city?: string | null
+          commercial_name?: string | null
+          contact_person?: string | null
+          contact_role?: string | null
           country?: string | null
           created_at?: string
           email?: string | null
           iban?: string | null
           id?: string
           is_active?: boolean
+          legacy_code?: string | null
+          legal_name?: string | null
           name?: string | null
           nif?: string | null
           phone?: string | null
@@ -548,6 +731,24 @@ export type Database = {
           stripe_default_payment_method_id?: string | null
           swift?: string | null
           trial_used?: boolean | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      debacu_adr_reference_by_category: {
+        Row: {
+          adr_reference: number
+          hotel_category: number
+          updated_at: string
+        }
+        Insert: {
+          adr_reference: number
+          hotel_category: number
+          updated_at?: string
+        }
+        Update: {
+          adr_reference?: number
+          hotel_category?: number
           updated_at?: string
         }
         Relationships: []
@@ -587,11 +788,13 @@ export type Database = {
           dpa_version: string | null
           email: string
           id: string
+          invite_redirect_to: string | null
           last_email_at: string | null
           last_email_detail: string | null
           last_email_status: string | null
           legal_name: string | null
           notes: string | null
+          org_id: string | null
           phone: string | null
           property_type: string
           reviewed_at: string | null
@@ -601,6 +804,7 @@ export type Database = {
           rooms_count: number | null
           status: string
           terms_version: string | null
+          updated_at: string | null
           website: string | null
         }
         Insert: {
@@ -637,11 +841,13 @@ export type Database = {
           dpa_version?: string | null
           email: string
           id?: string
+          invite_redirect_to?: string | null
           last_email_at?: string | null
           last_email_detail?: string | null
           last_email_status?: string | null
           legal_name?: string | null
           notes?: string | null
+          org_id?: string | null
           phone?: string | null
           property_type: string
           reviewed_at?: string | null
@@ -651,6 +857,7 @@ export type Database = {
           rooms_count?: number | null
           status?: string
           terms_version?: string | null
+          updated_at?: string | null
           website?: string | null
         }
         Update: {
@@ -687,11 +894,13 @@ export type Database = {
           dpa_version?: string | null
           email?: string
           id?: string
+          invite_redirect_to?: string | null
           last_email_at?: string | null
           last_email_detail?: string | null
           last_email_status?: string | null
           legal_name?: string | null
           notes?: string | null
+          org_id?: string | null
           phone?: string | null
           property_type?: string
           reviewed_at?: string | null
@@ -701,7 +910,89 @@ export type Database = {
           rooms_count?: number | null
           status?: string
           terms_version?: string | null
+          updated_at?: string | null
           website?: string | null
+        }
+        Relationships: []
+      }
+      debacu_eval_admin_users: {
+        Row: {
+          active: boolean
+          created_at: string
+          user_id: string
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          user_id: string
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      debacu_eval_admins: {
+        Row: {
+          created_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      debacu_eval_alerts: {
+        Row: {
+          alert_type: string
+          created_at: string
+          description: string | null
+          id: string
+          metric_value: number | null
+          org_id: string
+          property_id: string
+          severity: string
+          source: string
+          status: string
+          stay_date: string
+          threshold_value: number | null
+          title: string
+        }
+        Insert: {
+          alert_type: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          metric_value?: number | null
+          org_id: string
+          property_id: string
+          severity: string
+          source?: string
+          status?: string
+          stay_date: string
+          threshold_value?: number | null
+          title: string
+        }
+        Update: {
+          alert_type?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          metric_value?: number | null
+          org_id?: string
+          property_id?: string
+          severity?: string
+          source?: string
+          status?: string
+          stay_date?: string
+          threshold_value?: number | null
+          title?: string
         }
         Relationships: []
       }
@@ -713,6 +1004,7 @@ export type Database = {
           export_id: string
           id: string
           ip: unknown
+          org_id: string
           user_agent: string | null
         }
         Insert: {
@@ -722,6 +1014,7 @@ export type Database = {
           export_id: string
           id?: string
           ip?: unknown
+          org_id: string
           user_agent?: string | null
         }
         Update: {
@@ -731,9 +1024,31 @@ export type Database = {
           export_id?: string
           id?: string
           ip?: unknown
+          org_id?: string
           user_agent?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "debacu_eval_audit_export_downloads_export_fk"
+            columns: ["export_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_audit_exports"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_audit_export_downloads_export_fk"
+            columns: ["export_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_audit_exports_with_downloads"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_audit_export_downloads_export_fk"
+            columns: ["export_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_audit_exports_with_last_download"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "debacu_eval_audit_export_downloads_export_id_fkey"
             columns: ["export_id"]
@@ -746,6 +1061,27 @@ export type Database = {
             columns: ["export_id"]
             isOneToOne: false
             referencedRelation: "debacu_eval_audit_exports_with_downloads"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_audit_export_downloads_export_id_fkey"
+            columns: ["export_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_audit_exports_with_last_download"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_audit_export_downloads_org_fk"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_audit_export_downloads_org_fk"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
             referencedColumns: ["id"]
           },
         ]
@@ -769,7 +1105,9 @@ export type Database = {
           generated_by_user_id: string
           id: string
           meta: Json
+          org_id: string
           row_count: number
+          status: string
           storage_bucket: string
           storage_path: string
         }
@@ -791,7 +1129,9 @@ export type Database = {
           generated_by_user_id: string
           id?: string
           meta?: Json
+          org_id: string
           row_count?: number
+          status?: string
           storage_bucket?: string
           storage_path: string
         }
@@ -813,11 +1153,28 @@ export type Database = {
           generated_by_user_id?: string
           id?: string
           meta?: Json
+          org_id?: string
           row_count?: number
+          status?: string
           storage_bucket?: string
           storage_path?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_audit_exports_org_fk"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_audit_exports_org_fk"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       debacu_eval_audit_log: {
         Row: {
@@ -873,6 +1230,24 @@ export type Database = {
         }
         Relationships: []
       }
+      debacu_eval_customer_org_map: {
+        Row: {
+          created_at: string
+          customer_id: string
+          org_id: string
+        }
+        Insert: {
+          created_at?: string
+          customer_id: string
+          org_id: string
+        }
+        Update: {
+          created_at?: string
+          customer_id?: string
+          org_id?: string
+        }
+        Relationships: []
+      }
       debacu_eval_customer_profile: {
         Row: {
           contact_name: string | null
@@ -914,6 +1289,13 @@ export type Database = {
             isOneToOne: true
             referencedRelation: "customers"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_customer_profile_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: true
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
           },
         ]
       }
@@ -967,6 +1349,634 @@ export type Database = {
           },
         ]
       }
+      debacu_eval_guest_index: {
+        Row: {
+          doc_key: string | null
+          email_key: string | null
+          first_seen_date: string | null
+          identity_key: string
+          incidents_count: number
+          last_incident_date: string | null
+          last_seen_date: string | null
+          phone_key: string | null
+          risk_band: string
+          stays_count: number
+          total_net_loss: number
+          updated_at: string
+        }
+        Insert: {
+          doc_key?: string | null
+          email_key?: string | null
+          first_seen_date?: string | null
+          identity_key: string
+          incidents_count?: number
+          last_incident_date?: string | null
+          last_seen_date?: string | null
+          phone_key?: string | null
+          risk_band?: string
+          stays_count?: number
+          total_net_loss?: number
+          updated_at?: string
+        }
+        Update: {
+          doc_key?: string | null
+          email_key?: string | null
+          first_seen_date?: string | null
+          identity_key?: string
+          incidents_count?: number
+          last_incident_date?: string | null
+          last_seen_date?: string | null
+          phone_key?: string | null
+          risk_band?: string
+          stays_count?: number
+          total_net_loss?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      debacu_eval_guest_index_bak_20260314: {
+        Row: {
+          doc_key: string | null
+          email_key: string | null
+          first_seen_date: string | null
+          identity_key: string | null
+          incidents_count: number | null
+          last_incident_date: string | null
+          last_seen_date: string | null
+          phone_key: string | null
+          risk_band: string | null
+          stays_count: number | null
+          total_net_loss: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          doc_key?: string | null
+          email_key?: string | null
+          first_seen_date?: string | null
+          identity_key?: string | null
+          incidents_count?: number | null
+          last_incident_date?: string | null
+          last_seen_date?: string | null
+          phone_key?: string | null
+          risk_band?: string | null
+          stays_count?: number | null
+          total_net_loss?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          doc_key?: string | null
+          email_key?: string | null
+          first_seen_date?: string | null
+          identity_key?: string | null
+          incidents_count?: number | null
+          last_incident_date?: string | null
+          last_seen_date?: string | null
+          phone_key?: string | null
+          risk_band?: string | null
+          stays_count?: number | null
+          total_net_loss?: number | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      debacu_eval_guest_stays: {
+        Row: {
+          checkin_date: string
+          checkout_date: string | null
+          created_at: string
+          full_name: string | null
+          id: string
+          identity_key: string
+          import_batch_id: string | null
+          org_id: string
+          property_id: string | null
+          stay_status: string
+          updated_at: string
+        }
+        Insert: {
+          checkin_date: string
+          checkout_date?: string | null
+          created_at?: string
+          full_name?: string | null
+          id?: string
+          identity_key: string
+          import_batch_id?: string | null
+          org_id: string
+          property_id?: string | null
+          stay_status?: string
+          updated_at?: string
+        }
+        Update: {
+          checkin_date?: string
+          checkout_date?: string | null
+          created_at?: string
+          full_name?: string | null
+          id?: string
+          identity_key?: string
+          import_batch_id?: string | null
+          org_id?: string
+          property_id?: string | null
+          stay_status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_guest_stays_import_batch_id_fkey"
+            columns: ["import_batch_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_import_batches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_guest_stays_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_hotel_profile: {
+        Row: {
+          address: string | null
+          adr_real: number | null
+          allows_pets: boolean | null
+          app_id: string
+          cancellation_rate_target: number | null
+          checkin_time: string | null
+          checkout_time: string | null
+          city: string | null
+          contact_email: string | null
+          contact_person: string | null
+          contact_phone: string | null
+          contact_role: string | null
+          country: string | null
+          created_at: string
+          currency: string
+          customer_id: string
+          has_parking: boolean | null
+          has_restaurant: boolean | null
+          has_spa: boolean | null
+          hotel_category: number | null
+          hotel_name: string | null
+          max_occupancy: number | null
+          monthly_revenue_estimate: number | null
+          monthly_stays_estimated: number | null
+          occupancy_target: number | null
+          org_id: string | null
+          owner_auth_user_id: string | null
+          postal_code: string | null
+          profile_completed: boolean | null
+          profile_completed_at: string | null
+          property_type: string | null
+          province: string | null
+          revpar_target: number | null
+          rooms_count: number | null
+          season_mult_high: number | null
+          season_mult_low: number | null
+          timezone: string | null
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          address?: string | null
+          adr_real?: number | null
+          allows_pets?: boolean | null
+          app_id?: string
+          cancellation_rate_target?: number | null
+          checkin_time?: string | null
+          checkout_time?: string | null
+          city?: string | null
+          contact_email?: string | null
+          contact_person?: string | null
+          contact_phone?: string | null
+          contact_role?: string | null
+          country?: string | null
+          created_at?: string
+          currency?: string
+          customer_id: string
+          has_parking?: boolean | null
+          has_restaurant?: boolean | null
+          has_spa?: boolean | null
+          hotel_category?: number | null
+          hotel_name?: string | null
+          max_occupancy?: number | null
+          monthly_revenue_estimate?: number | null
+          monthly_stays_estimated?: number | null
+          occupancy_target?: number | null
+          org_id?: string | null
+          owner_auth_user_id?: string | null
+          postal_code?: string | null
+          profile_completed?: boolean | null
+          profile_completed_at?: string | null
+          property_type?: string | null
+          province?: string | null
+          revpar_target?: number | null
+          rooms_count?: number | null
+          season_mult_high?: number | null
+          season_mult_low?: number | null
+          timezone?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          address?: string | null
+          adr_real?: number | null
+          allows_pets?: boolean | null
+          app_id?: string
+          cancellation_rate_target?: number | null
+          checkin_time?: string | null
+          checkout_time?: string | null
+          city?: string | null
+          contact_email?: string | null
+          contact_person?: string | null
+          contact_phone?: string | null
+          contact_role?: string | null
+          country?: string | null
+          created_at?: string
+          currency?: string
+          customer_id?: string
+          has_parking?: boolean | null
+          has_restaurant?: boolean | null
+          has_spa?: boolean | null
+          hotel_category?: number | null
+          hotel_name?: string | null
+          max_occupancy?: number | null
+          monthly_revenue_estimate?: number | null
+          monthly_stays_estimated?: number | null
+          occupancy_target?: number | null
+          org_id?: string | null
+          owner_auth_user_id?: string | null
+          postal_code?: string | null
+          profile_completed?: boolean | null
+          profile_completed_at?: string | null
+          property_type?: string | null
+          province?: string | null
+          revpar_target?: number | null
+          rooms_count?: number | null
+          season_mult_high?: number | null
+          season_mult_low?: number | null
+          timezone?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_hotel_profile_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: true
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_hotel_profile_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: true
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
+          },
+        ]
+      }
+      debacu_eval_identity_risk_events: {
+        Row: {
+          actor_user_id: string | null
+          created_at: string
+          event_type: Database["public"]["Enums"]["debacu_eval_risk_event_type"]
+          id: string
+          identity_key: string
+          new_risk_level:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+          org_id: string | null
+          payload: Json
+          previous_risk_level:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+          property_id: string | null
+          risk_delta: number | null
+          source_id: string | null
+          source_table: string | null
+        }
+        Insert: {
+          actor_user_id?: string | null
+          created_at?: string
+          event_type: Database["public"]["Enums"]["debacu_eval_risk_event_type"]
+          id?: string
+          identity_key: string
+          new_risk_level?:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+          org_id?: string | null
+          payload?: Json
+          previous_risk_level?:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+          property_id?: string | null
+          risk_delta?: number | null
+          source_id?: string | null
+          source_table?: string | null
+        }
+        Update: {
+          actor_user_id?: string | null
+          created_at?: string
+          event_type?: Database["public"]["Enums"]["debacu_eval_risk_event_type"]
+          id?: string
+          identity_key?: string
+          new_risk_level?:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+          org_id?: string | null
+          payload?: Json
+          previous_risk_level?:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+          property_id?: string | null
+          risk_delta?: number | null
+          source_id?: string | null
+          source_table?: string | null
+        }
+        Relationships: []
+      }
+      debacu_eval_identity_risk_state: {
+        Row: {
+          distinct_orgs_count: number
+          distinct_properties_count: number
+          first_seen_at: string
+          identity_key: string
+          incidents_critical: number
+          incidents_high: number
+          incidents_total: number
+          last_incident_at: string | null
+          last_seen_at: string
+          last_source: string | null
+          last_source_ref_id: string | null
+          risk_level: Database["public"]["Enums"]["debacu_eval_risk_level"]
+          risk_score: number
+          snapshot: Json
+          updated_at: string
+        }
+        Insert: {
+          distinct_orgs_count?: number
+          distinct_properties_count?: number
+          first_seen_at?: string
+          identity_key: string
+          incidents_critical?: number
+          incidents_high?: number
+          incidents_total?: number
+          last_incident_at?: string | null
+          last_seen_at?: string
+          last_source?: string | null
+          last_source_ref_id?: string | null
+          risk_level?: Database["public"]["Enums"]["debacu_eval_risk_level"]
+          risk_score?: number
+          snapshot?: Json
+          updated_at?: string
+        }
+        Update: {
+          distinct_orgs_count?: number
+          distinct_properties_count?: number
+          first_seen_at?: string
+          identity_key?: string
+          incidents_critical?: number
+          incidents_high?: number
+          incidents_total?: number
+          last_incident_at?: string | null
+          last_seen_at?: string
+          last_source?: string | null
+          last_source_ref_id?: string | null
+          risk_level?: Database["public"]["Enums"]["debacu_eval_risk_level"]
+          risk_score?: number
+          snapshot?: Json
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      debacu_eval_import_batches: {
+        Row: {
+          created_at: string
+          error_rows: number
+          file_name: string | null
+          id: string
+          import_type: string
+          org_id: string
+          processed_rows: number
+          property_id: string | null
+          total_rows: number
+        }
+        Insert: {
+          created_at?: string
+          error_rows?: number
+          file_name?: string | null
+          id?: string
+          import_type: string
+          org_id: string
+          processed_rows?: number
+          property_id?: string | null
+          total_rows?: number
+        }
+        Update: {
+          created_at?: string
+          error_rows?: number
+          file_name?: string | null
+          id?: string
+          import_type?: string
+          org_id?: string
+          processed_rows?: number
+          property_id?: string | null
+          total_rows?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_import_batches_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_import_guest_index: {
+        Row: {
+          created_at: string
+          first_seen_date: string | null
+          id: string
+          identity_key: string
+          incidents_count: number
+          last_incident_date: string | null
+          last_seen_date: string | null
+          reservations_count: number
+          risk_band: string
+          stays_count: number
+          total_gross: number
+          total_net_loss: number
+          total_recovered: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          first_seen_date?: string | null
+          id?: string
+          identity_key: string
+          incidents_count?: number
+          last_incident_date?: string | null
+          last_seen_date?: string | null
+          reservations_count?: number
+          risk_band?: string
+          stays_count?: number
+          total_gross?: number
+          total_net_loss?: number
+          total_recovered?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          first_seen_date?: string | null
+          id?: string
+          identity_key?: string
+          incidents_count?: number
+          last_incident_date?: string | null
+          last_seen_date?: string | null
+          reservations_count?: number
+          risk_band?: string
+          stays_count?: number
+          total_gross?: number
+          total_net_loss?: number
+          total_recovered?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      debacu_eval_import_guest_index_bak: {
+        Row: {
+          created_at: string | null
+          first_seen_date: string | null
+          id: string | null
+          identity_key: string | null
+          incidents_count: number | null
+          last_incident_date: string | null
+          last_seen_date: string | null
+          reservations_count: number | null
+          risk_band: string | null
+          stays_count: number | null
+          total_gross: number | null
+          total_net_loss: number | null
+          total_recovered: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          first_seen_date?: string | null
+          id?: string | null
+          identity_key?: string | null
+          incidents_count?: number | null
+          last_incident_date?: string | null
+          last_seen_date?: string | null
+          reservations_count?: number | null
+          risk_band?: string | null
+          stays_count?: number | null
+          total_gross?: number | null
+          total_net_loss?: number | null
+          total_recovered?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          first_seen_date?: string | null
+          id?: string | null
+          identity_key?: string | null
+          incidents_count?: number | null
+          last_incident_date?: string | null
+          last_seen_date?: string | null
+          reservations_count?: number | null
+          risk_band?: string | null
+          stays_count?: number | null
+          total_gross?: number | null
+          total_net_loss?: number | null
+          total_recovered?: number | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      debacu_eval_import_rows: {
+        Row: {
+          batch_id: string
+          checkin_date: string
+          checkout_date: string | null
+          created_at: string
+          error_code: string | null
+          full_name: string | null
+          id: string
+          identity_key: string
+          match_status: string
+          org_id: string
+          risk_band_at_import: string | null
+        }
+        Insert: {
+          batch_id: string
+          checkin_date: string
+          checkout_date?: string | null
+          created_at?: string
+          error_code?: string | null
+          full_name?: string | null
+          id?: string
+          identity_key: string
+          match_status?: string
+          org_id: string
+          risk_band_at_import?: string | null
+        }
+        Update: {
+          batch_id?: string
+          checkin_date?: string
+          checkout_date?: string | null
+          created_at?: string
+          error_code?: string | null
+          full_name?: string | null
+          id?: string
+          identity_key?: string
+          match_status?: string
+          org_id?: string
+          risk_band_at_import?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_import_rows_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_import_batches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_inventory_daily: {
+        Row: {
+          created_at: string | null
+          id: string
+          org_id: string
+          property_id: string
+          rooms_available: number
+          rooms_out_of_order: number | null
+          stay_date: string
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          org_id: string
+          property_id: string
+          rooms_available: number
+          rooms_out_of_order?: number | null
+          stay_date: string
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          org_id?: string
+          property_id?: string
+          rooms_available?: number
+          rooms_out_of_order?: number | null
+          stay_date?: string
+        }
+        Relationships: []
+      }
       debacu_eval_invoices: {
         Row: {
           amount_due: number | null
@@ -977,6 +1987,7 @@ export type Database = {
           created_at: string
           currency: string
           customer_id: string
+          customer_id_uuid: string | null
           hosted_invoice_url: string | null
           id: string
           invoice_created_at: string
@@ -1002,6 +2013,7 @@ export type Database = {
           created_at?: string
           currency?: string
           customer_id: string
+          customer_id_uuid?: string | null
           hosted_invoice_url?: string | null
           id?: string
           invoice_created_at: string
@@ -1027,6 +2039,7 @@ export type Database = {
           created_at?: string
           currency?: string
           customer_id?: string
+          customer_id_uuid?: string | null
           hosted_invoice_url?: string | null
           id?: string
           invoice_created_at?: string
@@ -1043,31 +2056,476 @@ export type Database = {
           stripe_subscription_id?: string | null
           updated_at?: string
         }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_invoices_customer_id_uuid_fkey"
+            columns: ["customer_id_uuid"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_invoices_customer_id_uuid_fkey"
+            columns: ["customer_id_uuid"]
+            isOneToOne: false
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
+          },
+        ]
+      }
+      debacu_eval_manual_check_results: {
+        Row: {
+          country: string | null
+          created_at: string
+          full_name_masked: string | null
+          id: string
+          identity_key: string
+          incidents_count: number
+          last_incident_at: string | null
+          manual_check_id: string
+          masked_document: string | null
+          masked_email: string | null
+          masked_phone: string | null
+          org_id: string
+          property_id: string
+          risk_level: Database["public"]["Enums"]["debacu_eval_risk_level"]
+          risk_score: number
+          source_summary: Json
+        }
+        Insert: {
+          country?: string | null
+          created_at?: string
+          full_name_masked?: string | null
+          id?: string
+          identity_key: string
+          incidents_count?: number
+          last_incident_at?: string | null
+          manual_check_id: string
+          masked_document?: string | null
+          masked_email?: string | null
+          masked_phone?: string | null
+          org_id: string
+          property_id: string
+          risk_level: Database["public"]["Enums"]["debacu_eval_risk_level"]
+          risk_score?: number
+          source_summary?: Json
+        }
+        Update: {
+          country?: string | null
+          created_at?: string
+          full_name_masked?: string | null
+          id?: string
+          identity_key?: string
+          incidents_count?: number
+          last_incident_at?: string | null
+          manual_check_id?: string
+          masked_document?: string | null
+          masked_email?: string | null
+          masked_phone?: string | null
+          org_id?: string
+          property_id?: string
+          risk_level?: Database["public"]["Enums"]["debacu_eval_risk_level"]
+          risk_score?: number
+          source_summary?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_manual_check_results_manual_check_id_fkey"
+            columns: ["manual_check_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_manual_checks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_manual_checks: {
+        Row: {
+          check_mode: Database["public"]["Enums"]["debacu_eval_check_mode"]
+          created_at: string
+          current_risk_level:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+          id: string
+          identity_confidence: number | null
+          identity_key: string | null
+          normalized_query: Json
+          org_id: string
+          performed_by_user_id: string
+          previous_risk_level:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+          property_id: string
+          query_type: Database["public"]["Enums"]["debacu_eval_query_type"]
+          query_value_hash: string
+          query_value_masked: string
+          result_has_matches: boolean
+          result_scope: string
+          result_summary: Json
+          risk_changed: boolean
+        }
+        Insert: {
+          check_mode: Database["public"]["Enums"]["debacu_eval_check_mode"]
+          created_at?: string
+          current_risk_level?:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+          id?: string
+          identity_confidence?: number | null
+          identity_key?: string | null
+          normalized_query?: Json
+          org_id: string
+          performed_by_user_id: string
+          previous_risk_level?:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+          property_id: string
+          query_type: Database["public"]["Enums"]["debacu_eval_query_type"]
+          query_value_hash: string
+          query_value_masked: string
+          result_has_matches?: boolean
+          result_scope: string
+          result_summary?: Json
+          risk_changed?: boolean
+        }
+        Update: {
+          check_mode?: Database["public"]["Enums"]["debacu_eval_check_mode"]
+          created_at?: string
+          current_risk_level?:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+          id?: string
+          identity_confidence?: number | null
+          identity_key?: string | null
+          normalized_query?: Json
+          org_id?: string
+          performed_by_user_id?: string
+          previous_risk_level?:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+          property_id?: string
+          query_type?: Database["public"]["Enums"]["debacu_eval_query_type"]
+          query_value_hash?: string
+          query_value_masked?: string
+          result_has_matches?: boolean
+          result_scope?: string
+          result_summary?: Json
+          risk_changed?: boolean
+        }
         Relationships: []
       }
-      debacu_eval_org_members: {
+      debacu_eval_manual_incidents: {
         Row: {
           created_at: string
+          created_by: string
+          description: string
+          economic_impact: number | null
           id: string
+          identity_key: string
+          incident_date: string
+          incident_type: Database["public"]["Enums"]["debacu_eval_incident_type"]
+          input_country: string | null
+          input_document_masked: string | null
+          input_email_masked: string | null
+          input_first_name: string | null
+          input_last_name: string | null
+          input_phone_masked: string | null
           org_id: string
-          role: string
-          user_id: string
+          property_id: string
+          severity: Database["public"]["Enums"]["debacu_eval_severity"]
+          source: Database["public"]["Enums"]["debacu_eval_incident_source"]
+          status: string
+          updated_at: string
         }
         Insert: {
           created_at?: string
+          created_by: string
+          description: string
+          economic_impact?: number | null
           id?: string
+          identity_key: string
+          incident_date: string
+          incident_type: Database["public"]["Enums"]["debacu_eval_incident_type"]
+          input_country?: string | null
+          input_document_masked?: string | null
+          input_email_masked?: string | null
+          input_first_name?: string | null
+          input_last_name?: string | null
+          input_phone_masked?: string | null
           org_id: string
-          role?: string
-          user_id: string
+          property_id: string
+          severity: Database["public"]["Enums"]["debacu_eval_severity"]
+          source?: Database["public"]["Enums"]["debacu_eval_incident_source"]
+          status?: string
+          updated_at?: string
         }
         Update: {
           created_at?: string
+          created_by?: string
+          description?: string
+          economic_impact?: number | null
           id?: string
+          identity_key?: string
+          incident_date?: string
+          incident_type?: Database["public"]["Enums"]["debacu_eval_incident_type"]
+          input_country?: string | null
+          input_document_masked?: string | null
+          input_email_masked?: string | null
+          input_first_name?: string | null
+          input_last_name?: string | null
+          input_phone_masked?: string | null
           org_id?: string
-          role?: string
-          user_id?: string
+          property_id?: string
+          severity?: Database["public"]["Enums"]["debacu_eval_severity"]
+          source?: Database["public"]["Enums"]["debacu_eval_incident_source"]
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      debacu_eval_org_guest_evidence: {
+        Row: {
+          channel_code: string
+          created_at: string
+          economic_impact_gross: number | null
+          economic_net_loss: number | null
+          economic_recovered: number | null
+          event_date: string
+          evidence_flag: boolean | null
+          id: string
+          identity_key: string
+          incident_type: string | null
+          nationality_iso2: string | null
+          nationality_raw: string | null
+          org_id: string
+          platform_code: string
+          platform_raw: string | null
+          rating: number | null
+          severity: string | null
+          source_id: string | null
+          source_table: string
+        }
+        Insert: {
+          channel_code?: string
+          created_at?: string
+          economic_impact_gross?: number | null
+          economic_net_loss?: number | null
+          economic_recovered?: number | null
+          event_date: string
+          evidence_flag?: boolean | null
+          id?: string
+          identity_key: string
+          incident_type?: string | null
+          nationality_iso2?: string | null
+          nationality_raw?: string | null
+          org_id: string
+          platform_code?: string
+          platform_raw?: string | null
+          rating?: number | null
+          severity?: string | null
+          source_id?: string | null
+          source_table?: string
+        }
+        Update: {
+          channel_code?: string
+          created_at?: string
+          economic_impact_gross?: number | null
+          economic_net_loss?: number | null
+          economic_recovered?: number | null
+          event_date?: string
+          evidence_flag?: boolean | null
+          id?: string
+          identity_key?: string
+          incident_type?: string | null
+          nationality_iso2?: string | null
+          nationality_raw?: string | null
+          org_id?: string
+          platform_code?: string
+          platform_raw?: string | null
+          rating?: number | null
+          severity?: string | null
+          source_id?: string | null
+          source_table?: string
+        }
+        Relationships: []
+      }
+      debacu_eval_org_guest_index: {
+        Row: {
+          doc_key: string | null
+          email_key: string | null
+          first_seen_date: string | null
+          id: string
+          identity_key: string
+          incidents_count: number
+          last_incident_date: string | null
+          last_seen_date: string | null
+          org_id: string
+          phone_key: string | null
+          risk_band: string
+          stays_count: number
+          total_net_loss: number
+          updated_at: string
+        }
+        Insert: {
+          doc_key?: string | null
+          email_key?: string | null
+          first_seen_date?: string | null
+          id?: string
+          identity_key: string
+          incidents_count?: number
+          last_incident_date?: string | null
+          last_seen_date?: string | null
+          org_id: string
+          phone_key?: string | null
+          risk_band?: string
+          stays_count?: number
+          total_net_loss?: number
+          updated_at?: string
+        }
+        Update: {
+          doc_key?: string | null
+          email_key?: string | null
+          first_seen_date?: string | null
+          id?: string
+          identity_key?: string
+          incidents_count?: number
+          last_incident_date?: string | null
+          last_seen_date?: string | null
+          org_id?: string
+          phone_key?: string | null
+          risk_band?: string
+          stays_count?: number
+          total_net_loss?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      debacu_eval_org_guest_seen: {
+        Row: {
+          first_seen_at: string
+          identity_key: string
+          incidents_count_org: number
+          last_seen_at: string
+          org_id: string
+          stays_count_org: number
+        }
+        Insert: {
+          first_seen_at?: string
+          identity_key: string
+          incidents_count_org?: number
+          last_seen_at?: string
+          org_id: string
+          stays_count_org?: number
+        }
+        Update: {
+          first_seen_at?: string
+          identity_key?: string
+          incidents_count_org?: number
+          last_seen_at?: string
+          org_id?: string
+          stays_count_org?: number
+        }
+        Relationships: []
+      }
+      debacu_eval_org_member_profiles: {
+        Row: {
+          created_at: string
+          first_name: string | null
+          last_name: string | null
+          member_id: string
+          org_id: string
+          phone: string | null
+          title: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          first_name?: string | null
+          last_name?: string | null
+          member_id: string
+          org_id: string
+          phone?: string | null
+          title?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          first_name?: string | null
+          last_name?: string | null
+          member_id?: string
+          org_id?: string
+          phone?: string | null
+          title?: string | null
+          updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "debacu_eval_org_member_profiles_member_id_fkey"
+            columns: ["member_id"]
+            isOneToOne: true
+            referencedRelation: "debacu_eval_org_members"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_org_member_profiles_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_org_member_profiles_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_org_members: {
+        Row: {
+          auth_user_id: string | null
+          created_at: string
+          created_by_user_id: string | null
+          id: string
+          invited_email: string | null
+          org_id: string
+          role: string
+          status: string
+          updated_at: string
+          user_id: string | null
+        }
+        Insert: {
+          auth_user_id?: string | null
+          created_at?: string
+          created_by_user_id?: string | null
+          id?: string
+          invited_email?: string | null
+          org_id: string
+          role?: string
+          status?: string
+          updated_at?: string
+          user_id?: string | null
+        }
+        Update: {
+          auth_user_id?: string | null
+          created_at?: string
+          created_by_user_id?: string | null
+          id?: string
+          invited_email?: string | null
+          org_id?: string
+          role?: string
+          status?: string
+          updated_at?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_org_members_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
           {
             foreignKeyName: "debacu_eval_org_members_org_id_fkey"
             columns: ["org_id"]
@@ -1084,6 +2542,7 @@ export type Database = {
           city: string | null
           country: string
           created_at: string
+          customer_id: string | null
           id: string
           legal_name: string | null
           name: string
@@ -1097,6 +2556,7 @@ export type Database = {
           city?: string | null
           country?: string
           created_at?: string
+          customer_id?: string | null
           id?: string
           legal_name?: string | null
           name: string
@@ -1110,6 +2570,7 @@ export type Database = {
           city?: string | null
           country?: string
           created_at?: string
+          customer_id?: string | null
           id?: string
           legal_name?: string | null
           name?: string
@@ -1117,7 +2578,22 @@ export type Database = {
           rooms_count?: number | null
           website?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_organizations_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_organizations_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
+          },
+        ]
       }
       debacu_eval_payments: {
         Row: {
@@ -1179,6 +2655,1405 @@ export type Database = {
             referencedRelation: "customers"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "debacu_eval_payments_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
+          },
+        ]
+      }
+      debacu_eval_properties: {
+        Row: {
+          address: string | null
+          category: number | null
+          city: string | null
+          code: string
+          country: string | null
+          created_at: string
+          created_by: string | null
+          currency_code: string | null
+          id: string
+          import_property_code: string | null
+          is_active: boolean
+          legal_name: string | null
+          name: string
+          org_id: string
+          property_type: string | null
+          region: string | null
+          rooms_total: number | null
+          tax_id: string | null
+          timezone: string | null
+          updated_at: string
+        }
+        Insert: {
+          address?: string | null
+          category?: number | null
+          city?: string | null
+          code: string
+          country?: string | null
+          created_at?: string
+          created_by?: string | null
+          currency_code?: string | null
+          id?: string
+          import_property_code?: string | null
+          is_active?: boolean
+          legal_name?: string | null
+          name: string
+          org_id: string
+          property_type?: string | null
+          region?: string | null
+          rooms_total?: number | null
+          tax_id?: string | null
+          timezone?: string | null
+          updated_at?: string
+        }
+        Update: {
+          address?: string | null
+          category?: number | null
+          city?: string | null
+          code?: string
+          country?: string | null
+          created_at?: string
+          created_by?: string | null
+          currency_code?: string | null
+          id?: string
+          import_property_code?: string | null
+          is_active?: boolean
+          legal_name?: string | null
+          name?: string
+          org_id?: string
+          property_type?: string | null
+          region?: string | null
+          rooms_total?: number | null
+          tax_id?: string | null
+          timezone?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_properties_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_properties_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_property_room_types: {
+        Row: {
+          base_price: number | null
+          capacity: number | null
+          code: string
+          created_at: string
+          id: string
+          is_active: boolean
+          name: string
+          org_id: string
+          property_id: string
+          rooms_count: number | null
+          updated_at: string
+        }
+        Insert: {
+          base_price?: number | null
+          capacity?: number | null
+          code: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name: string
+          org_id: string
+          property_id: string
+          rooms_count?: number | null
+          updated_at?: string
+        }
+        Update: {
+          base_price?: number | null
+          capacity?: number | null
+          code?: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name?: string
+          org_id?: string
+          property_id?: string
+          rooms_count?: number | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_property_room_types_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_property_room_types_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_property_room_types_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_property_seasons: {
+        Row: {
+          color: string
+          created_at: string
+          end_date: string
+          id: string
+          impact_level: string | null
+          is_active: boolean
+          name: string
+          note: string | null
+          org_id: string
+          price_adjustment_percent: number | null
+          pricing_adjustment_type: string | null
+          pricing_adjustment_value: number | null
+          pricing_operation: string | null
+          priority: number
+          property_id: string
+          season_type: string | null
+          start_date: string
+          updated_at: string
+        }
+        Insert: {
+          color?: string
+          created_at?: string
+          end_date: string
+          id?: string
+          impact_level?: string | null
+          is_active?: boolean
+          name: string
+          note?: string | null
+          org_id: string
+          price_adjustment_percent?: number | null
+          pricing_adjustment_type?: string | null
+          pricing_adjustment_value?: number | null
+          pricing_operation?: string | null
+          priority?: number
+          property_id: string
+          season_type?: string | null
+          start_date: string
+          updated_at?: string
+        }
+        Update: {
+          color?: string
+          created_at?: string
+          end_date?: string
+          id?: string
+          impact_level?: string | null
+          is_active?: boolean
+          name?: string
+          note?: string | null
+          org_id?: string
+          price_adjustment_percent?: number | null
+          pricing_adjustment_type?: string | null
+          pricing_adjustment_value?: number | null
+          pricing_operation?: string | null
+          priority?: number
+          property_id?: string
+          season_type?: string | null
+          start_date?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_property_seasons_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_property_seasons_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_property_seasons_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_reservation_daily_ledger: {
+        Row: {
+          booking_date: string | null
+          created_at: string | null
+          id: string
+          org_id: string
+          property_code: string
+          reservation_id: string
+          revenue: number | null
+          rooms: number
+          stay_date: string
+        }
+        Insert: {
+          booking_date?: string | null
+          created_at?: string | null
+          id?: string
+          org_id: string
+          property_code: string
+          reservation_id: string
+          revenue?: number | null
+          rooms: number
+          stay_date: string
+        }
+        Update: {
+          booking_date?: string | null
+          created_at?: string | null
+          id?: string
+          org_id?: string
+          property_code?: string
+          reservation_id?: string
+          revenue?: number | null
+          rooms?: number
+          stay_date?: string
+        }
+        Relationships: []
+      }
+      debacu_eval_reservation_identities: {
+        Row: {
+          country: string | null
+          created_at: string
+          document_hash: string | null
+          email_hash: string | null
+          first_name_enc: string | null
+          id: string
+          identity_key: string
+          identity_strength: string
+          last_name_enc: string | null
+          org_id: string
+          phone_hash: string | null
+          reservation_key: string
+          updated_at: string
+        }
+        Insert: {
+          country?: string | null
+          created_at?: string
+          document_hash?: string | null
+          email_hash?: string | null
+          first_name_enc?: string | null
+          id?: string
+          identity_key: string
+          identity_strength: string
+          last_name_enc?: string | null
+          org_id: string
+          phone_hash?: string | null
+          reservation_key: string
+          updated_at?: string
+        }
+        Update: {
+          country?: string | null
+          created_at?: string
+          document_hash?: string | null
+          email_hash?: string | null
+          first_name_enc?: string | null
+          id?: string
+          identity_key?: string
+          identity_strength?: string
+          last_name_enc?: string | null
+          org_id?: string
+          phone_hash?: string | null
+          reservation_key?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      debacu_eval_reservation_snapshots: {
+        Row: {
+          adults: number | null
+          batch_id: string
+          booking_date: string
+          cancelled_at: string | null
+          channel: string | null
+          checkin_date: string
+          checkout_date: string
+          children: number | null
+          commission_amount: number | null
+          created_at: string
+          currency: string
+          gross_revenue: number
+          id: string
+          net_revenue: number | null
+          org_id: string
+          property_code: string
+          rate_plan: string | null
+          reservation_key: string
+          reservation_status: string
+          room_type: string | null
+          rooms: number
+          segment: string | null
+          snapshot_date: string
+        }
+        Insert: {
+          adults?: number | null
+          batch_id: string
+          booking_date: string
+          cancelled_at?: string | null
+          channel?: string | null
+          checkin_date: string
+          checkout_date: string
+          children?: number | null
+          commission_amount?: number | null
+          created_at?: string
+          currency: string
+          gross_revenue: number
+          id?: string
+          net_revenue?: number | null
+          org_id: string
+          property_code: string
+          rate_plan?: string | null
+          reservation_key: string
+          reservation_status: string
+          room_type?: string | null
+          rooms: number
+          segment?: string | null
+          snapshot_date?: string
+        }
+        Update: {
+          adults?: number | null
+          batch_id?: string
+          booking_date?: string
+          cancelled_at?: string | null
+          channel?: string | null
+          checkin_date?: string
+          checkout_date?: string
+          children?: number | null
+          commission_amount?: number | null
+          created_at?: string
+          currency?: string
+          gross_revenue?: number
+          id?: string
+          net_revenue?: number | null
+          org_id?: string
+          property_code?: string
+          rate_plan?: string | null
+          reservation_key?: string
+          reservation_status?: string
+          room_type?: string | null
+          rooms?: number
+          segment?: string | null
+          snapshot_date?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_reservation_snapshots_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_unified_import_batches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_reservations: {
+        Row: {
+          adults: number | null
+          agency: string | null
+          booking_date: string
+          cancelled_at: string | null
+          channel: string | null
+          checkin_date: string
+          checkout_date: string
+          children: number | null
+          commission_amount: number | null
+          company: string | null
+          created_at: string
+          currency: string
+          first_seen_at: string
+          first_seen_batch_id: string | null
+          gross_revenue: number
+          id: string
+          last_seen_at: string
+          last_seen_batch_id: string | null
+          market_code: string | null
+          net_revenue: number | null
+          org_id: string
+          property_code: string
+          rate_plan: string | null
+          reservation_id: string
+          reservation_key: string
+          reservation_line_id: string | null
+          reservation_status: string
+          room_type: string | null
+          rooms: number
+          segment: string | null
+          source_system: string | null
+          updated_at: string
+        }
+        Insert: {
+          adults?: number | null
+          agency?: string | null
+          booking_date: string
+          cancelled_at?: string | null
+          channel?: string | null
+          checkin_date: string
+          checkout_date: string
+          children?: number | null
+          commission_amount?: number | null
+          company?: string | null
+          created_at?: string
+          currency: string
+          first_seen_at?: string
+          first_seen_batch_id?: string | null
+          gross_revenue: number
+          id?: string
+          last_seen_at?: string
+          last_seen_batch_id?: string | null
+          market_code?: string | null
+          net_revenue?: number | null
+          org_id: string
+          property_code: string
+          rate_plan?: string | null
+          reservation_id: string
+          reservation_key: string
+          reservation_line_id?: string | null
+          reservation_status: string
+          room_type?: string | null
+          rooms: number
+          segment?: string | null
+          source_system?: string | null
+          updated_at?: string
+        }
+        Update: {
+          adults?: number | null
+          agency?: string | null
+          booking_date?: string
+          cancelled_at?: string | null
+          channel?: string | null
+          checkin_date?: string
+          checkout_date?: string
+          children?: number | null
+          commission_amount?: number | null
+          company?: string | null
+          created_at?: string
+          currency?: string
+          first_seen_at?: string
+          first_seen_batch_id?: string | null
+          gross_revenue?: number
+          id?: string
+          last_seen_at?: string
+          last_seen_batch_id?: string | null
+          market_code?: string | null
+          net_revenue?: number | null
+          org_id?: string
+          property_code?: string
+          rate_plan?: string | null
+          reservation_id?: string
+          reservation_key?: string
+          reservation_line_id?: string | null
+          reservation_status?: string
+          room_type?: string | null
+          rooms?: number
+          segment?: string | null
+          source_system?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_reservations_first_seen_batch_id_fkey"
+            columns: ["first_seen_batch_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_unified_import_batches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_reservations_last_seen_batch_id_fkey"
+            columns: ["last_seen_batch_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_unified_import_batches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_booking_lines: {
+        Row: {
+          booking_date: string | null
+          channel: string | null
+          checkin_date: string
+          checkout_date: string
+          created_at: string
+          currency_code: string | null
+          external_reservation_id: string | null
+          id: string
+          import_batch_id: string | null
+          org_id: string
+          price_sold: number
+          property_id: string
+          rate_plan: string | null
+          reservation_id: string
+          revenue_rooms: number
+          room_type_id: string | null
+          segment: string | null
+          source: string
+          status: string | null
+          stay_date: string
+          units_sold: number
+          updated_at: string
+        }
+        Insert: {
+          booking_date?: string | null
+          channel?: string | null
+          checkin_date: string
+          checkout_date: string
+          created_at?: string
+          currency_code?: string | null
+          external_reservation_id?: string | null
+          id?: string
+          import_batch_id?: string | null
+          org_id: string
+          price_sold?: number
+          property_id: string
+          rate_plan?: string | null
+          reservation_id: string
+          revenue_rooms?: number
+          room_type_id?: string | null
+          segment?: string | null
+          source?: string
+          status?: string | null
+          stay_date: string
+          units_sold?: number
+          updated_at?: string
+        }
+        Update: {
+          booking_date?: string | null
+          channel?: string | null
+          checkin_date?: string
+          checkout_date?: string
+          created_at?: string
+          currency_code?: string | null
+          external_reservation_id?: string | null
+          id?: string
+          import_batch_id?: string | null
+          org_id?: string
+          price_sold?: number
+          property_id?: string
+          rate_plan?: string | null
+          reservation_id?: string
+          revenue_rooms?: number
+          room_type_id?: string | null
+          segment?: string | null
+          source?: string
+          status?: string | null
+          stay_date?: string
+          units_sold?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_booking_lines_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_booking_lines_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_booking_lines_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_booking_lines_room_type_id_fkey"
+            columns: ["room_type_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_property_room_types"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_channels: {
+        Row: {
+          code: string
+          commission_pct: number | null
+          created_at: string
+          id: string
+          is_active: boolean
+          name: string
+          org_id: string
+          property_id: string
+        }
+        Insert: {
+          code: string
+          commission_pct?: number | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name: string
+          org_id: string
+          property_id: string
+        }
+        Update: {
+          code?: string
+          commission_pct?: number | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name?: string
+          org_id?: string
+          property_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_channels_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_channels_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_channels_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_daily: {
+        Row: {
+          adr: number | null
+          channel: string | null
+          created_at: string
+          id: string
+          org_id: string
+          property_id: string
+          revenue_rooms: number
+          revenue_total: number
+          revpar: number | null
+          room_type_id: string | null
+          rooms_available: number | null
+          rooms_sold: number
+          segment: string | null
+          source: string | null
+          stay_date: string
+          updated_at: string
+        }
+        Insert: {
+          adr?: number | null
+          channel?: string | null
+          created_at?: string
+          id?: string
+          org_id: string
+          property_id: string
+          revenue_rooms?: number
+          revenue_total?: number
+          revpar?: number | null
+          room_type_id?: string | null
+          rooms_available?: number | null
+          rooms_sold?: number
+          segment?: string | null
+          source?: string | null
+          stay_date: string
+          updated_at?: string
+        }
+        Update: {
+          adr?: number | null
+          channel?: string | null
+          created_at?: string
+          id?: string
+          org_id?: string
+          property_id?: string
+          revenue_rooms?: number
+          revenue_total?: number
+          revpar?: number | null
+          room_type_id?: string | null
+          rooms_available?: number | null
+          rooms_sold?: number
+          segment?: string | null
+          source?: string | null
+          stay_date?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_room_type_id_fkey"
+            columns: ["room_type_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_property_room_types"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_events: {
+        Row: {
+          color: string
+          created_at: string
+          created_by: string | null
+          end_date: string
+          event_type: string | null
+          id: string
+          impact_level: string | null
+          is_active: boolean
+          name: string
+          note: string | null
+          org_id: string
+          pricing_adjustment_type: string | null
+          pricing_adjustment_value: number | null
+          pricing_operation: string | null
+          priority: number
+          property_id: string
+          start_date: string
+          updated_at: string
+        }
+        Insert: {
+          color?: string
+          created_at?: string
+          created_by?: string | null
+          end_date: string
+          event_type?: string | null
+          id?: string
+          impact_level?: string | null
+          is_active?: boolean
+          name: string
+          note?: string | null
+          org_id: string
+          pricing_adjustment_type?: string | null
+          pricing_adjustment_value?: number | null
+          pricing_operation?: string | null
+          priority?: number
+          property_id: string
+          start_date: string
+          updated_at?: string
+        }
+        Update: {
+          color?: string
+          created_at?: string
+          created_by?: string | null
+          end_date?: string
+          event_type?: string | null
+          id?: string
+          impact_level?: string | null
+          is_active?: boolean
+          name?: string
+          note?: string | null
+          org_id?: string
+          pricing_adjustment_type?: string | null
+          pricing_adjustment_value?: number | null
+          pricing_operation?: string | null
+          priority?: number
+          property_id?: string
+          start_date?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_events_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_events_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_events_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_import_errors: {
+        Row: {
+          created_at: string
+          error_code: string
+          error_message: string
+          field_name: string | null
+          id: string
+          import_id: string
+          raw_row: Json | null
+          row_number: number
+        }
+        Insert: {
+          created_at?: string
+          error_code: string
+          error_message: string
+          field_name?: string | null
+          id?: string
+          import_id: string
+          raw_row?: Json | null
+          row_number: number
+        }
+        Update: {
+          created_at?: string
+          error_code?: string
+          error_message?: string
+          field_name?: string | null
+          id?: string
+          import_id?: string
+          raw_row?: Json | null
+          row_number?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_import_errors_import_id_fkey"
+            columns: ["import_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_revenue_imports"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_import_rows: {
+        Row: {
+          channel: string | null
+          created_at: string | null
+          id: string
+          org_id: string
+          property_id: string
+          revenue: number | null
+          room_type: string | null
+          rooms_sold: number | null
+          segment: string | null
+          source_file: string | null
+          stay_date: string | null
+        }
+        Insert: {
+          channel?: string | null
+          created_at?: string | null
+          id?: string
+          org_id: string
+          property_id: string
+          revenue?: number | null
+          room_type?: string | null
+          rooms_sold?: number | null
+          segment?: string | null
+          source_file?: string | null
+          stay_date?: string | null
+        }
+        Update: {
+          channel?: string | null
+          created_at?: string | null
+          id?: string
+          org_id?: string
+          property_id?: string
+          revenue?: number | null
+          room_type?: string | null
+          rooms_sold?: number | null
+          segment?: string | null
+          source_file?: string | null
+          stay_date?: string | null
+        }
+        Relationships: []
+      }
+      debacu_eval_revenue_imports: {
+        Row: {
+          applied_rows: number
+          created_at: string
+          created_by: string | null
+          error_summary: Json
+          file_name: string | null
+          file_sha256: string | null
+          id: string
+          import_type: string
+          invalid_rows: number
+          meta: Json
+          org_id: string
+          property_id: string
+          skipped_rows: number
+          status: string
+          storage_bucket: string
+          storage_path: string
+          total_rows: number
+          updated_at: string
+          valid_rows: number
+        }
+        Insert: {
+          applied_rows?: number
+          created_at?: string
+          created_by?: string | null
+          error_summary?: Json
+          file_name?: string | null
+          file_sha256?: string | null
+          id?: string
+          import_type: string
+          invalid_rows?: number
+          meta?: Json
+          org_id: string
+          property_id: string
+          skipped_rows?: number
+          status?: string
+          storage_bucket?: string
+          storage_path: string
+          total_rows?: number
+          updated_at?: string
+          valid_rows?: number
+        }
+        Update: {
+          applied_rows?: number
+          created_at?: string
+          created_by?: string | null
+          error_summary?: Json
+          file_name?: string | null
+          file_sha256?: string | null
+          id?: string
+          import_type?: string
+          invalid_rows?: number
+          meta?: Json
+          org_id?: string
+          property_id?: string
+          skipped_rows?: number
+          status?: string
+          storage_bucket?: string
+          storage_path?: string
+          total_rows?: number
+          updated_at?: string
+          valid_rows?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_imports_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_imports_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_imports_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_insights: {
+        Row: {
+          created_at: string | null
+          description: string | null
+          id: string
+          insight_type: string
+          metric_value: number | null
+          org_id: string
+          property_id: string
+          reference_value: number | null
+          resolved: boolean | null
+          severity: string
+          title: string
+        }
+        Insert: {
+          created_at?: string | null
+          description?: string | null
+          id?: string
+          insight_type: string
+          metric_value?: number | null
+          org_id: string
+          property_id: string
+          reference_value?: number | null
+          resolved?: boolean | null
+          severity?: string
+          title: string
+        }
+        Update: {
+          created_at?: string | null
+          description?: string | null
+          id?: string
+          insight_type?: string
+          metric_value?: number | null
+          org_id?: string
+          property_id?: string
+          reference_value?: number | null
+          resolved?: boolean | null
+          severity?: string
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_insights_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_insights_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_insights_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_pickup_snapshots: {
+        Row: {
+          adr: number | null
+          channel: string | null
+          created_at: string
+          id: string
+          org_id: string
+          property_code: string
+          reservations_count: number | null
+          revenue_rooms: number
+          room_nights: number | null
+          rooms_sold: number
+          segment: string | null
+          snapshot_date: string
+          stay_date: string
+        }
+        Insert: {
+          adr?: number | null
+          channel?: string | null
+          created_at?: string
+          id?: string
+          org_id: string
+          property_code: string
+          reservations_count?: number | null
+          revenue_rooms?: number
+          room_nights?: number | null
+          rooms_sold?: number
+          segment?: string | null
+          snapshot_date: string
+          stay_date: string
+        }
+        Update: {
+          adr?: number | null
+          channel?: string | null
+          created_at?: string
+          id?: string
+          org_id?: string
+          property_code?: string
+          reservations_count?: number | null
+          revenue_rooms?: number
+          room_nights?: number | null
+          rooms_sold?: number
+          segment?: string | null
+          snapshot_date?: string
+          stay_date?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_pickup_snapshots_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_pickup_snapshots_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_price_changes: {
+        Row: {
+          calendar_date: string
+          change_reason: string | null
+          change_source: string
+          changed_by: string | null
+          created_at: string
+          id: string
+          new_price: number
+          old_price: number | null
+          org_id: string
+          property_id: string
+          room_type_id: string
+        }
+        Insert: {
+          calendar_date: string
+          change_reason?: string | null
+          change_source?: string
+          changed_by?: string | null
+          created_at?: string
+          id?: string
+          new_price: number
+          old_price?: number | null
+          org_id: string
+          property_id: string
+          room_type_id: string
+        }
+        Update: {
+          calendar_date?: string
+          change_reason?: string | null
+          change_source?: string
+          changed_by?: string | null
+          created_at?: string
+          id?: string
+          new_price?: number
+          old_price?: number | null
+          org_id?: string
+          property_id?: string
+          room_type_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_price_changes_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_price_changes_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_price_changes_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_price_changes_room_type_id_fkey"
+            columns: ["room_type_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_property_room_types"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_sales: {
+        Row: {
+          channel: string | null
+          created_at: string
+          id: string
+          org_id: string
+          price_sold: number
+          property_id: string
+          reservation_id: string | null
+          room_type_id: string
+          stay_date: string
+        }
+        Insert: {
+          channel?: string | null
+          created_at?: string
+          id?: string
+          org_id: string
+          price_sold: number
+          property_id: string
+          reservation_id?: string | null
+          room_type_id: string
+          stay_date: string
+        }
+        Update: {
+          channel?: string | null
+          created_at?: string
+          id?: string
+          org_id?: string
+          price_sold?: number
+          property_id?: string
+          reservation_id?: string | null
+          room_type_id?: string
+          stay_date?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_sales_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_sales_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_sales_room_type_id_fkey"
+            columns: ["room_type_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_property_room_types"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_segments: {
+        Row: {
+          code: string
+          created_at: string
+          id: string
+          is_active: boolean
+          name: string
+          org_id: string
+          property_id: string
+        }
+        Insert: {
+          code: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name: string
+          org_id: string
+          property_id: string
+        }
+        Update: {
+          code?: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name?: string
+          org_id?: string
+          property_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_segments_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_segments_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_segments_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_room_prices: {
+        Row: {
+          closed: boolean
+          closed_note: string | null
+          closed_reason: string | null
+          created_at: string
+          date: string
+          id: string
+          min_stay: number
+          org_id: string
+          price: number
+          property_id: string
+          room_type_id: string
+          updated_at: string
+        }
+        Insert: {
+          closed?: boolean
+          closed_note?: string | null
+          closed_reason?: string | null
+          created_at?: string
+          date: string
+          id?: string
+          min_stay?: number
+          org_id: string
+          price?: number
+          property_id: string
+          room_type_id: string
+          updated_at?: string
+        }
+        Update: {
+          closed?: boolean
+          closed_note?: string | null
+          closed_reason?: string | null
+          created_at?: string
+          date?: string
+          id?: string
+          min_stay?: number
+          org_id?: string
+          price?: number
+          property_id?: string
+          room_type_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_room_prices_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_room_prices_room_type_id_fkey"
+            columns: ["room_type_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_property_room_types"
+            referencedColumns: ["id"]
+          },
         ]
       }
       debacu_eval_sessions: {
@@ -1211,6 +4086,304 @@ export type Database = {
           id?: string
           revoked_at?: string | null
           token?: string
+        }
+        Relationships: []
+      }
+      debacu_eval_settings_audit_log: {
+        Row: {
+          action: string
+          actor_email: string | null
+          actor_user_id: string
+          created_at: string
+          diff: Json
+          id: string
+          ip: string | null
+          settings_after: Json
+          settings_before: Json
+          user_agent: string | null
+        }
+        Insert: {
+          action?: string
+          actor_email?: string | null
+          actor_user_id: string
+          created_at?: string
+          diff: Json
+          id?: string
+          ip?: string | null
+          settings_after: Json
+          settings_before: Json
+          user_agent?: string | null
+        }
+        Update: {
+          action?: string
+          actor_email?: string | null
+          actor_user_id?: string
+          created_at?: string
+          diff?: Json
+          id?: string
+          ip?: string | null
+          settings_after?: Json
+          settings_before?: Json
+          user_agent?: string | null
+        }
+        Relationships: []
+      }
+      debacu_eval_stay_nights: {
+        Row: {
+          allocated_gross_revenue: number
+          allocated_net_revenue: number | null
+          channel: string | null
+          created_at: string
+          id: string
+          org_id: string
+          property_code: string
+          rate_plan: string | null
+          reservation_key: string
+          reservation_status: string
+          room_nights: number
+          room_type: string | null
+          rooms: number
+          segment: string | null
+          source_batch_id: string | null
+          stay_date: string
+        }
+        Insert: {
+          allocated_gross_revenue?: number
+          allocated_net_revenue?: number | null
+          channel?: string | null
+          created_at?: string
+          id?: string
+          org_id: string
+          property_code: string
+          rate_plan?: string | null
+          reservation_key: string
+          reservation_status: string
+          room_nights?: number
+          room_type?: string | null
+          rooms?: number
+          segment?: string | null
+          source_batch_id?: string | null
+          stay_date: string
+        }
+        Update: {
+          allocated_gross_revenue?: number
+          allocated_net_revenue?: number | null
+          channel?: string | null
+          created_at?: string
+          id?: string
+          org_id?: string
+          property_code?: string
+          rate_plan?: string | null
+          reservation_key?: string
+          reservation_status?: string
+          room_nights?: number
+          room_type?: string | null
+          rooms?: number
+          segment?: string | null
+          source_batch_id?: string | null
+          stay_date?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_stay_nights_source_batch_id_fkey"
+            columns: ["source_batch_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_unified_import_batches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_system_settings: {
+        Row: {
+          abuse_threshold_percent: number
+          allow_new_access_requests: boolean
+          id: string
+          retention_days: number
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          abuse_threshold_percent?: number
+          allow_new_access_requests?: boolean
+          id?: string
+          retention_days?: number
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          abuse_threshold_percent?: number
+          allow_new_access_requests?: boolean
+          id?: string
+          retention_days?: number
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: []
+      }
+      debacu_eval_unified_import_batches: {
+        Row: {
+          committed_at: string | null
+          id: string
+          import_profile_code: string
+          metadata: Json
+          org_id: string
+          property_code: string
+          rows_error: number
+          rows_ok: number
+          rows_total: number
+          rows_warning: number
+          separator: string
+          source_file_name: string
+          source_file_sha256: string
+          source_system: string | null
+          status: string
+          uploaded_at: string
+          uploaded_by: string | null
+        }
+        Insert: {
+          committed_at?: string | null
+          id?: string
+          import_profile_code?: string
+          metadata?: Json
+          org_id: string
+          property_code: string
+          rows_error?: number
+          rows_ok?: number
+          rows_total?: number
+          rows_warning?: number
+          separator?: string
+          source_file_name: string
+          source_file_sha256: string
+          source_system?: string | null
+          status: string
+          uploaded_at?: string
+          uploaded_by?: string | null
+        }
+        Update: {
+          committed_at?: string | null
+          id?: string
+          import_profile_code?: string
+          metadata?: Json
+          org_id?: string
+          property_code?: string
+          rows_error?: number
+          rows_ok?: number
+          rows_total?: number
+          rows_warning?: number
+          separator?: string
+          source_file_name?: string
+          source_file_sha256?: string
+          source_system?: string | null
+          status?: string
+          uploaded_at?: string
+          uploaded_by?: string | null
+        }
+        Relationships: []
+      }
+      debacu_eval_unified_import_rows: {
+        Row: {
+          batch_id: string
+          created_at: string
+          id: string
+          identity_key: string | null
+          normalized_payload: Json | null
+          org_id: string
+          raw_payload: Json
+          reservation_key: string | null
+          row_number: number
+          screening_eligible: boolean
+          validation_errors: Json
+          validation_status: string
+          validation_warnings: Json
+        }
+        Insert: {
+          batch_id: string
+          created_at?: string
+          id?: string
+          identity_key?: string | null
+          normalized_payload?: Json | null
+          org_id: string
+          raw_payload: Json
+          reservation_key?: string | null
+          row_number: number
+          screening_eligible?: boolean
+          validation_errors?: Json
+          validation_status: string
+          validation_warnings?: Json
+        }
+        Update: {
+          batch_id?: string
+          created_at?: string
+          id?: string
+          identity_key?: string | null
+          normalized_payload?: Json | null
+          org_id?: string
+          raw_payload?: Json
+          reservation_key?: string | null
+          row_number?: number
+          screening_eligible?: boolean
+          validation_errors?: Json
+          validation_status?: string
+          validation_warnings?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_unified_import_rows_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_unified_import_batches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_unified_revenue_daily: {
+        Row: {
+          adr: number | null
+          cancelled_reservations: number
+          created_at: string
+          gross_revenue: number
+          id: string
+          metric_date: string
+          net_revenue: number
+          no_show_reservations: number
+          org_id: string
+          property_code: string
+          reservations_count: number
+          revpar: number | null
+          room_nights: number
+          updated_at: string
+        }
+        Insert: {
+          adr?: number | null
+          cancelled_reservations?: number
+          created_at?: string
+          gross_revenue?: number
+          id?: string
+          metric_date: string
+          net_revenue?: number
+          no_show_reservations?: number
+          org_id: string
+          property_code: string
+          reservations_count?: number
+          revpar?: number | null
+          room_nights?: number
+          updated_at?: string
+        }
+        Update: {
+          adr?: number | null
+          cancelled_reservations?: number
+          created_at?: string
+          gross_revenue?: number
+          id?: string
+          metric_date?: string
+          net_revenue?: number
+          no_show_reservations?: number
+          org_id?: string
+          property_code?: string
+          reservations_count?: number
+          revpar?: number | null
+          room_nights?: number
+          updated_at?: string
         }
         Relationships: []
       }
@@ -1359,19 +4532,124 @@ export type Database = {
       }
       debacu_evaluations: {
         Row: {
+          adr_real_snapshot: number | null
+          adr_reference: number | null
           comment: string | null
           created_at: string | null
           creator_customer_id: string | null
           creator_customer_name: string | null
+          creator_customer_uuid: string | null
+          customer_id: string
           document: string
+          document_norm: string | null
+          economic_impact_gross: number | null
+          economic_net_loss: number | null
+          economic_recovered: number | null
           email: string | null
+          email_norm: string | null
           evaluation_date: string | null
           full_name: string
+          hotel_category: number | null
           id: string
+          identity_key: string | null
+          impact_items: Json | null
+          incident_type: string | null
+          nationality: string | null
+          org_id: string | null
+          phone: string | null
+          phone_digits: string | null
+          platform: string | null
+          property_code: string | null
+          property_id: string
+          rating: number
+          season_applied: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          adr_real_snapshot?: number | null
+          adr_reference?: number | null
+          comment?: string | null
+          created_at?: string | null
+          creator_customer_id?: string | null
+          creator_customer_name?: string | null
+          creator_customer_uuid?: string | null
+          customer_id: string
+          document: string
+          document_norm?: string | null
+          economic_impact_gross?: number | null
+          economic_net_loss?: number | null
+          economic_recovered?: number | null
+          email?: string | null
+          email_norm?: string | null
+          evaluation_date?: string | null
+          full_name: string
+          hotel_category?: number | null
+          id?: string
+          identity_key?: string | null
+          impact_items?: Json | null
+          incident_type?: string | null
+          nationality?: string | null
+          org_id?: string | null
+          phone?: string | null
+          phone_digits?: string | null
+          platform?: string | null
+          property_code?: string | null
+          property_id: string
+          rating: number
+          season_applied?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          adr_real_snapshot?: number | null
+          adr_reference?: number | null
+          comment?: string | null
+          created_at?: string | null
+          creator_customer_id?: string | null
+          creator_customer_name?: string | null
+          creator_customer_uuid?: string | null
+          customer_id?: string
+          document?: string
+          document_norm?: string | null
+          economic_impact_gross?: number | null
+          economic_net_loss?: number | null
+          economic_recovered?: number | null
+          email?: string | null
+          email_norm?: string | null
+          evaluation_date?: string | null
+          full_name?: string
+          hotel_category?: number | null
+          id?: string
+          identity_key?: string | null
+          impact_items?: Json | null
+          incident_type?: string | null
+          nationality?: string | null
+          org_id?: string | null
+          phone?: string | null
+          phone_digits?: string | null
+          platform?: string | null
+          property_code?: string | null
+          property_id?: string
+          rating?: number
+          season_applied?: string | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      debacu_evaluations_backup_20260207: {
+        Row: {
+          comment: string | null
+          created_at: string | null
+          creator_customer_id: string | null
+          creator_customer_name: string | null
+          document: string | null
+          email: string | null
+          evaluation_date: string | null
+          full_name: string | null
+          id: string | null
           nationality: string | null
           phone: string | null
           platform: string | null
-          rating: number
+          rating: number | null
           updated_at: string | null
         }
         Insert: {
@@ -1379,15 +4657,15 @@ export type Database = {
           created_at?: string | null
           creator_customer_id?: string | null
           creator_customer_name?: string | null
-          document: string
+          document?: string | null
           email?: string | null
           evaluation_date?: string | null
-          full_name: string
-          id?: string
+          full_name?: string | null
+          id?: string | null
           nationality?: string | null
           phone?: string | null
           platform?: string | null
-          rating: number
+          rating?: number | null
           updated_at?: string | null
         }
         Update: {
@@ -1395,15 +4673,96 @@ export type Database = {
           created_at?: string | null
           creator_customer_id?: string | null
           creator_customer_name?: string | null
-          document?: string
+          document?: string | null
           email?: string | null
           evaluation_date?: string | null
-          full_name?: string
-          id?: string
+          full_name?: string | null
+          id?: string | null
           nationality?: string | null
           phone?: string | null
           platform?: string | null
-          rating?: number
+          rating?: number | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      debacu_evaluations_backup_20260209: {
+        Row: {
+          adr_real_snapshot: number | null
+          adr_reference: number | null
+          comment: string | null
+          created_at: string | null
+          creator_customer_id: string | null
+          creator_customer_name: string | null
+          creator_customer_uuid: string | null
+          document: string | null
+          economic_impact_gross: number | null
+          economic_net_loss: number | null
+          economic_recovered: number | null
+          email: string | null
+          evaluation_date: string | null
+          full_name: string | null
+          hotel_category: number | null
+          id: string | null
+          impact_items: Json | null
+          incident_type: string | null
+          nationality: string | null
+          phone: string | null
+          platform: string | null
+          rating: number | null
+          season_applied: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          adr_real_snapshot?: number | null
+          adr_reference?: number | null
+          comment?: string | null
+          created_at?: string | null
+          creator_customer_id?: string | null
+          creator_customer_name?: string | null
+          creator_customer_uuid?: string | null
+          document?: string | null
+          economic_impact_gross?: number | null
+          economic_net_loss?: number | null
+          economic_recovered?: number | null
+          email?: string | null
+          evaluation_date?: string | null
+          full_name?: string | null
+          hotel_category?: number | null
+          id?: string | null
+          impact_items?: Json | null
+          incident_type?: string | null
+          nationality?: string | null
+          phone?: string | null
+          platform?: string | null
+          rating?: number | null
+          season_applied?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          adr_real_snapshot?: number | null
+          adr_reference?: number | null
+          comment?: string | null
+          created_at?: string | null
+          creator_customer_id?: string | null
+          creator_customer_name?: string | null
+          creator_customer_uuid?: string | null
+          document?: string | null
+          economic_impact_gross?: number | null
+          economic_net_loss?: number | null
+          economic_recovered?: number | null
+          email?: string | null
+          evaluation_date?: string | null
+          full_name?: string | null
+          hotel_category?: number | null
+          id?: string | null
+          impact_items?: Json | null
+          incident_type?: string | null
+          nationality?: string | null
+          phone?: string | null
+          platform?: string | null
+          rating?: number | null
+          season_applied?: string | null
           updated_at?: string | null
         }
         Relationships: []
@@ -1438,562 +4797,546 @@ export type Database = {
         }
         Relationships: []
       }
-      LEX_BUDGET_ITEMS: {
+      debacu_hotel_incident_custom: {
         Row: {
-          amount: number | null
-          budgetId: string | null
-          concept: string | null
-          id: string
-          quantity: number | null
-          unitPrice: number | null
-        }
-        Insert: {
-          amount?: number | null
-          budgetId?: string | null
-          concept?: string | null
-          id: string
-          quantity?: number | null
-          unitPrice?: number | null
-        }
-        Update: {
-          amount?: number | null
-          budgetId?: string | null
-          concept?: string | null
-          id?: string
-          quantity?: number | null
-          unitPrice?: number | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "LEX_BUDGET_ITEMS_budgetId_fkey"
-            columns: ["budgetId"]
-            isOneToOne: false
-            referencedRelation: "LEX_BUDGETS"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      LEX_BUDGETS: {
-        Row: {
-          caseId: string | null
-          clientId: string | null
-          date: string | null
-          id: string
-          status: string | null
-          total: number | null
-        }
-        Insert: {
-          caseId?: string | null
-          clientId?: string | null
-          date?: string | null
-          id: string
-          status?: string | null
-          total?: number | null
-        }
-        Update: {
-          caseId?: string | null
-          clientId?: string | null
-          date?: string | null
-          id?: string
-          status?: string | null
-          total?: number | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "LEX_BUDGETS_caseId_fkey"
-            columns: ["caseId"]
-            isOneToOne: false
-            referencedRelation: "LEX_CASES"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "LEX_BUDGETS_clientId_fkey"
-            columns: ["clientId"]
-            isOneToOne: false
-            referencedRelation: "LEX_CLIENTS"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      LEX_CASES: {
-        Row: {
-          caseNumber: string | null
-          clientId: string | null
+          customer_id: string
+          default_gross_max: number | null
+          default_gross_min: number | null
+          default_recovery_pct: number | null
           description: string | null
           id: string
-          openDate: string | null
-          status: string | null
-          subject: string | null
+          incident_type: string
+          is_active: boolean
+          severity: number | null
+          suggested_actions: string | null
+          title: string
+          updated_at: string
         }
         Insert: {
-          caseNumber?: string | null
-          clientId?: string | null
-          description?: string | null
-          id: string
-          openDate?: string | null
-          status?: string | null
-          subject?: string | null
-        }
-        Update: {
-          caseNumber?: string | null
-          clientId?: string | null
+          customer_id: string
+          default_gross_max?: number | null
+          default_gross_min?: number | null
+          default_recovery_pct?: number | null
           description?: string | null
           id?: string
-          openDate?: string | null
-          status?: string | null
-          subject?: string | null
+          incident_type: string
+          is_active?: boolean
+          severity?: number | null
+          suggested_actions?: string | null
+          title: string
+          updated_at?: string
+        }
+        Update: {
+          customer_id?: string
+          default_gross_max?: number | null
+          default_gross_min?: number | null
+          default_recovery_pct?: number | null
+          description?: string | null
+          id?: string
+          incident_type?: string
+          is_active?: boolean
+          severity?: number | null
+          suggested_actions?: string | null
+          title?: string
+          updated_at?: string
         }
         Relationships: [
           {
-            foreignKeyName: "LEX_CASES_clientId_fkey"
-            columns: ["clientId"]
+            foreignKeyName: "debacu_hotel_incident_custom_customer_fk"
+            columns: ["customer_id"]
             isOneToOne: false
-            referencedRelation: "LEX_CLIENTS"
+            referencedRelation: "customers"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_hotel_incident_custom_customer_fk"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
           },
         ]
       }
-      LEX_CLIENTS: {
+      debacu_hotel_incident_overrides: {
         Row: {
-          address: string | null
-          city: string | null
-          contactPerson: string | null
-          created_at: string | null
-          email: string | null
+          customer_id: string
+          default_gross_max_override: number | null
+          default_gross_min_override: number | null
+          default_recovery_pct_override: number | null
+          description_override: string | null
           id: string
-          name: string | null
-          nif: string | null
-          phone: string | null
-          province: string | null
-          zipCode: string | null
+          incident_type: string
+          is_active: boolean
+          severity_override: number | null
+          suggested_actions_override: string | null
+          title_override: string | null
+          updated_at: string
         }
         Insert: {
-          address?: string | null
-          city?: string | null
-          contactPerson?: string | null
-          created_at?: string | null
-          email?: string | null
-          id: string
-          name?: string | null
-          nif?: string | null
-          phone?: string | null
-          province?: string | null
-          zipCode?: string | null
+          customer_id: string
+          default_gross_max_override?: number | null
+          default_gross_min_override?: number | null
+          default_recovery_pct_override?: number | null
+          description_override?: string | null
+          id?: string
+          incident_type: string
+          is_active?: boolean
+          severity_override?: number | null
+          suggested_actions_override?: string | null
+          title_override?: string | null
+          updated_at?: string
         }
         Update: {
-          address?: string | null
-          city?: string | null
-          contactPerson?: string | null
-          created_at?: string | null
-          email?: string | null
+          customer_id?: string
+          default_gross_max_override?: number | null
+          default_gross_min_override?: number | null
+          default_recovery_pct_override?: number | null
+          description_override?: string | null
           id?: string
-          name?: string | null
-          nif?: string | null
-          phone?: string | null
-          province?: string | null
-          zipCode?: string | null
+          incident_type?: string
+          is_active?: boolean
+          severity_override?: number | null
+          suggested_actions_override?: string | null
+          title_override?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_hotel_incident_overrides_customer_fk"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_hotel_incident_overrides_customer_fk"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
+          },
+        ]
+      }
+      debacu_hotel_incident_pricing: {
+        Row: {
+          customer_id: string
+          gross_max_override: number | null
+          gross_min_override: number | null
+          id: string
+          incident_type: string | null
+          is_active: boolean
+          item_code: string | null
+          notes: string | null
+          recovery_pct_override: number | null
+          unit_price_override: number | null
+          updated_at: string
+        }
+        Insert: {
+          customer_id: string
+          gross_max_override?: number | null
+          gross_min_override?: number | null
+          id?: string
+          incident_type?: string | null
+          is_active?: boolean
+          item_code?: string | null
+          notes?: string | null
+          recovery_pct_override?: number | null
+          unit_price_override?: number | null
+          updated_at?: string
+        }
+        Update: {
+          customer_id?: string
+          gross_max_override?: number | null
+          gross_min_override?: number | null
+          id?: string
+          incident_type?: string | null
+          is_active?: boolean
+          item_code?: string | null
+          notes?: string | null
+          recovery_pct_override?: number | null
+          unit_price_override?: number | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_hotel_incident_pricing_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_hotel_incident_pricing_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "debacu_hotel_incident_pricing_incident_type_fkey"
+            columns: ["incident_type"]
+            isOneToOne: false
+            referencedRelation: "debacu_incident_catalog"
+            referencedColumns: ["incident_type"]
+          },
+          {
+            foreignKeyName: "debacu_hotel_incident_pricing_item_code_fkey"
+            columns: ["item_code"]
+            isOneToOne: false
+            referencedRelation: "debacu_item_catalog"
+            referencedColumns: ["item_code"]
+          },
+          {
+            foreignKeyName: "debacu_hotel_incident_pricing_item_code_fkey"
+            columns: ["item_code"]
+            isOneToOne: false
+            referencedRelation: "debacu_item_catalog_effective"
+            referencedColumns: ["item_code"]
+          },
+        ]
+      }
+      debacu_hotel_item_catalog: {
+        Row: {
+          category: string
+          currency: string
+          customer_id: string
+          description: string | null
+          id: string
+          is_active: boolean
+          item_code: string
+          title: string
+          unit_price: number
+          updated_at: string
+        }
+        Insert: {
+          category: string
+          currency?: string
+          customer_id: string
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          item_code: string
+          title: string
+          unit_price: number
+          updated_at?: string
+        }
+        Update: {
+          category?: string
+          currency?: string
+          customer_id?: string
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          item_code?: string
+          title?: string
+          unit_price?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_hotel_item_catalog_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_hotel_item_catalog_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
+          },
+        ]
+      }
+      debacu_hotel_profile: {
+        Row: {
+          adr_real: number | null
+          customer_id: string
+          hotel_category: number
+          monthly_stays_estimated: number | null
+          season_mult_high: number
+          season_mult_low: number
+          updated_at: string
+        }
+        Insert: {
+          adr_real?: number | null
+          customer_id: string
+          hotel_category: number
+          monthly_stays_estimated?: number | null
+          season_mult_high?: number
+          season_mult_low?: number
+          updated_at?: string
+        }
+        Update: {
+          adr_real?: number | null
+          customer_id?: string
+          hotel_category?: number
+          monthly_stays_estimated?: number | null
+          season_mult_high?: number
+          season_mult_low?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_hotel_profile_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: true
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_hotel_profile_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: true
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
+          },
+        ]
+      }
+      debacu_identity_links: {
+        Row: {
+          created_at: string | null
+          identity_key_a: string
+          identity_key_b: string
+          reason: string
+        }
+        Insert: {
+          created_at?: string | null
+          identity_key_a: string
+          identity_key_b: string
+          reason: string
+        }
+        Update: {
+          created_at?: string | null
+          identity_key_a?: string
+          identity_key_b?: string
+          reason?: string
         }
         Relationships: []
       }
-      LEX_COMMUNICATIONS: {
+      debacu_incident_catalog: {
         Row: {
-          clientId: string | null
-          content: string | null
-          date: string | null
-          id: string
-          relatedEntityId: string | null
-          relatedEntityType: string | null
-          subject: string | null
-          type: string | null
-          userId: string | null
+          default_gross_max: number | null
+          default_gross_min: number | null
+          default_recovery_pct: number | null
+          description: string | null
+          incident_type: string
+          is_active: boolean
+          severity: number
+          suggested_actions: string | null
+          title: string
+          updated_at: string
         }
         Insert: {
-          clientId?: string | null
-          content?: string | null
-          date?: string | null
-          id: string
-          relatedEntityId?: string | null
-          relatedEntityType?: string | null
-          subject?: string | null
-          type?: string | null
-          userId?: string | null
+          default_gross_max?: number | null
+          default_gross_min?: number | null
+          default_recovery_pct?: number | null
+          description?: string | null
+          incident_type: string
+          is_active?: boolean
+          severity?: number
+          suggested_actions?: string | null
+          title: string
+          updated_at?: string
         }
         Update: {
-          clientId?: string | null
-          content?: string | null
-          date?: string | null
-          id?: string
-          relatedEntityId?: string | null
-          relatedEntityType?: string | null
-          subject?: string | null
-          type?: string | null
-          userId?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "LEX_COMMUNICATIONS_clientId_fkey"
-            columns: ["clientId"]
-            isOneToOne: false
-            referencedRelation: "LEX_CLIENTS"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      LEX_DOCUMENT_VERSIONS: {
-        Row: {
-          docType: string | null
-          id: string
-          originalDocId: string | null
-          recipientEmail: string | null
-          sentDate: string | null
-          versionLabel: string | null
-        }
-        Insert: {
-          docType?: string | null
-          id: string
-          originalDocId?: string | null
-          recipientEmail?: string | null
-          sentDate?: string | null
-          versionLabel?: string | null
-        }
-        Update: {
-          docType?: string | null
-          id?: string
-          originalDocId?: string | null
-          recipientEmail?: string | null
-          sentDate?: string | null
-          versionLabel?: string | null
+          default_gross_max?: number | null
+          default_gross_min?: number | null
+          default_recovery_pct?: number | null
+          description?: string | null
+          incident_type?: string
+          is_active?: boolean
+          severity?: number
+          suggested_actions?: string | null
+          title?: string
+          updated_at?: string
         }
         Relationships: []
       }
-      LEX_EVENTS: {
+      debacu_item_catalog: {
         Row: {
-          caseId: string | null
-          completed: boolean | null
-          date: string | null
+          category: string
+          currency: string
           description: string | null
-          id: string
-          title: string | null
-          type: string | null
-          userId: string | null
+          is_active: boolean
+          item_code: string
+          title: string
+          unit_price: number
+          updated_at: string
         }
         Insert: {
-          caseId?: string | null
-          completed?: boolean | null
-          date?: string | null
+          category?: string
+          currency?: string
           description?: string | null
-          id: string
-          title?: string | null
-          type?: string | null
-          userId?: string | null
+          is_active?: boolean
+          item_code: string
+          title: string
+          unit_price?: number
+          updated_at?: string
         }
         Update: {
-          caseId?: string | null
-          completed?: boolean | null
-          date?: string | null
+          category?: string
+          currency?: string
           description?: string | null
-          id?: string
-          title?: string | null
-          type?: string | null
-          userId?: string | null
+          is_active?: boolean
+          item_code?: string
+          title?: string
+          unit_price?: number
+          updated_at?: string
         }
-        Relationships: [
-          {
-            foreignKeyName: "LEX_EVENTS_caseId_fkey"
-            columns: ["caseId"]
-            isOneToOne: false
-            referencedRelation: "LEX_CASES"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "LEX_EVENTS_userId_fkey"
-            columns: ["userId"]
-            isOneToOne: false
-            referencedRelation: "LEX_USERS"
-            referencedColumns: ["id"]
-          },
-        ]
+        Relationships: []
       }
-      LEX_INVOICE_ITEMS: {
+      debacu_platform_map: {
         Row: {
-          amount: number | null
-          concept: string | null
-          id: string
-          invoiceId: string | null
-          quantity: number | null
-          unitPrice: number | null
-        }
-        Insert: {
-          amount?: number | null
-          concept?: string | null
-          id: string
-          invoiceId?: string | null
-          quantity?: number | null
-          unitPrice?: number | null
-        }
-        Update: {
-          amount?: number | null
-          concept?: string | null
-          id?: string
-          invoiceId?: string | null
-          quantity?: number | null
-          unitPrice?: number | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "LEX_INVOICE_ITEMS_invoiceId_fkey"
-            columns: ["invoiceId"]
-            isOneToOne: false
-            referencedRelation: "LEX_INVOICES"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      LEX_INVOICES: {
-        Row: {
-          caseId: string | null
-          chainHash: string | null
-          clientId: string | null
-          clientName: string | null
-          clientNif: string | null
-          created_at: string | null
-          date: string | null
-          id: string
-          irpfAmount: number | null
-          irpfRate: number | null
-          ivaAmount: number | null
-          ivaRate: number | null
-          linkedPaymentId: string | null
-          number: number | null
-          paymentStatus: string | null
-          previousInvoiceHash: string | null
-          rectificationReason: string | null
-          rectifiesInvoiceId: string | null
-          series: string | null
-          signature: string | null
-          status: string | null
-          subtotal: number | null
-          total: number | null
-          type: string | null
-        }
-        Insert: {
-          caseId?: string | null
-          chainHash?: string | null
-          clientId?: string | null
-          clientName?: string | null
-          clientNif?: string | null
-          created_at?: string | null
-          date?: string | null
-          id: string
-          irpfAmount?: number | null
-          irpfRate?: number | null
-          ivaAmount?: number | null
-          ivaRate?: number | null
-          linkedPaymentId?: string | null
-          number?: number | null
-          paymentStatus?: string | null
-          previousInvoiceHash?: string | null
-          rectificationReason?: string | null
-          rectifiesInvoiceId?: string | null
-          series?: string | null
-          signature?: string | null
-          status?: string | null
-          subtotal?: number | null
-          total?: number | null
-          type?: string | null
-        }
-        Update: {
-          caseId?: string | null
-          chainHash?: string | null
-          clientId?: string | null
-          clientName?: string | null
-          clientNif?: string | null
-          created_at?: string | null
-          date?: string | null
-          id?: string
-          irpfAmount?: number | null
-          irpfRate?: number | null
-          ivaAmount?: number | null
-          ivaRate?: number | null
-          linkedPaymentId?: string | null
-          number?: number | null
-          paymentStatus?: string | null
-          previousInvoiceHash?: string | null
-          rectificationReason?: string | null
-          rectifiesInvoiceId?: string | null
-          series?: string | null
-          signature?: string | null
-          status?: string | null
-          subtotal?: number | null
-          total?: number | null
-          type?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "LEX_INVOICES_caseId_fkey"
-            columns: ["caseId"]
-            isOneToOne: false
-            referencedRelation: "LEX_CASES"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "LEX_INVOICES_clientId_fkey"
-            columns: ["clientId"]
-            isOneToOne: false
-            referencedRelation: "LEX_CLIENTS"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      LEX_LEGAL_RESOURCES: {
-        Row: {
-          caseId: string | null
-          dateSaved: string | null
-          id: string
-          source: string | null
-          summary: string | null
-          title: string | null
-          url: string | null
-        }
-        Insert: {
-          caseId?: string | null
-          dateSaved?: string | null
-          id: string
-          source?: string | null
-          summary?: string | null
-          title?: string | null
-          url?: string | null
-        }
-        Update: {
-          caseId?: string | null
-          dateSaved?: string | null
-          id?: string
-          source?: string | null
-          summary?: string | null
-          title?: string | null
-          url?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "LEX_LEGAL_RESOURCES_caseId_fkey"
-            columns: ["caseId"]
-            isOneToOne: false
-            referencedRelation: "LEX_CASES"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      LEX_PAYMENTS: {
-        Row: {
-          amount: number | null
-          caseId: string | null
-          clientId: string | null
-          concept: string | null
-          date: string | null
-          id: string
-          isInvoiced: boolean | null
-          linkedInvoiceId: string | null
-          type: string | null
-        }
-        Insert: {
-          amount?: number | null
-          caseId?: string | null
-          clientId?: string | null
-          concept?: string | null
-          date?: string | null
-          id: string
-          isInvoiced?: boolean | null
-          linkedInvoiceId?: string | null
-          type?: string | null
-        }
-        Update: {
-          amount?: number | null
-          caseId?: string | null
-          clientId?: string | null
-          concept?: string | null
-          date?: string | null
-          id?: string
-          isInvoiced?: boolean | null
-          linkedInvoiceId?: string | null
-          type?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "LEX_PAYMENTS_caseId_fkey"
-            columns: ["caseId"]
-            isOneToOne: false
-            referencedRelation: "LEX_CASES"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "LEX_PAYMENTS_clientId_fkey"
-            columns: ["clientId"]
-            isOneToOne: false
-            referencedRelation: "LEX_CLIENTS"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      LEX_SETTINGS: {
-        Row: {
-          address: string | null
-          barNumber: string | null
-          defaultIrpf: number | null
-          defaultIva: number | null
+          channel_group: string
+          channel_type: string
+          created_at: string
+          display_name: string
           id: number
-          name: string | null
-          nif: string | null
+          is_active: boolean
+          pattern: string
+          priority: number
         }
         Insert: {
-          address?: string | null
-          barNumber?: string | null
-          defaultIrpf?: number | null
-          defaultIva?: number | null
-          id: number
-          name?: string | null
-          nif?: string | null
-        }
-        Update: {
-          address?: string | null
-          barNumber?: string | null
-          defaultIrpf?: number | null
-          defaultIva?: number | null
+          channel_group: string
+          channel_type: string
+          created_at?: string
+          display_name: string
           id?: number
-          name?: string | null
-          nif?: string | null
+          is_active?: boolean
+          pattern: string
+          priority?: number
+        }
+        Update: {
+          channel_group?: string
+          channel_type?: string
+          created_at?: string
+          display_name?: string
+          id?: number
+          is_active?: boolean
+          pattern?: string
+          priority?: number
         }
         Relationships: []
       }
-      LEX_USERS: {
+      import_jobs: {
         Row: {
+          created_at: string | null
+          file_hash: string | null
+          file_path: string
           id: string
-          name: string | null
-          password: string | null
-          permissions: Json | null
-          position: string | null
-          role: string | null
-          specialty: string | null
-          username: string | null
+          invalid_rows: number | null
+          org_id: string
+          profile_id: string | null
+          property_id: string | null
+          run_id: string | null
+          run_type: string
+          status: string
+          summary: Json | null
+          total_rows: number | null
+          updated_at: string | null
+          user_id: string
+          valid_rows: number | null
         }
         Insert: {
-          id: string
-          name?: string | null
-          password?: string | null
-          permissions?: Json | null
-          position?: string | null
-          role?: string | null
-          specialty?: string | null
-          username?: string | null
+          created_at?: string | null
+          file_hash?: string | null
+          file_path: string
+          id?: string
+          invalid_rows?: number | null
+          org_id: string
+          profile_id?: string | null
+          property_id?: string | null
+          run_id?: string | null
+          run_type: string
+          status?: string
+          summary?: Json | null
+          total_rows?: number | null
+          updated_at?: string | null
+          user_id: string
+          valid_rows?: number | null
         }
         Update: {
+          created_at?: string | null
+          file_hash?: string | null
+          file_path?: string
           id?: string
-          name?: string | null
-          password?: string | null
-          permissions?: Json | null
-          position?: string | null
-          role?: string | null
-          specialty?: string | null
-          username?: string | null
+          invalid_rows?: number | null
+          org_id?: string
+          profile_id?: string | null
+          property_id?: string | null
+          run_id?: string | null
+          run_type?: string
+          status?: string
+          summary?: Json | null
+          total_rows?: number | null
+          updated_at?: string | null
+          user_id?: string
+          valid_rows?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "import_jobs_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "import_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "import_jobs_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      import_profiles: {
+        Row: {
+          created_at: string | null
+          date_format: string | null
+          decimal_separator: string | null
+          delimiter: string | null
+          disabled_fields: string[] | null
+          encoding: string | null
+          id: string
+          identity_strategy: string
+          mapping: Json
+          name: string
+          org_id: string
+          source_type: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          date_format?: string | null
+          decimal_separator?: string | null
+          delimiter?: string | null
+          disabled_fields?: string[] | null
+          encoding?: string | null
+          id?: string
+          identity_strategy: string
+          mapping: Json
+          name: string
+          org_id: string
+          source_type: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          date_format?: string | null
+          decimal_separator?: string | null
+          delimiter?: string | null
+          disabled_fields?: string[] | null
+          encoding?: string | null
+          id?: string
+          identity_strategy?: string
+          mapping?: Json
+          name?: string
+          org_id?: string
+          source_type?: string
+          updated_at?: string | null
         }
         Relationships: []
       }
@@ -2004,9 +5347,11 @@ export type Database = {
           extra_config: Json | null
           id: string
           max_queries_per_month: number | null
+          max_users: number
           name: string
           price_monthly: number | null
           price_yearly: number | null
+          updated_at: string | null
         }
         Insert: {
           app_id?: string | null
@@ -2014,9 +5359,11 @@ export type Database = {
           extra_config?: Json | null
           id?: string
           max_queries_per_month?: number | null
+          max_users?: number
           name: string
           price_monthly?: number | null
           price_yearly?: number | null
+          updated_at?: string | null
         }
         Update: {
           app_id?: string | null
@@ -2024,9 +5371,11 @@ export type Database = {
           extra_config?: Json | null
           id?: string
           max_queries_per_month?: number | null
+          max_users?: number
           name?: string
           price_monthly?: number | null
           price_yearly?: number | null
+          updated_at?: string | null
         }
         Relationships: [
           {
@@ -2037,6 +5386,48 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      public_contact_requests: {
+        Row: {
+          company: string | null
+          created_at: string
+          email: string
+          error_detail: string | null
+          id: string
+          message: string
+          name: string
+          phone: string | null
+          sent_at: string | null
+          source: string
+          status: string
+        }
+        Insert: {
+          company?: string | null
+          created_at?: string
+          email: string
+          error_detail?: string | null
+          id?: string
+          message: string
+          name: string
+          phone?: string | null
+          sent_at?: string | null
+          source?: string
+          status?: string
+        }
+        Update: {
+          company?: string | null
+          created_at?: string
+          email?: string
+          error_detail?: string | null
+          id?: string
+          message?: string
+          name?: string
+          phone?: string | null
+          sent_at?: string | null
+          source?: string
+          status?: string
+        }
+        Relationships: []
       }
       receipts: {
         Row: {
@@ -2130,6 +5521,222 @@ export type Database = {
           subscription_id?: string | null
         }
         Relationships: []
+      }
+      screening_alerts: {
+        Row: {
+          alert_type: string
+          code: string | null
+          created_at: string | null
+          id: string
+          identity_key: string
+          message: string | null
+          meta: Json | null
+          org_id: string
+          property_id: string | null
+          resolved_at: string | null
+          row_number: number | null
+          run_id: string
+          severity: string | null
+        }
+        Insert: {
+          alert_type: string
+          code?: string | null
+          created_at?: string | null
+          id?: string
+          identity_key: string
+          message?: string | null
+          meta?: Json | null
+          org_id: string
+          property_id?: string | null
+          resolved_at?: string | null
+          row_number?: number | null
+          run_id: string
+          severity?: string | null
+        }
+        Update: {
+          alert_type?: string
+          code?: string | null
+          created_at?: string | null
+          id?: string
+          identity_key?: string
+          message?: string | null
+          meta?: Json | null
+          org_id?: string
+          property_id?: string | null
+          resolved_at?: string | null
+          row_number?: number | null
+          run_id?: string
+          severity?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "screening_alerts_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "screening_alerts_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "screening_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      screening_results: {
+        Row: {
+          checkin_date: string | null
+          computed_at: string | null
+          days_since_last: number | null
+          delta_incidents_count: number | null
+          delta_total_net_loss: number | null
+          id: string
+          identity_key: string
+          incidents_count: number | null
+          last_incident_date: string | null
+          match_basis: string | null
+          match_confidence: string | null
+          org_id: string
+          prev_risk_band: string | null
+          property_id: string | null
+          risk_band: string
+          risk_band_changed: boolean | null
+          row_number: number | null
+          run_id: string
+          total_net_loss: number | null
+        }
+        Insert: {
+          checkin_date?: string | null
+          computed_at?: string | null
+          days_since_last?: number | null
+          delta_incidents_count?: number | null
+          delta_total_net_loss?: number | null
+          id?: string
+          identity_key: string
+          incidents_count?: number | null
+          last_incident_date?: string | null
+          match_basis?: string | null
+          match_confidence?: string | null
+          org_id: string
+          prev_risk_band?: string | null
+          property_id?: string | null
+          risk_band: string
+          risk_band_changed?: boolean | null
+          row_number?: number | null
+          run_id: string
+          total_net_loss?: number | null
+        }
+        Update: {
+          checkin_date?: string | null
+          computed_at?: string | null
+          days_since_last?: number | null
+          delta_incidents_count?: number | null
+          delta_total_net_loss?: number | null
+          id?: string
+          identity_key?: string
+          incidents_count?: number | null
+          last_incident_date?: string | null
+          match_basis?: string | null
+          match_confidence?: string | null
+          org_id?: string
+          prev_risk_band?: string | null
+          property_id?: string | null
+          risk_band?: string
+          risk_band_changed?: boolean | null
+          row_number?: number | null
+          run_id?: string
+          total_net_loss?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "screening_results_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "screening_results_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "screening_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      screening_runs: {
+        Row: {
+          created_at: string | null
+          created_by: string | null
+          finished_at: string | null
+          high_count: number | null
+          id: string
+          import_job_id: string | null
+          low_count: number | null
+          medium_count: number | null
+          org_id: string
+          params: Json | null
+          property_id: string | null
+          run_type: string
+          source_ref: string | null
+          started_at: string | null
+          status: string
+          total_analyzed: number | null
+        }
+        Insert: {
+          created_at?: string | null
+          created_by?: string | null
+          finished_at?: string | null
+          high_count?: number | null
+          id?: string
+          import_job_id?: string | null
+          low_count?: number | null
+          medium_count?: number | null
+          org_id: string
+          params?: Json | null
+          property_id?: string | null
+          run_type: string
+          source_ref?: string | null
+          started_at?: string | null
+          status?: string
+          total_analyzed?: number | null
+        }
+        Update: {
+          created_at?: string | null
+          created_by?: string | null
+          finished_at?: string | null
+          high_count?: number | null
+          id?: string
+          import_job_id?: string | null
+          low_count?: number | null
+          medium_count?: number | null
+          org_id?: string
+          params?: Json | null
+          property_id?: string | null
+          run_type?: string
+          source_ref?: string | null
+          started_at?: string | null
+          status?: string
+          total_analyzed?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "screening_runs_import_job_id_fkey"
+            columns: ["import_job_id"]
+            isOneToOne: false
+            referencedRelation: "import_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "screening_runs_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       sectors: {
         Row: {
@@ -2229,10 +5836,11 @@ export type Database = {
           app_id: string | null
           created_at: string
           customer_id: string | null
+          customer_id_uuid: string | null
           id: string
           payload: Json | null
           stripe_customer_id: string | null
-          stripe_event_id: string | null
+          stripe_event_id: string
           stripe_subscription_id: string | null
           type: string
         }
@@ -2240,10 +5848,11 @@ export type Database = {
           app_id?: string | null
           created_at?: string
           customer_id?: string | null
+          customer_id_uuid?: string | null
           id?: string
           payload?: Json | null
           stripe_customer_id?: string | null
-          stripe_event_id?: string | null
+          stripe_event_id: string
           stripe_subscription_id?: string | null
           type: string
         }
@@ -2251,10 +5860,11 @@ export type Database = {
           app_id?: string | null
           created_at?: string
           customer_id?: string | null
+          customer_id_uuid?: string | null
           id?: string
           payload?: Json | null
           stripe_customer_id?: string | null
-          stripe_event_id?: string | null
+          stripe_event_id?: string
           stripe_subscription_id?: string | null
           type?: string
         }
@@ -2266,6 +5876,13 @@ export type Database = {
             referencedRelation: "customers"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "subscription_events_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
+          },
         ]
       }
       subscriptions: {
@@ -2275,6 +5892,7 @@ export type Database = {
           created_at: string
           customer_id: string
           end_date: string | null
+          extra_seats: number
           grace_ends_at: string | null
           id: string
           next_billing_date: string | null
@@ -2285,12 +5903,14 @@ export type Database = {
           replaces_subscription_id: string | null
           required_billing_frequency: string | null
           required_plan_code: string | null
-        
           start_date: string
           status: string
           stripe_checkout_session_id: string | null
           stripe_customer_id: string | null
           stripe_price_id: string | null
+          stripe_schedule_id: string | null
+          stripe_seat_price_id: string | null
+          stripe_seat_subscription_item_id: string | null
           stripe_subscription_id: string | null
           suspended_at: string | null
           trial_ends_at: string | null
@@ -2302,6 +5922,7 @@ export type Database = {
           created_at?: string
           customer_id: string
           end_date?: string | null
+          extra_seats?: number
           grace_ends_at?: string | null
           id?: string
           next_billing_date?: string | null
@@ -2317,6 +5938,9 @@ export type Database = {
           stripe_checkout_session_id?: string | null
           stripe_customer_id?: string | null
           stripe_price_id?: string | null
+          stripe_schedule_id?: string | null
+          stripe_seat_price_id?: string | null
+          stripe_seat_subscription_item_id?: string | null
           stripe_subscription_id?: string | null
           suspended_at?: string | null
           trial_ends_at?: string | null
@@ -2328,6 +5952,7 @@ export type Database = {
           created_at?: string
           customer_id?: string
           end_date?: string | null
+          extra_seats?: number
           grace_ends_at?: string | null
           id?: string
           next_billing_date?: string | null
@@ -2343,6 +5968,9 @@ export type Database = {
           stripe_checkout_session_id?: string | null
           stripe_customer_id?: string | null
           stripe_price_id?: string | null
+          stripe_schedule_id?: string | null
+          stripe_seat_price_id?: string | null
+          stripe_seat_subscription_item_id?: string | null
           stripe_subscription_id?: string | null
           suspended_at?: string | null
           trial_ends_at?: string | null
@@ -2355,6 +5983,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "customers"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "subscriptions_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
           },
           {
             foreignKeyName: "subscriptions_plan_id_fkey"
@@ -2396,15 +6031,65 @@ export type Database = {
         }
         Relationships: []
       }
+      watchlist_reservations: {
+        Row: {
+          channel: string | null
+          checkin_date: string
+          checkout_date: string | null
+          created_at: string | null
+          currency: string | null
+          first_seen_at: string | null
+          id: string
+          identity_key: string
+          last_seen_at: string | null
+          org_id: string
+          reservation_ref: string | null
+          status: string | null
+          total_amount: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          channel?: string | null
+          checkin_date: string
+          checkout_date?: string | null
+          created_at?: string | null
+          currency?: string | null
+          first_seen_at?: string | null
+          id?: string
+          identity_key: string
+          last_seen_at?: string | null
+          org_id: string
+          reservation_ref?: string | null
+          status?: string | null
+          total_amount?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          channel?: string | null
+          checkin_date?: string
+          checkout_date?: string | null
+          created_at?: string | null
+          currency?: string | null
+          first_seen_at?: string | null
+          id?: string
+          identity_key?: string
+          last_seen_at?: string | null
+          org_id?: string
+          reservation_ref?: string | null
+          status?: string | null
+          total_amount?: number | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       abuse_settings_audit_grouped: {
         Row: {
           abuse_settings_id: string | null
           actor_name: string | null
-          audit_id: string | null
+          changes: string | null
           changes_count: number | null
-          changes_summary: string | null
           created_at: string | null
         }
         Relationships: []
@@ -2446,6 +6131,18 @@ export type Database = {
         }
         Relationships: []
       }
+      debacu_eval_admin_users_v: {
+        Row: {
+          user_id: string | null
+        }
+        Insert: {
+          user_id?: string | null
+        }
+        Update: {
+          user_id?: string | null
+        }
+        Relationships: []
+      }
       debacu_eval_audit_exports_with_downloads: {
         Row: {
           created_at: string | null
@@ -2473,6 +6170,70 @@ export type Database = {
         }
         Relationships: []
       }
+      debacu_eval_audit_exports_with_last_download: {
+        Row: {
+          created_at: string | null
+          delivered_to_name: string | null
+          delivered_to_org: string | null
+          delivered_to_reason: string | null
+          delivered_to_reference: string | null
+          download_count: number | null
+          file_bytes: number | null
+          file_sha256: string | null
+          filter_customer: string | null
+          filter_from: string | null
+          filter_source: string | null
+          filter_to: string | null
+          filter_type: string | null
+          format: string | null
+          generated_by_email: string | null
+          generated_by_user_id: string | null
+          id: string | null
+          last_download_at: string | null
+          last_download_ip: unknown
+          last_download_user_agent: string | null
+          last_downloaded_by: string | null
+          last_downloaded_by_email: string | null
+          meta: Json | null
+          org_id: string | null
+          row_count: number | null
+          status: string | null
+          storage_bucket: string | null
+          storage_path: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_audit_exports_org_fk"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_audit_exports_org_fk"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_audit_timeline_v: {
+        Row: {
+          actor_user_id: string | null
+          event_family: string | null
+          event_id: string | null
+          event_payload: Json | null
+          identity_key: string | null
+          occurred_at: string | null
+          org_id: string | null
+          property_id: string | null
+          risk_level:
+            | Database["public"]["Enums"]["debacu_eval_risk_level"]
+            | null
+        }
+        Relationships: []
+      }
       debacu_eval_country_summary: {
         Row: {
           cnt: number | null
@@ -2480,10 +6241,488 @@ export type Database = {
         }
         Relationships: []
       }
+      debacu_eval_evaluations_norm_v: {
+        Row: {
+          adr_real_snapshot: number | null
+          adr_reference: number | null
+          channel_group: string | null
+          channel_type: string | null
+          comment: string | null
+          created_at: string | null
+          creator_customer_id: string | null
+          creator_customer_name: string | null
+          creator_customer_uuid: string | null
+          customer_id: string | null
+          document: string | null
+          economic_impact_gross: number | null
+          economic_net_loss: number | null
+          economic_recovered: number | null
+          email: string | null
+          evaluation_date: string | null
+          full_name: string | null
+          hotel_category: number | null
+          id: string | null
+          impact_items: Json | null
+          incident_type: string | null
+          nationality: string | null
+          phone: string | null
+          platform: string | null
+          platform_display: string | null
+          platform_key: string | null
+          rating: number | null
+          season_applied: string | null
+          updated_at: string | null
+        }
+        Relationships: []
+      }
+      debacu_eval_global_risk_snapshot_v: {
+        Row: {
+          pct_alto: number | null
+          pct_bajo: number | null
+          pct_medio: number | null
+          pct1: number | null
+          pct2: number | null
+          pct3: number | null
+          pct4: number | null
+          pct5: number | null
+          total: number | null
+        }
+        Relationships: []
+      }
+      debacu_eval_inventory_base_v: {
+        Row: {
+          org_id: string | null
+          property_id: string | null
+          rooms_available_base: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_property_room_types_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_property_room_types_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_property_room_types_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_inventory_daily_v: {
+        Row: {
+          org_id: string | null
+          property_id: string | null
+          rooms_available: number | null
+          stay_date: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_org_entitlements_v: {
+        Row: {
+          customer_id: string | null
+          extra_seats: number | null
+          max_users: number | null
+          org_id: string | null
+          plan_code: string | null
+          seats_available: number | null
+          seats_total: number | null
+          seats_used: number | null
+          subscription_status: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_organizations_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_organizations_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
+          },
+        ]
+      }
       debacu_eval_platform_summary: {
         Row: {
           cnt: number | null
           platform: string | null
+        }
+        Relationships: []
+      }
+      debacu_eval_property_calendar_context_v: {
+        Row: {
+          calendar_date: string | null
+          color: string | null
+          impact_level: string | null
+          item_type: string | null
+          name: string | null
+          org_id: string | null
+          pricing_adjustment_type: string | null
+          pricing_adjustment_value: number | null
+          pricing_operation: string | null
+          priority: number | null
+          property_id: string | null
+          source_id: string | null
+          source_type: string | null
+        }
+        Relationships: []
+      }
+      debacu_eval_revenue_daily_property_v: {
+        Row: {
+          adr: number | null
+          org_id: string | null
+          property_id: string | null
+          revenue_rooms: number | null
+          revenue_total: number | null
+          rooms_sold: number | null
+          stay_date: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_daily_property_with_inventory_v: {
+        Row: {
+          adr: number | null
+          occupancy_pct: number | null
+          org_id: string | null
+          property_id: string | null
+          revenue_rooms: number | null
+          revenue_total: number | null
+          revpar: number | null
+          rooms_available: number | null
+          rooms_sold: number | null
+          stay_date: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_eval_revenue_daily_with_inventory_v: {
+        Row: {
+          adr: number | null
+          occupancy_pct: number | null
+          org_id: string | null
+          property_id: string | null
+          revenue_rooms: number | null
+          revpar: number | null
+          rooms_available: number | null
+          rooms_sold: number | null
+          stay_date: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_org_entitlements_v"
+            referencedColumns: ["org_id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_eval_revenue_daily_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "debacu_eval_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      debacu_evaluations_enriched: {
+        Row: {
+          adr_real_snapshot: number | null
+          adr_reference: number | null
+          channel_display: string | null
+          channel_group: string | null
+          channel_type: string | null
+          comment: string | null
+          created_at: string | null
+          creator_customer_id: string | null
+          creator_customer_name: string | null
+          creator_customer_uuid: string | null
+          customer_id: string | null
+          document: string | null
+          economic_impact_gross: number | null
+          economic_net_loss: number | null
+          economic_recovered: number | null
+          email: string | null
+          evaluation_date: string | null
+          full_name: string | null
+          hotel_category: number | null
+          id: string | null
+          impact_items: Json | null
+          incident_type: string | null
+          nationality: string | null
+          phone: string | null
+          platform: string | null
+          platform_norm: string | null
+          platform_original: string | null
+          rating: number | null
+          season_applied: string | null
+          updated_at: string | null
+        }
+        Relationships: []
+      }
+      debacu_item_catalog_effective: {
+        Row: {
+          category: string | null
+          currency: string | null
+          customer_id: string | null
+          description: string | null
+          is_active_effective: boolean | null
+          item_code: string | null
+          source: string | null
+          title: string | null
+          unit_price_effective: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_hotel_item_catalog_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_hotel_item_catalog_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
+          },
+        ]
+      }
+      v_audit_hotel_monthly_by_incident: {
+        Row: {
+          avg_net_per_case: number | null
+          creator_customer_id: string | null
+          creator_customer_name: string | null
+          gross: number | null
+          incident_type: string | null
+          month: string | null
+          n: number | null
+          net_loss: number | null
+          recovered: number | null
+        }
+        Relationships: []
+      }
+      v_audit_hotel_monthly_incidents_100_stays: {
+        Row: {
+          customer_id: string | null
+          incidents: number | null
+          incidents_per_100_stays: number | null
+          month: string | null
+          monthly_stays_estimated: number | null
+          net_loss: number | null
+          net_loss_per_stay: number | null
+        }
+        Relationships: []
+      }
+      v_audit_hotel_monthly_kpis: {
+        Row: {
+          creator_customer_id: string | null
+          creator_customer_name: string | null
+          evaluations_total: number | null
+          gross_impact: number | null
+          incidents_total: number | null
+          month: string | null
+          net_loss: number | null
+          recovered: number | null
+          recovered_pct: number | null
+        }
+        Relationships: []
+      }
+      v_customer_audit_exports_with_last_download: {
+        Row: {
+          app_id: string | null
+          created_at: string | null
+          error_code: string | null
+          error_message: string | null
+          export_scope: string | null
+          export_type: string | null
+          file_size_bytes: number | null
+          filters: Json | null
+          id: string | null
+          last_downloaded_at: string | null
+          last_downloaded_by_email: string | null
+          org_id: string | null
+          period_from: string | null
+          period_to: string | null
+          requested_by_email: string | null
+          requested_by_role: string | null
+          requested_by_user_id: string | null
+          row_count: number | null
+          sha256: string | null
+          status: string | null
+          storage_bucket: string | null
+          storage_path: string | null
+        }
+        Relationships: []
+      }
+      v_customer_profile_status: {
+        Row: {
+          customer_id: string | null
+          has_bank_name: boolean | null
+          has_billing_email: boolean | null
+          has_commercial_name: boolean | null
+          has_contact_person: boolean | null
+          has_hotel_category: boolean | null
+          has_hotel_profile: boolean | null
+          has_iban: boolean | null
+          has_legal_name: boolean | null
+          has_monthly_stays_estimated: boolean | null
+          has_nif: boolean | null
+          has_season_mult_high: boolean | null
+          has_season_mult_low: boolean | null
+          has_swift: boolean | null
+          is_ready_for_audit: boolean | null
+        }
+        Relationships: []
+      }
+      v_hotel_adr_effective: {
+        Row: {
+          adr_effective: number | null
+          adr_real: number | null
+          adr_reference: number | null
+          customer_id: string | null
+          hotel_category: number | null
+          monthly_stays_estimated: number | null
+          season_mult_high: number | null
+          season_mult_low: number | null
+          updated_at: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "debacu_hotel_profile_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: true
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "debacu_hotel_profile_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: true
+            referencedRelation: "v_customer_profile_status"
+            referencedColumns: ["customer_id"]
+          },
+        ]
+      }
+      v_outlier_hotels: {
+        Row: {
+          avg_net_loss: number | null
+          category_p90: number | null
+          creator_customer_id: string | null
+          creator_customer_name: string | null
+          hotel_category: number | null
+          n_incidents: number | null
+          vs_p90_ratio: number | null
+        }
+        Relationships: []
+      }
+      v_sector_category_incident: {
+        Row: {
+          avg_net_loss: number | null
+          hotel_category: number | null
+          incident_type: string | null
+          month: string | null
+          n: number | null
+          p50_net_loss: number | null
+          p90_net_loss: number | null
+        }
+        Relationships: []
+      }
+      v_top_missing_items: {
+        Row: {
+          amount_total: number | null
+          creator_customer_id: string | null
+          creator_customer_name: string | null
+          item_code: string | null
+          month: string | null
+          qty_total: number | null
         }
         Relationships: []
       }
@@ -2636,68 +6875,46 @@ export type Database = {
           storage_path: string
         }[]
       }
-      admin_list_audit_exports_v2:
-        | {
-            Args: {
-              p_app_id?: string
-              p_customer_id?: string
-              p_format?: string
-              p_from?: string
-              p_limit?: number
-              p_offset?: number
-              p_provided_to_type?: string
-              p_q?: string
-              p_to?: string
-              p_type?: string
-            }
-            Returns: {
-              app_id: string
-              created_at: string
-              customer_id: string
-              date_from: string
-              date_to: string
-              file_name: string
-              format: Database["public"]["Enums"]["audit_export_format"]
-              generated_by_email: string
-              id: string
-              legal_basis: string
-              mime_type: string
-              notes: string
-              provided_to_contact: string
-              provided_to_name: string
-              provided_to_ref: string
-              provided_to_type: Database["public"]["Enums"]["audit_provided_to_type"]
-              purpose: string
-              row_count: number
-              source: string
-              storage_bucket: string
-              storage_path: string
-              type: string
-            }[]
-          }
-        | {
-            Args: {
-              p_customer?: string
-              p_format?: string
-              p_from?: string
-              p_limit?: number
-              p_offset?: number
-              p_q?: string
-              p_to?: string
-            }
-            Returns: {
-              created_at: string
-              delivered_to_name: string
-              delivered_to_org: string
-              delivered_to_reason: string
-              download_count: number
-              format: string
-              generated_by_email: string
-              id: string
-              row_count: number
-              storage_path: string
-            }[]
-          }
+      admin_list_audit_exports_v2: {
+        Args: {
+          p_app_id?: string
+          p_customer_id?: string
+          p_format?: string
+          p_from?: string
+          p_limit?: number
+          p_offset?: number
+          p_provided_to_type?: string
+          p_q?: string
+          p_to?: string
+          p_type?: string
+        }
+        Returns: {
+          app_id: string
+          created_at: string
+          customer_id: string
+          date_from: string
+          date_to: string
+          download_count: number
+          file_name: string
+          format: string
+          generated_by_email: string
+          id: string
+          last_download_at: string
+          legal_basis: string
+          mime_type: string
+          notes: string
+          provided_to_contact: string
+          provided_to_name: string
+          provided_to_ref: string
+          provided_to_type: string
+          purpose: string
+          row_count: number
+          source: string
+          storage_bucket: string
+          storage_path: string
+          type: string
+        }[]
+      }
       admin_list_audit_types: {
         Args: { p_source?: string }
         Returns: {
@@ -2811,6 +7028,14 @@ export type Database = {
           total_alerts: number
         }[]
       }
+      admin_whoami: {
+        Args: never
+        Returns: {
+          email: string
+          is_admin: boolean
+          user_id: string
+        }[]
+      }
       can_access_app: {
         Args: { p_app_id: string; p_password: string; p_username: string }
         Returns: {
@@ -2819,6 +7044,25 @@ export type Database = {
           customer_name: string
         }[]
       }
+      debacu_backfill_identity_links_doc: {
+        Args: { p_limit?: number }
+        Returns: number
+      }
+      debacu_backfill_links_doc: { Args: { p_limit?: number }; Returns: number }
+      debacu_backfill_links_email: {
+        Args: { p_limit?: number }
+        Returns: number
+      }
+      debacu_backfill_links_phone: {
+        Args: { p_limit?: number }
+        Returns: number
+      }
+      debacu_build_identity_links: {
+        Args: { p_identity_key: string }
+        Returns: undefined
+      }
+      debacu_doc_key: { Args: { p_doc: string }; Returns: string }
+      debacu_email_key: { Args: { p_email: string }; Returns: string }
       debacu_eval_check_signals: {
         Args: { k?: number; months?: number; q_input: string }
         Returns: {
@@ -2832,8 +7076,77 @@ export type Database = {
           top_typologies: string[]
         }[]
       }
+      debacu_eval_compute_identity_key:
+        | { Args: { p_identifier: string }; Returns: string }
+        | { Args: { p_identifier: string; p_pepper: string }; Returns: string }
       debacu_eval_count_bucket: { Args: { n: number }; Returns: string }
+      debacu_eval_guest_index_upsert: {
+        Args: {
+          p_doc_key?: string
+          p_email_key?: string
+          p_identity_key: string
+          p_incident_date?: string
+          p_incident_delta?: number
+          p_net_loss_delta?: number
+          p_phone_key?: string
+          p_seen_date?: string
+          p_stay_delta?: number
+        }
+        Returns: undefined
+      }
+      debacu_eval_has_org_access: {
+        Args: { target_org_id: string }
+        Returns: boolean
+      }
+      debacu_eval_is_admin: { Args: never; Returns: boolean }
+      debacu_eval_is_org_admin: {
+        Args: { target_org_id: string }
+        Returns: boolean
+      }
+      debacu_eval_is_org_member: {
+        Args: { p_org_id: string }
+        Returns: boolean
+      }
       debacu_eval_match_strength: { Args: { q: string }; Returns: string }
+      debacu_eval_recompute_risk_bands: { Args: never; Returns: undefined }
+      debacu_eval_upsert_guest_index_from_incident: {
+        Args: {
+          p_evaluation_date: string
+          p_gross: number
+          p_identity_key: string
+          p_net_loss: number
+          p_recovered: number
+        }
+        Returns: undefined
+      }
+      debacu_eval_upsert_guest_index_from_stay:
+        | {
+            Args: { p_activity_date: string; p_identity_key: string }
+            Returns: undefined
+          }
+        | {
+            Args: {
+              p_activity_date: string
+              p_identity_key: string
+              p_is_completed: boolean
+            }
+            Returns: undefined
+          }
+      debacu_eval_upsert_guest_index_from_visit: {
+        Args: { p_evaluation_date: string; p_identity_key: string }
+        Returns: undefined
+      }
+      debacu_get_pepper: { Args: never; Returns: string }
+      debacu_hmac_hex: { Args: { p_input: string }; Returns: string }
+      debacu_is_org_member: { Args: { p_org_id: string }; Returns: boolean }
+      debacu_phone_key: { Args: { p_phone: string }; Returns: string }
+      debug_audit_exports_count_system: {
+        Args: never
+        Returns: {
+          n: number
+        }[]
+      }
+      get_debacu_pepper: { Args: never; Returns: string }
       get_my_active_subscription_debacu_eval: {
         Args: never
         Returns: {
@@ -2891,6 +7204,7 @@ export type Database = {
           total: number
         }[]
       }
+      is_admin: { Args: never; Returns: boolean }
       is_debacu_admin: { Args: never; Returns: boolean }
       list_debacu_eval_invoices: {
         Args: {
@@ -2921,6 +7235,26 @@ export type Database = {
         | "FUERZAS_SEGURIDAD"
         | "CLIENTE"
         | "OTRO"
+      debacu_eval_check_mode: "GLOBAL" | "MINE"
+      debacu_eval_incident_source: "MANUAL" | "CSV_SCREENING" | "SYSTEM"
+      debacu_eval_incident_type:
+        | "FRAUD"
+        | "NO_SHOW"
+        | "PAYMENT_INCIDENT"
+        | "PROPERTY_DAMAGE"
+        | "RULES_VIOLATION"
+        | "AGGRESSIVE_BEHAVIOR"
+        | "BLACKLIST_MATCH"
+        | "OTHER"
+      debacu_eval_query_type: "DOCUMENT" | "EMAIL" | "PHONE" | "FULL_NAME"
+      debacu_eval_risk_event_type:
+        | "MANUAL_CHECK"
+        | "MANUAL_INCIDENT_CREATED"
+        | "MANUAL_INCIDENT_UPDATED"
+        | "CSV_SIGNAL_REFRESH"
+        | "RISK_LEVEL_CHANGED"
+      debacu_eval_risk_level: "NONE" | "LOW" | "MEDIUM" | "HIGH"
+      debacu_eval_severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
       receipt_method: "SEPA" | "CARD" | "TRANSFER" | "CASH" | "OTHER"
       receipt_status:
         | "PENDING"
@@ -3065,6 +7399,28 @@ export const Constants = {
         "CLIENTE",
         "OTRO",
       ],
+      debacu_eval_check_mode: ["GLOBAL", "MINE"],
+      debacu_eval_incident_source: ["MANUAL", "CSV_SCREENING", "SYSTEM"],
+      debacu_eval_incident_type: [
+        "FRAUD",
+        "NO_SHOW",
+        "PAYMENT_INCIDENT",
+        "PROPERTY_DAMAGE",
+        "RULES_VIOLATION",
+        "AGGRESSIVE_BEHAVIOR",
+        "BLACKLIST_MATCH",
+        "OTHER",
+      ],
+      debacu_eval_query_type: ["DOCUMENT", "EMAIL", "PHONE", "FULL_NAME"],
+      debacu_eval_risk_event_type: [
+        "MANUAL_CHECK",
+        "MANUAL_INCIDENT_CREATED",
+        "MANUAL_INCIDENT_UPDATED",
+        "CSV_SIGNAL_REFRESH",
+        "RISK_LEVEL_CHANGED",
+      ],
+      debacu_eval_risk_level: ["NONE", "LOW", "MEDIUM", "HIGH"],
+      debacu_eval_severity: ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
       receipt_method: ["SEPA", "CARD", "TRANSFER", "CASH", "OTHER"],
       receipt_status: [
         "PENDING",
