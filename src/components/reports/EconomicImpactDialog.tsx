@@ -96,6 +96,11 @@ function clampFromTo(from: string, to: string) {
   return from <= to ? { from, to } : { from: to, to: from };
 }
 
+function isNetworkError(msg: string) {
+  const m = msg.toLowerCase();
+  return m.includes("failed to fetch") || m.includes("network request failed") || m.includes("networkerror") || m.includes("load failed");
+}
+
 export interface EconomicImpactDialogProps {
   open: boolean;
   onClose: () => void;
@@ -231,7 +236,8 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
       const filled = fillMissingDays(parsed, fixed.from, fixed.to);
       setRows(filled);
     } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      const msg = String(e?.message ?? e);
+      setErr(isNetworkError(msg) ? "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo." : msg);
       setRows([]);
     } finally {
       setLoading(false);
@@ -253,11 +259,14 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
       return;
     }
 
+    // Abrimos la ventana ANTES del await para que Safari iOS no lo bloquee
+    const newWin = window.open("", "_blank");
+
     try {
       const fixed = clampFromTo(from, to);
 
       const resp: BuildResp = await callEvalFn("customer_audit_export_build", {
-        org_id: org, // ✅ CLAVE
+        org_id: org,
         export_type: kind,
         export_scope: SCOPE_DAILY,
         period_from: fixed.from,
@@ -269,9 +278,12 @@ export const EconomicImpactDialog: React.FC<EconomicImpactDialogProps> = ({
       const url = resp.download_url;
       if (!url) throw new Error("missing_download_url");
 
-      window.open(url, "_blank", "noopener,noreferrer");
+      if (newWin) newWin.location.href = url;
+      else window.open(url, "_blank", "noopener,noreferrer");
     } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      newWin?.close();
+      const msg = String(e?.message ?? e);
+      setErr(isNetworkError(msg) ? "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo." : msg);
     }
   }
 

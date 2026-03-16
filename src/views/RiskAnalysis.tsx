@@ -243,7 +243,7 @@ const RiskAnalysis: React.FC = () => {
                 type="date"
                 value={draftFrom}
                 onChange={(e) => setDraftFrom(e.target.value)}
-                className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white"
+                className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white text-gray-900"
               />
             </div>
 
@@ -253,7 +253,7 @@ const RiskAnalysis: React.FC = () => {
                 type="date"
                 value={draftTo}
                 onChange={(e) => setDraftTo(e.target.value)}
-                className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white"
+                className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white text-gray-900"
               />
             </div>
 
@@ -262,7 +262,7 @@ const RiskAnalysis: React.FC = () => {
               <select
                 value={draftField}
                 onChange={(e) => setDraftField(e.target.value as PeriodField)}
-                className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white"
+                className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white text-gray-900"
               >
                 <option value="evaluation_date">evaluation_date</option>
                 <option value="created_at">created_at</option>
@@ -273,7 +273,7 @@ const RiskAnalysis: React.FC = () => {
             <button
               type="button"
               onClick={quickThisMonth}
-              className="h-10 px-4 rounded-lg border border-gray-200 text-sm bg-white hover:bg-gray-50"
+              className="h-10 px-4 rounded-lg border border-gray-200 text-sm bg-white hover:bg-gray-50 text-gray-900"
             >
               Mes actual
             </button>
@@ -281,7 +281,7 @@ const RiskAnalysis: React.FC = () => {
             <button
               type="button"
               onClick={quickLast30}
-              className="h-10 px-4 rounded-lg border border-gray-200 text-sm bg-white hover:bg-gray-50"
+              className="h-10 px-4 rounded-lg border border-gray-200 text-sm bg-white hover:bg-gray-50 text-gray-900"
             >
               Últimos 30 días
             </button>
@@ -333,7 +333,7 @@ const RiskAnalysis: React.FC = () => {
                 />
                 <Tooltip
                   cursor={{ fill: "#f8fafc" }}
-                  contentStyle={{ borderRadius: "8px" }}
+                  contentStyle={{ borderRadius: "8px", backgroundColor: "#fff", border: "1px solid #e2e8f0", color: "#1e293b" }}
                   formatter={(value: any, name: any, props: any) => {
                     const r = props?.payload as RiskSegmentUi | undefined;
                     if (!r) return [value, name];

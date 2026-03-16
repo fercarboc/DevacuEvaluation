@@ -88,6 +88,36 @@ type IncidentCatalogItem = {
   source?: "GLOBAL" | "OVERRIDE" | "CUSTOM";
 };
 
+type ItemCatalogEntry = {
+  item_code: string;
+  title: string | null;
+  category: string | null;
+  unit_price: number | null;
+  currency: string | null;
+};
+
+// Tipos de incidencia que activan el selector de artículos
+const ITEM_PICKER_TYPES = new Set([
+  "PROPERTY_DAMAGE",
+  "OTHER",
+  "BROKEN_ITEM",
+  "BROKEN_ITEMS",
+  "MISSING_ITEM",
+  "MISSING_ITEMS",
+  "DAMAGE_MINOR",
+  "DAMAGE_MAJOR",
+  "DAMAGE",
+  "EXCESSIVE_DIRT",
+]);
+
+function shouldShowItemPicker(incidentType: string): boolean {
+  if (!incidentType) return false;
+  const upper = incidentType.toUpperCase();
+  if (ITEM_PICKER_TYPES.has(upper)) return true;
+  // fallback por keywords
+  return upper.includes("ITEM") || upper.includes("DAMAGE") || upper.includes("DIRT") || upper.includes("BROKEN");
+}
+
 type HotelProfile = {
   is_complete: boolean;
   missing: string[];
@@ -156,9 +186,11 @@ type FormState = {
 function clean(v?: string | null): string {
   return String(v ?? "").trim();
 }
+ 
 
+// DESPUÉS — quitar el trim() del onChange, solo aplicarlo al submit
 function clampText(s: string, max: number): string {
-  const t = String(s ?? "").trim();
+  const t = String(s ?? "");  // ← sin trim()
   return t.length > max ? t.slice(0, max) : t;
 }
 
@@ -434,6 +466,11 @@ export const RatingForm: React.FC<RatingFormProps> = ({
     [],
   );
 
+  const [itemCatalog, setItemCatalog] = useState<ItemCatalogEntry[]>([]);
+  const [itemCatalogLoading, setItemCatalogLoading] = useState(false);
+  const [itemQties, setItemQties] = useState<Record<string, number>>({});
+  const [showItemPicker, setShowItemPicker] = useState(false);
+
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [createdIncidentId, setCreatedIncidentId] = useState<string | null>(null);
   const [errors, setErrors] = useState<FormErrors>({});
@@ -573,6 +610,50 @@ export const RatingForm: React.FC<RatingFormProps> = ({
       severity: severityLabelFromCatalog(selectedIncident.severity),
     }));
   }, [selectedIncident, form.severity]);
+
+  // Carga artículos y activa el picker cuando el tipo de incidencia lo requiere
+  useEffect(() => {
+    if (!shouldShowItemPicker(form.incident_type)) {
+      setShowItemPicker(false);
+      return;
+    }
+    setShowItemPicker(true);
+    if (itemCatalog.length > 0) return; // ya cargados
+
+    let cancelled = false;
+    setItemCatalogLoading(true);
+    callEvalFn("debacu_eval_item_catalog_list", {})
+      .then((raw: any) => {
+        if (cancelled) return;
+        const items: ItemCatalogEntry[] = (raw?.items ?? raw?.data?.items ?? []).filter(
+          (x: any) => x?.item_code && x?.is_active !== false,
+        );
+        setItemCatalog(items);
+      })
+      .catch(() => {
+        if (!cancelled) setItemCatalog([]);
+      })
+      .finally(() => {
+        if (!cancelled) setItemCatalogLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [form.incident_type]);
+
+  // Calcula el total de artículos seleccionados y sincroniza economic_impact
+  const itemPickerTotal = useMemo(() => {
+    return Object.entries(itemQties).reduce((sum, [code, qty]) => {
+      const item = itemCatalog.find((x) => x.item_code === code);
+      return sum + (item?.unit_price ?? 0) * qty;
+    }, 0);
+  }, [itemQties, itemCatalog]);
+
+  useEffect(() => {
+    if (!showItemPicker) return;
+    setForm((prev) => ({
+      ...prev,
+      economic_impact: itemPickerTotal > 0 ? itemPickerTotal.toFixed(2) : prev.economic_impact,
+    }));
+  }, [itemPickerTotal, showItemPicker]);
 
   const controlledErrors = useMemo(() => {
     return validateControlled({
@@ -1030,6 +1111,7 @@ export const RatingForm: React.FC<RatingFormProps> = ({
                           const nextIncident =
                             incidentCatalog.find((x) => x.incident_type === nextType) ?? null;
 
+                          setItemQties({});
                           setForm((prev) => ({
                             ...prev,
                             incident_type: nextType,
@@ -1129,6 +1211,86 @@ export const RatingForm: React.FC<RatingFormProps> = ({
                       )}
                     </div>
 
+                    {/* ── Selector de artículos (PROPERTY_DAMAGE / OTHER) ── */}
+                    {showItemPicker && (
+                      <div className="md:col-span-2 rounded-xl border border-violet-200 bg-violet-50 p-3">
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="text-xs font-semibold text-violet-800">
+                            Artículos afectados
+                          </span>
+                          {itemPickerTotal > 0 && (
+                            <span className="text-xs font-bold text-violet-700">
+                              Total: {itemPickerTotal.toFixed(2)} €
+                            </span>
+                          )}
+                        </div>
+
+                        {itemCatalogLoading && (
+                          <p className="text-[11px] text-slate-500">Cargando catálogo…</p>
+                        )}
+
+                        {!itemCatalogLoading && itemCatalog.length === 0 && (
+                          <p className="text-[11px] text-amber-700">
+                            No hay artículos en el catálogo de esta propiedad.
+                          </p>
+                        )}
+
+                        {!itemCatalogLoading && itemCatalog.length > 0 && (
+                          <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
+                            {itemCatalog.map((item) => {
+                              const qty = itemQties[item.item_code] ?? 0;
+                              return (
+                                <div
+                                  key={item.item_code}
+                                  className="flex items-center gap-2 rounded-lg border border-violet-100 bg-white px-2 py-1.5"
+                                >
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-xs font-medium text-slate-800 truncate">
+                                      {item.title ?? item.item_code}
+                                    </div>
+                                    {item.unit_price != null && (
+                                      <div className="text-[10px] text-slate-500">
+                                        {item.unit_price.toFixed(2)} {item.currency ?? "€"} / ud.
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setItemQties((prev) => ({
+                                          ...prev,
+                                          [item.item_code]: Math.max(0, (prev[item.item_code] ?? 0) - 1),
+                                        }))
+                                      }
+                                      className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 text-sm leading-none"
+                                    >
+                                      −
+                                    </button>
+                                    <span className="w-5 text-center text-xs font-semibold text-slate-800">
+                                      {qty}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setItemQties((prev) => ({
+                                          ...prev,
+                                          [item.item_code]: (prev[item.item_code] ?? 0) + 1,
+                                        }))
+                                      }
+                                      className="flex h-6 w-6 items-center justify-center rounded-full border border-violet-400 bg-violet-100 text-violet-700 hover:bg-violet-200 text-sm leading-none"
+                                    >
+                                      +
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <div>
                       <label className="mb-1 block text-xs font-semibold text-slate-700">
                         Impacto económico (opcional)
@@ -1148,7 +1310,9 @@ export const RatingForm: React.FC<RatingFormProps> = ({
                         placeholder="Ej: 150.00"
                       />
                       <p className="mt-1 text-[11px] text-slate-500">
-                        Usa importe positivo. Si no aplica, déjalo vacío.
+                        {showItemPicker
+                          ? "Calculado desde artículos. Puedes ajustarlo manualmente."
+                          : "Usa importe positivo. Si no aplica, déjalo vacío."}
                       </p>
                     </div>
 

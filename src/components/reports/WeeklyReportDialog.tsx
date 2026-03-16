@@ -112,6 +112,11 @@ function isForbiddenResp(resp: any) {
   return d === "FORBIDDEN";
 }
 
+function isNetworkError(msg: string) {
+  const m = msg.toLowerCase();
+  return m.includes("failed to fetch") || m.includes("network request failed") || m.includes("networkerror") || m.includes("load failed");
+}
+
 export interface WeeklyReportDialogProps {
   open: boolean;
   onClose: () => void;
@@ -227,7 +232,8 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
         }))
       );
     } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      const msg = String(e?.message ?? e);
+      setErr(isNetworkError(msg) ? "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo." : msg);
       setMeta(null);
       setPoints([]);
     } finally {
@@ -243,6 +249,8 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
 
   async function doExportCsv() {
     setErr(null);
+    // Abrimos la ventana ANTES del await para que Safari iOS no lo bloquee
+    const newWin = window.open("", "_blank");
     try {
       const fixed = clampDateRange(from, to);
 
@@ -268,15 +276,20 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
       const url = r.download_url;
       if (!url) throw new Error("missing_download_url");
 
-      triggerDownload(url);
+      if (newWin) newWin.location.href = url;
+      else triggerDownload(url);
     } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      newWin?.close();
+      const msg = String(e?.message ?? e);
+      setErr(isNetworkError(msg) ? "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo." : msg);
     }
   }
 
   async function doExportPdfBasic() {
     setErr(null);
     setExportingPdf(true);
+    // Abrimos la ventana ANTES del await para que Safari iOS no lo bloquee
+    const newWin = window.open("", "_blank");
 
     try {
       const fixed = clampDateRange(from, to);
@@ -301,9 +314,12 @@ export const WeeklyReportDialog: React.FC<WeeklyReportDialogProps> = ({
       const url = r.download_url;
       if (!url) throw new Error("missing_download_url");
 
-      triggerDownload(url);
+      if (newWin) newWin.location.href = url;
+      else triggerDownload(url);
     } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      newWin?.close();
+      const msg = String(e?.message ?? e);
+      setErr(isNetworkError(msg) ? "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo." : msg);
     } finally {
       setExportingPdf(false);
     }

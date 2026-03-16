@@ -9,6 +9,7 @@ import DashboardHome from "@/pages/DashboardHome";
 import { useEvalAuth } from "@/context/EvalAuthContext";
 
 // Revenue Intelligence
+import AlarmasPage from "@/views/AlarmasPage";
 import ChannelAnalysis from "@/views/ChannelAnalysis";
 import RiskAnalysis from "@/views/RiskAnalysis";
 import Leaks from "@/views/Leaks";
@@ -59,6 +60,7 @@ import {
   Layers3,
   Upload,
   TrendingUp,
+  AlertCircle,
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
@@ -71,6 +73,7 @@ const ACTIVE_PROPERTY_CHANGED_EVENT = "revenue:active-property-changed";
 
 const VIEW_PATHS: Record<AuthedView, string> = {
   dashboard:             "/app",
+  alarmas:               "/app/alarmas",
   search:                "/app/buscar",
   add:                   "/app/registrar",
   account:               "/app/cuenta",
@@ -311,27 +314,30 @@ export default function AuthedApp() {
 
   const navItems: NavItem[] = React.useMemo(
     () => [
-      { view: "dashboard",         path: VIEW_PATHS.dashboard,         label: "Dashboard",                  icon: LayoutDashboard, section: "OPERATIVA" },
-      { view: "aud_screening_csv", path: VIEW_PATHS.aud_screening_csv, label: "Consulta automática (CSV)",  icon: FileSpreadsheet, section: "OPERATIVA" },
-      { view: "search",            path: VIEW_PATHS.search,            label: "Consulta manual",            icon: Search,          section: "OPERATIVA" },
-      { view: "add",               path: VIEW_PATHS.add,               label: "Registrar incidencia",       icon: PlusCircle,      section: "OPERATIVA" },
+      { view: "dashboard", path: VIEW_PATHS.dashboard, label: "Dashboard",          icon: LayoutDashboard, section: "OPERATIVA" },
+      { view: "alarmas",   path: VIEW_PATHS.alarmas,   label: "Alarmas Detectadas", icon: AlertCircle,     section: "ALARMAS" },
 
-      { view: "rev_channels",          path: VIEW_PATHS.rev_channels,          label: "Análisis por Canal",       icon: BarChart3,    section: "REVENUE" },
-      { view: "rev_risk",              path: VIEW_PATHS.rev_risk,              label: "Nivel de Riesgo",          icon: ShieldAlert,  section: "REVENUE" },
-      { view: "rev_leakage",           path: VIEW_PATHS.rev_leakage,           label: "Fugas de Revenue",         icon: TrendingDown, section: "REVENUE" },
-      { view: "rev_import",            path: VIEW_PATHS.rev_import,            label: "Importación Revenue",      icon: Upload,       section: "REVENUE" },
-      { view: "rev_day_by_day",        path: VIEW_PATHS.rev_day_by_day,        label: "Día x Día",                icon: CalendarClock, section: "REVENUE" },
-      { view: "rev_monthly",           path: VIEW_PATHS.rev_monthly,           label: "Mensual",                  icon: LineChart,    section: "REVENUE" },
-      { view: "rev_channels_segments", path: VIEW_PATHS.rev_channels_segments, label: "Canales & Segmentos",      icon: Layers3,      section: "REVENUE" },
-      { view: "rev_pickup_advanced",   path: VIEW_PATHS.rev_pickup_advanced,   label: "Pickup Avanzado",          icon: TrendingUp,   section: "REVENUE" },
-      { view: "rev_properties",        path: VIEW_PATHS.rev_properties,        label: "Propiedades",              icon: Building2,    section: "REVENUE" },
-      { view: "rev_room_types",        path: VIEW_PATHS.rev_room_types,        label: "Tipos de habitación",      icon: BedDouble,    section: "REVENUE" },
-      { view: "rev_price_calendar",    path: VIEW_PATHS.rev_price_calendar,    label: "Calendario de precios",    icon: CalendarRange, section: "REVENUE" },
-      { view: "rev_events_seasons",    path: VIEW_PATHS.rev_events_seasons,    label: "Eventos y temporadas",     icon: CalendarDays, section: "REVENUE" },
+      { view: "aud_screening_csv", path: VIEW_PATHS.aud_screening_csv, label: "Consulta automática (CSV)", icon: FileSpreadsheet, section: "CONSULTAS" },
+      { view: "search",            path: VIEW_PATHS.search,            label: "Consulta manual",           icon: Search,          section: "CONSULTAS" },
+      { view: "add",               path: VIEW_PATHS.add,               label: "Registrar incidencia",      icon: PlusCircle,      section: "CONSULTAS" },
 
-      { view: "aud_stats",    path: VIEW_PATHS.aud_stats,    label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
-      { view: "aud_history",  path: VIEW_PATHS.aud_history,  label: "Histórico",               icon: Clock,    section: "AUDITORIA" },
-      { view: "aud_exports",  path: VIEW_PATHS.aud_exports,  label: "Exportaciones",           icon: Download, section: "AUDITORIA" },
+      { view: "rev_channels", path: VIEW_PATHS.rev_channels, label: "Análisis por Canal", icon: BarChart3,    section: "REVENUE_RIESGO" },
+      { view: "rev_risk",     path: VIEW_PATHS.rev_risk,     label: "Nivel de Riesgo",    icon: ShieldAlert,  section: "REVENUE_RIESGO" },
+      { view: "rev_leakage",  path: VIEW_PATHS.rev_leakage,  label: "Fugas de Revenue",   icon: TrendingDown, section: "REVENUE_RIESGO" },
+
+      { view: "rev_import",            path: VIEW_PATHS.rev_import,            label: "Importación Revenue",   icon: Upload,        section: "REVENUE" },
+      { view: "rev_day_by_day",        path: VIEW_PATHS.rev_day_by_day,        label: "Día x Día",             icon: CalendarClock, section: "REVENUE" },
+      { view: "rev_monthly",           path: VIEW_PATHS.rev_monthly,           label: "Mensual",               icon: LineChart,     section: "REVENUE" },
+      { view: "rev_channels_segments", path: VIEW_PATHS.rev_channels_segments, label: "Canales & Segmentos",   icon: Layers3,       section: "REVENUE" },
+      { view: "rev_pickup_advanced",   path: VIEW_PATHS.rev_pickup_advanced,   label: "Pickup Avanzado",       icon: TrendingUp,    section: "REVENUE" },
+      { view: "rev_properties",        path: VIEW_PATHS.rev_properties,        label: "Propiedades",           icon: Building2,     section: "REVENUE" },
+      { view: "rev_room_types",        path: VIEW_PATHS.rev_room_types,        label: "Tipos de habitación",   icon: BedDouble,     section: "REVENUE" },
+      { view: "rev_price_calendar",    path: VIEW_PATHS.rev_price_calendar,    label: "Calendario de precios", icon: CalendarRange, section: "REVENUE" },
+      { view: "rev_events_seasons",    path: VIEW_PATHS.rev_events_seasons,    label: "Eventos y temporadas",  icon: CalendarDays,  section: "REVENUE" },
+
+      { view: "aud_stats",   path: VIEW_PATHS.aud_stats,   label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
+      { view: "aud_history", path: VIEW_PATHS.aud_history, label: "Histórico",               icon: Clock,    section: "AUDITORIA" },
+      { view: "aud_exports", path: VIEW_PATHS.aud_exports, label: "Exportaciones",           icon: Download, section: "AUDITORIA" },
 
       { view: "account", path: VIEW_PATHS.account, label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
     ],
@@ -342,6 +348,8 @@ export default function AuthedApp() {
     switch (currentView) {
       case "dashboard":
         return "Dashboard";
+      case "alarmas":
+        return "Alarmas Detectadas";
       case "aud_screening_csv":
         return "Consulta automática (CSV)";
       case "search":
@@ -460,6 +468,7 @@ export default function AuthedApp() {
       headerLeft={headerLeft}
     >
       {currentView === "dashboard" && <DashboardHome />}
+      {currentView === "alarmas" && <AlarmasPage />}
 
       {currentView === "aud_screening_csv" && (
         <ScreeningCsv

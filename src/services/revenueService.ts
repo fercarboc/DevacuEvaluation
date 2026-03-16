@@ -99,8 +99,22 @@ export type RevenueMonthSummary = {
   trends: { last_6_months: Array<{ month: string; net_loss: number }> };
 };
 
-export async function getRevenueMonthSummary(): Promise<RevenueMonthSummary> {
-  const res = await callEvalFn<any>("debacu_eval_dashboard_revenue_month", {});
+/**
+ * getRevenueMonthSummary
+ *
+ * @param property_id  ID de propiedad para filtrar (opcional).
+ *   Si se omite, devuelve el resumen agregado de toda la organización.
+ *
+ * ⚠️ PENDIENTE BACKEND: la Edge Function `debacu_eval_dashboard_revenue_month`
+ *   debe aceptar y aplicar el parámetro `property_id` cuando se envíe.
+ */
+export async function getRevenueMonthSummary(
+  property_id?: string | null
+): Promise<RevenueMonthSummary> {
+  const payload: Record<string, unknown> = {};
+  if (property_id) payload.property_id = property_id;
+
+  const res = await callEvalFn<any>("debacu_eval_dashboard_revenue_month", payload);
   if (!res?.ok) throw new Error(res?.detail || res?.error || "revenue_month_summary_failed");
   return res.data as RevenueMonthSummary;
 }

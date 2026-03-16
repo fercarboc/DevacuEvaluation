@@ -25,10 +25,12 @@ import {
   CalendarClock,
   Layers3,
   Upload,
+  Bell,
 } from "lucide-react";
 
 export type AuthedView =
   | "dashboard"
+  | "alarmas"
   | "search"
   | "add"
   | "account"
@@ -60,7 +62,7 @@ export type NavItem = {
   icon: React.ComponentType<{ className?: string }>;
   disabled?: boolean;
   locked?: boolean;
-  section?: "OPERATIVA" | "REVENUE" | "AUDITORIA" | "CUENTA";
+  section?: "OPERATIVA" | "ALARMAS" | "CONSULTAS" | "REVENUE_RIESGO" | "REVENUE" | "AUDITORIA" | "CUENTA";
 };
 
 type Props = {
@@ -167,106 +169,32 @@ export default function AppShell({
 
   const nav = useMemo<NavItem[]>(() => {
     const base: NavItem[] = [
-      { view: "dashboard", path: "/app", label: "Dashboard", icon: LayoutDashboard, section: "OPERATIVA" },
-      { view: "search", path: "/app/buscar", label: "Consultar", icon: Search, section: "OPERATIVA" },
-      { view: "add", path: "/app/registrar", label: "Registrar incidencia", icon: PlusCircle, section: "OPERATIVA" },
+      { view: "dashboard",  path: "/app",        label: "Dashboard",   icon: LayoutDashboard, section: "OPERATIVA" },
+      { view: "alarmas",    path: "/app/alarmas", label: "Alarmas Detectadas", icon: Bell, section: "ALARMAS" },
 
-      {
-        view: "rev_channels",
-        path: "/app/revenue/canales",
-        label: "Análisis por Canal",
-        icon: BarChart3,
-        section: "REVENUE",
-        locked: !canAccessRevenue,
-      },
-      {
-        view: "rev_risk",
-        path: "/app/revenue/riesgo",
-        label: "Nivel de Riesgo",
-        icon: ShieldAlert,
-        section: "REVENUE",
-        locked: !canAccessRevenue,
-      },
-      {
-        view: "rev_leakage",
-        path: "/app/revenue/fugas",
-        label: "Fugas de Revenue",
-        icon: TrendingDown,
-        section: "REVENUE",
-        locked: !canAccessRevenue,
-      },
-      {
-        view: "rev_import",
-        path: "/app/revenue/importar",
-        label: "Importación Revenue",
-        icon: Upload,
-        section: "REVENUE",
-        locked: !canAccessRevenue,
-      },
-      {
-        view: "rev_day_by_day",
-        path: "/app/revenue/dia-x-dia",
-        label: "Día x Día",
-        icon: CalendarClock,
-        section: "REVENUE",
-        locked: !canAccessRevenue,
-      },
-      {
-        view: "rev_monthly",
-        path: "/app/revenue/mensual",
-        label: "Mensual",
-        icon: LineChart,
-        section: "REVENUE",
-        locked: !canAccessRevenue,
-      },
-      {
-        view: "rev_channels_segments",
-        path: "/app/revenue/canales-segmentos",
-        label: "Canales & Segmentos",
-        icon: Layers3,
-        section: "REVENUE",
-        locked: !canAccessRevenue,
-      },
-      {
-        view: "rev_properties",
-        path: "/app/revenue/propiedades",
-        label: "Propiedades",
-        icon: Building2,
-        section: "REVENUE",
-        locked: !canAccessRevenue,
-      },
-      {
-        view: "rev_room_types",
-        path: "/app/revenue/tipos-habitacion",
-        label: "Tipos de habitación",
-        icon: BedDouble,
-        section: "REVENUE",
-        locked: !canAccessRevenue,
-      },
-      {
-        view: "rev_price_calendar",
-        path: "/app/revenue/calendario-precios",
-        label: "Calendario de precios",
-        icon: CalendarRange,
-        section: "REVENUE",
-        locked: !canAccessRevenue,
-      },
-      {
-        view: "rev_events_seasons",
-        path: "/app/revenue/eventos-temporadas",
-        label: "Eventos y temporadas",
-        icon: CalendarDays,
-        section: "REVENUE",
-        locked: !canAccessRevenue,
-      },
+      { view: "aud_screening_csv", path: "/app/screening",  label: "Consulta automática (CSV)", icon: FileText,   section: "CONSULTAS" },
+      { view: "search",            path: "/app/buscar",     label: "Consulta manual",           icon: Search,     section: "CONSULTAS" },
+      { view: "add",               path: "/app/registrar",  label: "Registrar incidencia",      icon: PlusCircle, section: "CONSULTAS" },
 
-      { view: "aud_screening_csv", path: "/app/screening", label: "Screening CSV", icon: FileText, section: "AUDITORIA" },
-      { view: "aud_summary", path: "/app/auditoria/resumen", label: "Resumen", icon: FileText, section: "AUDITORIA" },
-      { view: "aud_risk", path: "/app/auditoria/riesgo", label: "Auditoría de riesgo", icon: Shield, section: "AUDITORIA" },
-      { view: "aud_stats", path: "/app/auditoria/estadisticas", label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
-      { view: "aud_history", path: "/app/auditoria/historico", label: "Histórico", icon: Clock, section: "AUDITORIA" },
-      { view: "aud_exports", path: "/app/auditoria/exportaciones", label: "Exportaciones", icon: Download, section: "AUDITORIA" },
-      { view: "aud_config", path: "/app/auditoria/configuracion", label: "Configuración-Avisos", icon: Settings, section: "AUDITORIA" },
+      { view: "rev_channels", path: "/app/revenue/canales", label: "Análisis por Canal", icon: BarChart3,   section: "REVENUE_RIESGO", locked: !canAccessRevenue },
+      { view: "rev_risk",     path: "/app/revenue/riesgo",  label: "Nivel de Riesgo",    icon: ShieldAlert, section: "REVENUE_RIESGO", locked: !canAccessRevenue },
+      { view: "rev_leakage",  path: "/app/revenue/fugas",   label: "Fugas de Revenue",   icon: TrendingDown, section: "REVENUE_RIESGO", locked: !canAccessRevenue },
+
+      { view: "rev_import",            path: "/app/revenue/importar",          label: "Importación Revenue",   icon: Upload,       section: "REVENUE", locked: !canAccessRevenue },
+      { view: "rev_day_by_day",        path: "/app/revenue/dia-x-dia",         label: "Día x Día",             icon: CalendarClock, section: "REVENUE", locked: !canAccessRevenue },
+      { view: "rev_monthly",           path: "/app/revenue/mensual",           label: "Mensual",               icon: LineChart,    section: "REVENUE", locked: !canAccessRevenue },
+      { view: "rev_channels_segments", path: "/app/revenue/canales-segmentos", label: "Canales & Segmentos",   icon: Layers3,      section: "REVENUE", locked: !canAccessRevenue },
+      { view: "rev_properties",        path: "/app/revenue/propiedades",       label: "Propiedades",           icon: Building2,    section: "REVENUE", locked: !canAccessRevenue },
+      { view: "rev_room_types",        path: "/app/revenue/tipos-habitacion",  label: "Tipos de habitación",   icon: BedDouble,    section: "REVENUE", locked: !canAccessRevenue },
+      { view: "rev_price_calendar",    path: "/app/revenue/calendario-precios",label: "Calendario de precios", icon: CalendarRange, section: "REVENUE", locked: !canAccessRevenue },
+      { view: "rev_events_seasons",    path: "/app/revenue/eventos-temporadas",label: "Eventos y temporadas",  icon: CalendarDays, section: "REVENUE", locked: !canAccessRevenue },
+
+      { view: "aud_summary",  path: "/app/auditoria/resumen",       label: "Resumen",                icon: FileText, section: "AUDITORIA" },
+      { view: "aud_risk",     path: "/app/auditoria/riesgo",        label: "Auditoría de riesgo",    icon: Shield,   section: "AUDITORIA" },
+      { view: "aud_stats",    path: "/app/auditoria/estadisticas",  label: "Estadísticas operativas",icon: Activity, section: "AUDITORIA" },
+      { view: "aud_history",  path: "/app/auditoria/historico",     label: "Histórico",              icon: Clock,    section: "AUDITORIA" },
+      { view: "aud_exports",  path: "/app/auditoria/exportaciones", label: "Exportaciones",          icon: Download, section: "AUDITORIA" },
+      { view: "aud_config",   path: "/app/auditoria/configuracion", label: "Configuración-Avisos",   icon: Settings, section: "AUDITORIA" },
 
       { view: "account", path: "/app/cuenta", label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
     ];
@@ -274,17 +202,20 @@ export default function AppShell({
     const src = navItems ?? base;
 
     return src.map((i) => {
-      if (i.section === "REVENUE") return { ...i, locked: !canAccessRevenue };
+      if (i.section === "REVENUE" || i.section === "REVENUE_RIESGO") return { ...i, locked: !canAccessRevenue };
       return i;
     });
   }, [navItems, canAccessRevenue]);
 
   const sections = useMemo(() => {
-    const operativa = nav.filter((i) => (i.section ?? "OPERATIVA") === "OPERATIVA");
-    const revenue = nav.filter((i) => i.section === "REVENUE");
-    const auditoria = nav.filter((i) => i.section === "AUDITORIA");
-    const cuenta = nav.filter((i) => i.section === "CUENTA");
-    return { operativa, revenue, auditoria, cuenta };
+    const dashboard      = nav.filter((i) => i.section === "OPERATIVA");
+    const alarmas        = nav.filter((i) => i.section === "ALARMAS");
+    const consultas      = nav.filter((i) => i.section === "CONSULTAS");
+    const revenueRiesgo  = nav.filter((i) => i.section === "REVENUE_RIESGO");
+    const revenue        = nav.filter((i) => i.section === "REVENUE");
+    const auditoria      = nav.filter((i) => i.section === "AUDITORIA");
+    const cuenta         = nav.filter((i) => i.section === "CUENTA");
+    return { dashboard, alarmas, consultas, revenueRiesgo, revenue, auditoria, cuenta };
   }, [nav]);
 
   useEffect(() => {
@@ -333,8 +264,20 @@ export default function AppShell({
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 pb-6 space-y-8">
-          <SectionBlock title="Operativa">{renderItems(sections.operativa)}</SectionBlock>
+        <div className="flex-1 overflow-y-auto p-4 pb-6 space-y-4">
+          <div className="space-y-1">{renderItems(sections.dashboard)}</div>
+
+          {sections.alarmas.length > 0 && (
+            <div className="space-y-1">{renderItems(sections.alarmas)}</div>
+          )}
+
+          {sections.consultas.length > 0 && (
+            <SectionBlock title="Consultas y Registros">{renderItems(sections.consultas)}</SectionBlock>
+          )}
+
+          {sections.revenueRiesgo.length > 0 && (
+            <SectionBlock title="Revenue Riesgo">{renderItems(sections.revenueRiesgo)}</SectionBlock>
+          )}
 
           {sections.revenue.length > 0 && (
             <SectionBlock title="Revenue Intelligence">{renderItems(sections.revenue)}</SectionBlock>
@@ -414,8 +357,20 @@ export default function AppShell({
                 </button>
               </div>
 
-              <div className="space-y-8 overflow-y-auto h-[calc(100%-56px)] pr-1">
-                <SectionBlock title="Operativa">{renderItems(sections.operativa)}</SectionBlock>
+              <div className="space-y-4 overflow-y-auto h-[calc(100%-56px)] pr-1">
+                <div className="space-y-1">{renderItems(sections.dashboard)}</div>
+
+                {sections.alarmas.length > 0 && (
+                  <div className="space-y-1">{renderItems(sections.alarmas)}</div>
+                )}
+
+                {sections.consultas.length > 0 && (
+                  <SectionBlock title="Consultas y Registros">{renderItems(sections.consultas)}</SectionBlock>
+                )}
+
+                {sections.revenueRiesgo.length > 0 && (
+                  <SectionBlock title="Revenue Riesgo">{renderItems(sections.revenueRiesgo)}</SectionBlock>
+                )}
 
                 {sections.revenue.length > 0 && (
                   <SectionBlock title="Revenue Intelligence">{renderItems(sections.revenue)}</SectionBlock>

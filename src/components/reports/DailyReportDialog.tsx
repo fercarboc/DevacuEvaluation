@@ -53,6 +53,11 @@ function isoDate(d: Date) {
   return d.toISOString().slice(0, 10);
 }
 
+function isNetworkError(msg: string) {
+  const m = msg.toLowerCase();
+  return m.includes("failed to fetch") || m.includes("network request failed") || m.includes("networkerror") || m.includes("load failed");
+}
+
 function addDays(d: Date, days: number) {
   const x = new Date(d.getTime());
   x.setUTCDate(x.getUTCDate() + days);
@@ -113,7 +118,8 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
       const csvText = await fetch(url).then((r) => r.text());
       setRows(parseDailyCsv(csvText));
     } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      const msg = String(e?.message ?? e);
+      setErr(isNetworkError(msg) ? "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo." : msg);
       setRows([]);
     } finally {
       setLoading(false);
@@ -134,9 +140,12 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
       return;
     }
 
+    // Abrimos la ventana ANTES del await para que Safari iOS no lo bloquee
+    const newWin = window.open("", "_blank");
+
     try {
       const resp: BuildResp = await callEvalFn("customer_audit_export_build", {
-        org_id: orgId, // ✅ CLAVE
+        org_id: orgId,
         export_type: kind,
         export_scope: "DAILY_HOY_AYER_BY_TYPE",
         period_from: dateYesterday,
@@ -147,9 +156,13 @@ export const DailyReportDialog: React.FC<DailyReportDialogProps> = ({ open, onCl
       if (!resp?.ok) throw new Error(resp?.error || resp?.detail || "export_failed");
       const url = resp.download_url;
       if (!url) throw new Error("missing_download_url");
-      window.open(url, "_blank", "noopener,noreferrer");
+
+      if (newWin) newWin.location.href = url;
+      else window.open(url, "_blank", "noopener,noreferrer");
     } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      newWin?.close();
+      const msg = String(e?.message ?? e);
+      setErr(isNetworkError(msg) ? "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo." : msg);
     }
   }
 

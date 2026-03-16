@@ -654,7 +654,7 @@ const StatsViewAuditor: React.FC<StatsViewAuditorProps> = ({ currentPlan }) => {
           <select
             value={preset}
             onChange={(e) => setPreset(e.target.value as Preset)}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-indigo-500"
           >
             <option value="LAST_7">Últimos 7 días</option>
             <option value="LAST_30">Últimos 30 días</option>

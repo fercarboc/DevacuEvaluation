@@ -237,7 +237,7 @@ const Leaks: React.FC = () => {
                   type="date"
                   value={periodFrom}
                   onChange={(e) => setPeriodFrom(e.target.value)}
-                  className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white"
+                  className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white text-gray-900"
                 />
               </div>
 
@@ -247,7 +247,7 @@ const Leaks: React.FC = () => {
                   type="date"
                   value={periodTo}
                   onChange={(e) => setPeriodTo(e.target.value)}
-                  className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white"
+                  className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white text-gray-900"
                 />
               </div>
 
@@ -256,7 +256,7 @@ const Leaks: React.FC = () => {
                 <select
                   value={periodField}
                   onChange={(e) => setPeriodField(e.target.value as PeriodField)}
-                  className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white"
+                  className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white text-gray-900"
                 >
                   <option value="evaluation_date">evaluation_date</option>
                   <option value="created_at">created_at</option>
@@ -266,7 +266,7 @@ const Leaks: React.FC = () => {
               <button
                 type="button"
                 onClick={setMonthNow}
-                className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white hover:bg-gray-50"
+                className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white hover:bg-gray-50 text-gray-900"
               >
                 Mes actual
               </button>
@@ -274,7 +274,7 @@ const Leaks: React.FC = () => {
               <button
                 type="button"
                 onClick={setLast30}
-                className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white hover:bg-gray-50"
+                className="h-10 px-3 rounded-lg border border-gray-200 text-sm bg-white hover:bg-gray-50 text-gray-900"
               >
                 Últimos 30 días
               </button>
@@ -364,17 +364,6 @@ const Leaks: React.FC = () => {
                     title={!hasDetails ? "Sin net loss en el periodo" : "Ver detalle"}
                   >
                     Ver detalles
-                  </button>
-
-                  <span className="text-gray-300">•</span>
-
-                  <button
-                    className="text-xs font-semibold text-gray-400 hover:text-gray-600"
-                    onClick={() => {
-                      // futuro: persistir dismiss en tabla alerts
-                    }}
-                  >
-                    Ignorar
                   </button>
                 </div>
               </div>
