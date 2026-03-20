@@ -53,7 +53,10 @@ export type AuthedView =
   | "aud_history"
   | "aud_exports"
   | "aud_config"
-  | "aud_screening_csv";
+  | "aud_screening_csv"
+  | "pms_wizard"
+  | "pms_consulta"
+  | "pms_historial";
 
 export type NavItem = {
   view: AuthedView;
@@ -62,7 +65,7 @@ export type NavItem = {
   icon: React.ComponentType<{ className?: string }>;
   disabled?: boolean;
   locked?: boolean;
-  section?: "OPERATIVA" | "ALARMAS" | "CONSULTAS" | "REVENUE_RIESGO" | "REVENUE" | "AUDITORIA" | "CUENTA";
+  section?: "OPERATIVA" | "ALARMAS" | "CONSULTAS" | "REVENUE_RIESGO" | "REVENUE" | "AUDITORIA" | "CUENTA" | "INTEGRACIONES";
 };
 
 type Props = {
@@ -214,8 +217,9 @@ export default function AppShell({
     const revenueRiesgo  = nav.filter((i) => i.section === "REVENUE_RIESGO");
     const revenue        = nav.filter((i) => i.section === "REVENUE");
     const auditoria      = nav.filter((i) => i.section === "AUDITORIA");
+    const integraciones  = nav.filter((i) => i.section === "INTEGRACIONES");
     const cuenta         = nav.filter((i) => i.section === "CUENTA");
-    return { dashboard, alarmas, consultas, revenueRiesgo, revenue, auditoria, cuenta };
+    return { dashboard, alarmas, consultas, revenueRiesgo, revenue, auditoria, integraciones, cuenta };
   }, [nav]);
 
   useEffect(() => {
@@ -285,6 +289,10 @@ export default function AppShell({
 
           {sections.auditoria.length > 0 && (
             <SectionBlock title="Auditoría">{renderItems(sections.auditoria)}</SectionBlock>
+          )}
+
+          {sections.integraciones.length > 0 && (
+            <SectionBlock title="Integraciones PMS">{renderItems(sections.integraciones)}</SectionBlock>
           )}
 
           {showAccountActions && sections.cuenta.length > 0 && (
@@ -378,6 +386,10 @@ export default function AppShell({
 
                 {sections.auditoria.length > 0 && (
                   <SectionBlock title="Auditoría">{renderItems(sections.auditoria)}</SectionBlock>
+                )}
+
+                {sections.integraciones.length > 0 && (
+                  <SectionBlock title="Integraciones PMS">{renderItems(sections.integraciones)}</SectionBlock>
                 )}
 
                 {showAccountActions && sections.cuenta.length > 0 && (

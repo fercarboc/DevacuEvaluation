@@ -11,6 +11,11 @@ import {
   ArrowRight,
   Building2,
   AlertCircle,
+  TrendingUp,
+  Wifi,
+  WifiOff,
+  Zap,
+  RefreshCw,
 } from "lucide-react";
 
 import {
@@ -20,6 +25,16 @@ import {
   type UpcomingRiskAlert,
 } from "@/services/clientService";
 import { getRevenueMonthSummary, type RevenueMonthSummary } from "@/services/revenueService";
+import { supabase } from "@/services/supabaseClient";
+
+// ─── Tipos ─────────────────────────────────────────────────────────────────
+
+interface PmsConnection {
+  id: string;
+  provider_code: string;
+  status: string;
+  last_sync_at: string | null;
+}
 
 // ─── Helpers de formato ────────────────────────────────────────────────────
 
@@ -57,79 +72,196 @@ function euro(v: number): string {
   }
 }
 
+function timeSince(iso: string | null): string {
+  if (!iso) return "—";
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "hace un momento";
+  if (mins < 60) return `hace ${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `hace ${hrs}h`;
+  return `hace ${Math.floor(hrs / 24)}d`;
+}
+
 function impactTone(net: number) {
   if (net <= 0)
     return {
       label: "Riesgo controlado",
-      cls: "bg-emerald-50 text-emerald-700 border-emerald-100",
+      cls: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
       icon: ShieldCheck,
     };
   if (net < 250)
     return {
       label: "Margen afectado",
-      cls: "bg-amber-50 text-amber-700 border-amber-100",
+      cls: "bg-amber-500/10 text-amber-400 border-amber-500/20",
       icon: AlertTriangle,
     };
   return {
     label: "Impacto relevante",
-    cls: "bg-red-50 text-red-700 border-red-100",
+    cls: "bg-red-500/10 text-red-400 border-red-500/20",
     icon: TrendingDown,
   };
 }
 
-// ─── Sub-componentes presentacionales ─────────────────────────────────────
+// ─── Sub-componentes dark ──────────────────────────────────────────────────
 
-function SectionTitle({
+function AreaHeader({
   icon,
   label,
+  sub,
 }: {
   icon: React.ReactNode;
   label: string;
+  sub?: string;
 }) {
   return (
-    <div className="flex items-center gap-2 mb-3">
-      <span className="text-slate-400">{icon}</span>
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-600">{label}</h3>
-      <div className="flex-1 h-px bg-slate-100" />
+    <div className="flex items-center gap-3 mb-4">
+      <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+        {icon}
+      </div>
+      <div>
+        <h3 className="text-sm font-bold text-white uppercase tracking-widest">{label}</h3>
+        {sub && <p className="text-[10px] text-slate-500">{sub}</p>}
+      </div>
+      <div className="flex-1 h-px bg-slate-800" />
     </div>
   );
 }
 
 function StatusBadge({ status }: { status?: string | null }) {
   const s = (status ?? "UNKNOWN").toUpperCase();
-  const base = "inline-flex items-center rounded-full px-3 py-1 text-[11px] font-semibold";
+  const base =
+    "inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider border";
   if (s === "ACTIVE" || s === "TRIALING")
-    return <span className={`${base} bg-emerald-50 text-emerald-700`}>{s}</span>;
+    return <span className={`${base} bg-emerald-500/10 text-emerald-400 border-emerald-500/20`}>{s}</span>;
   if (s === "PENDING_PAYMENT")
-    return <span className={`${base} bg-amber-50 text-amber-700`}>{s}</span>;
+    return <span className={`${base} bg-amber-500/10 text-amber-400 border-amber-500/20`}>{s}</span>;
   if (s === "SUSPENDED")
-    return <span className={`${base} bg-red-50 text-red-700`}>{s}</span>;
-  return <span className={`${base} bg-slate-100 text-slate-700`}>{s}</span>;
+    return <span className={`${base} bg-red-500/10 text-red-400 border-red-500/20`}>{s}</span>;
+  return <span className={`${base} bg-slate-700 text-slate-400 border-slate-600`}>{s}</span>;
 }
 
 function RiskBadge({ band }: { band: string }) {
-  const base = "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold";
-  if (band === "HIGH") return <span className={`${base} bg-red-100 text-red-700`}>ALTO</span>;
+  const base =
+    "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider border";
+  if (band === "HIGH")
+    return <span className={`${base} bg-red-500/10 text-red-400 border-red-500/20`}>ALTO</span>;
   if (band === "MEDIUM")
-    return <span className={`${base} bg-amber-100 text-amber-700`}>MEDIO</span>;
-  return <span className={`${base} bg-emerald-100 text-emerald-700`}>BAJO</span>;
+    return <span className={`${base} bg-amber-500/10 text-amber-400 border-amber-500/20`}>MEDIO</span>;
+  return (
+    <span className={`${base} bg-emerald-500/10 text-emerald-400 border-emerald-500/20`}>BAJO</span>
+  );
+}
+
+function DarkCard({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={`rounded-2xl border border-slate-800 bg-slate-900/50 p-5 shadow-sm ${className}`}>
+      {children}
+    </section>
+  );
 }
 
 function KpiCard({
   label,
   value,
   sub,
+  onClick,
+  accent,
 }: {
   label: string;
   value: string;
   sub: string;
+  onClick?: () => void;
+  accent?: "blue" | "emerald" | "red" | "amber";
+}) {
+  const accentCls =
+    accent === "emerald"
+      ? "text-emerald-400"
+      : accent === "red"
+      ? "text-red-400"
+      : accent === "amber"
+      ? "text-amber-400"
+      : "text-white";
+
+  const inner = (
+    <DarkCard className={onClick ? "cursor-pointer hover:border-slate-700 transition-colors" : ""}>
+      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{label}</p>
+      <div className={`mt-2 text-2xl font-bold ${accentCls}`}>{value}</div>
+      <div className="mt-1 text-xs text-slate-500">{sub}</div>
+      {onClick && (
+        <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold text-blue-400">
+          Ver detalle <ArrowRight className="w-3 h-3" />
+        </div>
+      )}
+    </DarkCard>
+  );
+
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className="text-left w-full">
+        {inner}
+      </button>
+    );
+  }
+  return inner;
+}
+
+// ─── Card de conexión PMS ──────────────────────────────────────────────────
+
+function PmsConnectionCard({
+  pmsConn,
+  pmsLoading,
+  onGoToWizard,
+}: {
+  pmsConn: PmsConnection | null;
+  pmsLoading: boolean;
+  onGoToWizard: () => void;
 }) {
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-      <div className="mt-2 text-2xl font-semibold text-slate-900">{value}</div>
-      <div className="mt-1 text-xs text-slate-500">{sub}</div>
-    </section>
+    <DarkCard>
+      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Conexión PMS</p>
+      {pmsLoading ? (
+        <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+          <RefreshCw className="w-3 h-3 animate-spin" />
+          Verificando...
+        </div>
+      ) : pmsConn ? (
+        <>
+          <div className="mt-3 flex items-center gap-2">
+            <Wifi className="w-5 h-5 text-emerald-400" />
+            <span className="text-lg font-bold text-emerald-400">CONECTADO</span>
+          </div>
+          <div className="mt-2 space-y-1">
+            <div className="text-sm font-semibold text-white">{pmsConn.provider_code}</div>
+            <div className="flex items-center gap-1 text-xs text-slate-500">
+              <RefreshCw className="w-3 h-3" />
+              Último sync: {timeSince(pmsConn.last_sync_at)}
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mt-3 flex items-center gap-2">
+            <WifiOff className="w-5 h-5 text-red-400" />
+            <span className="text-lg font-bold text-red-400">SIN CONECTAR</span>
+          </div>
+          <button
+            type="button"
+            onClick={onGoToWizard}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors"
+          >
+            <Zap className="w-3 h-3" />
+            Conectar PMS
+          </button>
+        </>
+      )}
+    </DarkCard>
   );
 }
 
@@ -144,75 +276,71 @@ function ComparisonBlock({
 }) {
   if (rows.length === 0) {
     return (
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm text-sm text-slate-500">
-        Sin datos comparativos disponibles.{" "}
-        <span className="text-slate-400 text-xs">(Requiere backend: client_dashboard_v2)</span>
-      </div>
+      <DarkCard>
+        <p className="text-sm text-slate-500">Sin datos comparativos disponibles.</p>
+        <p className="text-xs text-slate-600 mt-1">(Requiere backend: client_dashboard_v2)</p>
+      </DarkCard>
     );
   }
 
   const sorted = [...rows].sort((a, b) => b.net_loss - a.net_loss);
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/50 shadow-sm overflow-hidden">
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-100 bg-slate-50">
-              <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <tr className="border-b border-slate-800 bg-slate-900/80">
+              <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Propiedad
               </th>
-              <th className="px-4 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Incidencias
               </th>
-              <th className="px-4 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Pérdida bruta
               </th>
-              <th className="px-4 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Recuperado
               </th>
-              <th className="px-4 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Impacto neto
               </th>
-              <th className="px-4 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Riesgo alto
               </th>
-              <th className="px-4 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Revenue impactado
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
+          <tbody className="divide-y divide-slate-800">
             {sorted.map((row) => (
-              <tr key={row.property_id} className="hover:bg-slate-50 transition-colors">
-                <td className="px-4 py-3 font-medium text-slate-800">{row.property_name}</td>
-                <td className="px-4 py-3 text-right text-slate-700">{row.incidents_count}</td>
-                <td className="px-4 py-3 text-right text-slate-700">{euro(row.gross_loss)}</td>
-                <td className="px-4 py-3 text-right text-emerald-700">{euro(row.recovered)}</td>
-                <td className="px-4 py-3 text-right font-semibold text-slate-900">
-                  {euro(row.net_loss)}
-                </td>
+              <tr key={row.property_id} className="hover:bg-slate-800/40 transition-colors">
+                <td className="px-4 py-3 font-semibold text-white">{row.property_name}</td>
+                <td className="px-4 py-3 text-right text-slate-300">{row.incidents_count}</td>
+                <td className="px-4 py-3 text-right text-slate-300">{euro(row.gross_loss)}</td>
+                <td className="px-4 py-3 text-right text-emerald-400">{euro(row.recovered)}</td>
+                <td className="px-4 py-3 text-right font-bold text-white">{euro(row.net_loss)}</td>
                 <td className="px-4 py-3 text-right">
-                  <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold bg-red-50 text-red-700">
+                  <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold bg-red-500/10 text-red-400 border border-red-500/20">
                     {row.risk_high_count}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-right text-slate-700">
-                  {euro(row.revenue_impacted)}
-                </td>
+                <td className="px-4 py-3 text-right text-slate-300">{euro(row.revenue_impacted)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <div className="px-4 py-3 border-t border-slate-100 flex justify-between items-center">
-        <span className="text-[11px] text-slate-400">
-          Mes actual. Ordenado por impacto neto descendente.
+      <div className="px-4 py-3 border-t border-slate-800 flex justify-between items-center">
+        <span className="text-[10px] text-slate-600">
+          Mes actual · Ordenado por impacto neto descendente.
         </span>
         <button
           type="button"
           onClick={onNavigate}
-          className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-700 hover:text-indigo-900"
+          className="inline-flex items-center gap-1 text-xs font-bold text-blue-400 hover:text-blue-300"
         >
           Ver fugas de revenue <ArrowRight className="w-3 h-3" />
         </button>
@@ -232,11 +360,13 @@ function AlertsBlock({
 }) {
   if (alerts.length === 0) {
     return (
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm text-sm text-slate-500">
-        Sin alarmas próximas. Las reservas futuras procesadas con riesgo alto o medio aparecerán
-        aquí.{" "}
-        <span className="text-slate-400 text-xs">(Requiere backend: client_dashboard_v2)</span>
-      </div>
+      <DarkCard>
+        <p className="text-sm text-slate-500">
+          Sin alarmas próximas. Las reservas futuras procesadas con riesgo alto o medio aparecerán
+          aquí.
+        </p>
+        <p className="text-xs text-slate-600 mt-1">(Requiere backend: client_dashboard_v2)</p>
+      </DarkCard>
     );
   }
 
@@ -245,63 +375,63 @@ function AlertsBlock({
   );
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/50 shadow-sm overflow-hidden">
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-100 bg-slate-50">
-              <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <tr className="border-b border-slate-800 bg-slate-900/80">
+              <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Check-in
               </th>
-              <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Propiedad
               </th>
-              <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                Nivel de riesgo
+              <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                Riesgo
               </th>
-              <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Lote CSV
               </th>
-              <th className="px-4 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Incidencias
               </th>
-              <th className="px-4 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Impacto acum.
               </th>
-              <th className="px-4 py-3 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 Acción
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
+          <tbody className="divide-y divide-slate-800">
             {sorted.map((alert) => (
               <tr
                 key={alert.id}
-                className={`hover:bg-slate-50 transition-colors ${
-                  alert.risk_band === "HIGH" ? "bg-red-50/30" : ""
+                className={`hover:bg-slate-800/40 transition-colors ${
+                  alert.risk_band === "HIGH" ? "bg-red-500/5" : ""
                 }`}
               >
-                <td className="px-4 py-3 font-medium text-slate-800">
+                <td className="px-4 py-3 font-semibold text-white">
                   {fmtDate(alert.checkin_date)}
                 </td>
-                <td className="px-4 py-3 text-slate-700">{alert.property_name}</td>
+                <td className="px-4 py-3 text-slate-300">{alert.property_name}</td>
                 <td className="px-4 py-3">
                   <RiskBadge band={alert.risk_band} />
                 </td>
                 <td className="px-4 py-3 text-slate-500 text-xs font-mono">
                   {alert.batch_ref ?? "—"}
                 </td>
-                <td className="px-4 py-3 text-right text-slate-700">
+                <td className="px-4 py-3 text-right text-slate-300">
                   {alert.incidents_count ?? "—"}
                 </td>
-                <td className="px-4 py-3 text-right text-slate-700">
+                <td className="px-4 py-3 text-right text-slate-300">
                   {alert.total_net_loss != null ? euro(alert.total_net_loss) : "—"}
                 </td>
                 <td className="px-4 py-3 text-center">
                   <button
                     type="button"
                     onClick={() => onViewGuest(alert.identity_key)}
-                    className="inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-semibold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors"
+                    className="inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors"
                     title="Ver historial agregado del cliente (sin PII)"
                   >
                     Ver riesgo <ArrowRight className="w-3 h-3" />
@@ -312,9 +442,9 @@ function AlertsBlock({
           </tbody>
         </table>
       </div>
-      <div className="px-4 py-3 border-t border-slate-100">
-        <span className="text-[11px] text-slate-400">
-          Solo reservas futuras ya procesadas por screening. Sin datos de identificación directa.
+      <div className="px-4 py-3 border-t border-slate-800">
+        <span className="text-[10px] text-slate-600">
+          Solo reservas futuras ya procesadas por screening · Sin datos de identificación directa.
         </span>
       </div>
     </div>
@@ -334,7 +464,10 @@ export default function DashboardHome() {
   const [rev, setRev] = useState<RevenueMonthSummary | null>(null);
   const [revLoading, setRevLoading] = useState(false);
 
-  // ── Carga inicial: org + propiedades + comparativa + alarmas ──────────
+  const [pmsConn, setPmsConn] = useState<PmsConnection | null>(null);
+  const [pmsLoading, setPmsLoading] = useState(false);
+
+  // ── Carga inicial ─────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
 
@@ -386,6 +519,42 @@ export default function DashboardHome() {
     };
   }, [selectedPropertyId]);
 
+  // ── Carga de conexión PMS al cambiar propiedad ────────────────────────
+  useEffect(() => {
+    if (!selectedPropertyId) {
+      setPmsConn(null);
+      return;
+    }
+
+    let cancelled = false;
+    setPmsLoading(true);
+    setPmsConn(null);
+
+    (async () => {
+      try {
+        // pms_connections no está en el schema tipado generado aún
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { data } = await (supabase as any)
+          .from("pms_connections")
+          .select("id, provider_code, status, last_sync_at")
+          .eq("property_id", selectedPropertyId)
+          .eq("status", "ACTIVE")
+          .limit(1)
+          .single();
+
+        if (!cancelled) setPmsConn((data ?? null) as PmsConnection | null);
+      } catch {
+        if (!cancelled) setPmsConn(null);
+      } finally {
+        if (!cancelled) setPmsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPropertyId]);
+
   // ── Datos derivados ───────────────────────────────────────────────────
   const properties = dash?.properties ?? [];
   const selectedProperty = properties.find((p) => p.id === selectedPropertyId) ?? null;
@@ -411,46 +580,54 @@ export default function DashboardHome() {
   // ── Estados de carga/error ────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="text-sm text-slate-500">Cargando dashboard...</div>
+      <div className="flex items-center justify-center py-20">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8">
+          <div className="flex items-center gap-3 text-slate-400">
+            <RefreshCw className="w-4 h-4 animate-spin" />
+            <span className="text-sm">Cargando dashboard...</span>
+          </div>
+        </div>
       </div>
     );
   }
 
   if (error || !dash) {
     return (
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="text-sm text-red-600">{error ?? "Dashboard no disponible."}</div>
+      <div className="flex items-center justify-center py-20">
+        <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-8">
+          <div className="text-sm text-red-400">{error ?? "Dashboard no disponible."}</div>
+        </div>
       </div>
     );
   }
 
   // ── Render principal ──────────────────────────────────────────────────
   return (
-    <div className="space-y-8">
-      {/* ─── HEADER + SELECTOR DE PROPIEDAD ─────────────────────────── */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="-mx-4 md:-mx-6 -mt-6 -mb-6 px-4 md:px-6 pt-6 pb-10 bg-[#0f172a] min-h-screen">
+    <div className="space-y-10">
+
+      {/* ─── HEADER ─────────────────────────────────────────────────── */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Dashboard</h2>
-          <p className="text-slate-500 text-sm">
+          <h2 className="text-2xl font-bold text-white tracking-tight">Dashboard</h2>
+          <p className="text-slate-500 text-sm mt-0.5">
             Resumen ejecutivo de organización y operativa por propiedad.
           </p>
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">
-          {/* Selector de propiedad */}
           {properties.length > 0 && (
             <div className="flex items-center gap-2">
-              <Building2 className="w-4 h-4 text-slate-400" />
+              <Building2 className="w-4 h-4 text-slate-500" />
               {properties.length === 1 ? (
-                <span className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm">
+                <span className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-semibold text-white shadow-sm">
                   {properties[0].name}
                 </span>
               ) : (
                 <select
                   value={selectedPropertyId ?? ""}
                   onChange={(e) => setSelectedPropertyId(e.target.value || null)}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-semibold text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   {properties.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -462,13 +639,12 @@ export default function DashboardHome() {
             </div>
           )}
 
-          {/* Indicador tonal del mes */}
           {rev && (
             <div
-              className={`flex items-center gap-2 border px-4 py-2 rounded-xl text-sm font-medium ${tone.cls}`}
+              className={`flex items-center gap-2 border px-4 py-2 rounded-xl text-sm font-semibold ${tone.cls}`}
               title="Indicador agregado del mes (sin PII)."
             >
-              <ToneIcon size={18} />
+              <ToneIcon size={16} />
               <span>
                 {selectedProperty?.name ?? "Organización"}:{" "}
                 <span className="font-bold">{tone.label}</span>
@@ -478,229 +654,272 @@ export default function DashboardHome() {
         </div>
       </div>
 
-      {/* ─── BLOQUE 1: ORGANIZACIÓN — Plan y consumo ─────────────────── */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {/* ÁREA 1: CONTROL OPERATIVO                                      */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
       <div>
-        <SectionTitle
-          icon={<CreditCard className="w-4 h-4" />}
-          label="Organización — Plan y consumo"
+        <AreaHeader
+          icon={<ShieldCheck className="w-4 h-4" />}
+          label="Control Operativo"
+          sub="Plan, consumo y estado de integración"
         />
-        <div className="grid gap-4 md:grid-cols-3">
+
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {/* Plan activo */}
-          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                  Plan activo
-                </p>
-                <div className="mt-3 text-xl font-semibold text-slate-900">
-                  {planCard?.name ?? "—"}
-                </div>
-              </div>
+          <DarkCard>
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                Plan activo
+              </p>
               <StatusBadge status={planCard?.status} />
             </div>
-
+            <div className="mt-3 text-xl font-bold text-white">{planCard?.name ?? "—"}</div>
             {planCard ? (
-              <div className="mt-4 space-y-2 text-sm">
-                <div className="flex items-center justify-between text-slate-600">
-                  <span className="flex items-center gap-2">
-                    <CreditCard className="w-4 h-4 text-slate-400" />
+              <div className="mt-3 space-y-1.5 text-xs">
+                <div className="flex justify-between text-slate-400">
+                  <span className="flex items-center gap-1.5">
+                    <CreditCard className="w-3 h-3" />
                     Facturación
                   </span>
-                  <span className="font-semibold text-slate-900">
+                  <span className="font-semibold text-slate-200">
                     {fmtBillingFrequency(planCard.billing_frequency)}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-slate-600">
+                <div className="flex justify-between text-slate-400">
                   <span>Próx. cobro</span>
-                  <span className="font-semibold text-slate-900">
+                  <span className="font-semibold text-slate-200">
                     {fmtNextBilling(planCard.status, planCard.next_billing)}
                   </span>
                 </div>
               </div>
             ) : (
-              <div className="mt-3 text-sm text-slate-500">Sin plan activo registrado.</div>
+              <div className="mt-2 text-xs text-slate-500">Sin plan activo.</div>
             )}
-          </section>
+          </DarkCard>
 
-          {/* Consumo del plan */}
-          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              Consultas de plan (mes actual)
+          {/* Consultas del mes */}
+          <DarkCard>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+              Consultas este mes
             </p>
-
             <div className="mt-3 flex items-end justify-between">
-              <div className="text-3xl font-semibold text-slate-900">
-                {usage?.plan_query_total ?? 0}
-              </div>
+              <div className="text-3xl font-bold text-white">{usage?.plan_query_total ?? 0}</div>
               <div className="text-xs text-slate-500">
                 {planLimit > 0 ? (
                   <>
-                    Límite: <span className="font-semibold text-slate-900">{planLimit}</span>
+                    Límite: <span className="font-bold text-slate-300">{planLimit}</span>
                   </>
                 ) : (
                   "Sin límite"
                 )}
               </div>
             </div>
-
-            <div className="mt-4 h-2 rounded-full bg-slate-100 overflow-hidden">
+            <div className="mt-3 h-1.5 rounded-full bg-slate-800 overflow-hidden">
               <div
-                className="h-2 rounded-full bg-indigo-600 transition-all"
+                className="h-1.5 rounded-full bg-blue-500 transition-all"
                 style={{ width: `${usagePercent}%` }}
               />
             </div>
-            <div className="mt-2 text-xs text-slate-500">{usagePercent}% del plan utilizado</div>
-
+            <div className="mt-1.5 text-[10px] text-slate-500">{usagePercent}% del plan utilizado</div>
             {usage && (
-              <div className="mt-3 pt-3 border-t border-slate-100 space-y-1.5">
+              <div className="mt-3 pt-3 border-t border-slate-800 space-y-1">
                 <div className="flex justify-between text-xs">
-                  <span className="text-slate-500">Consultas manuales</span>
-                  <span className="font-medium text-slate-700">{usage.manual_query_count}</span>
+                  <span className="text-slate-500">Manuales</span>
+                  <span className="font-semibold text-slate-300">{usage.manual_query_count}</span>
                 </div>
                 <div className="flex justify-between text-xs">
-                  <span className="text-slate-500">Lotes CSV screening</span>
-                  <span className="font-medium text-slate-700">{usage.csv_screening_count}</span>
+                  <span className="text-slate-500">CSV screening</span>
+                  <span className="font-semibold text-slate-300">{usage.csv_screening_count}</span>
                 </div>
                 <div className="flex justify-between text-xs">
-                  <span className="text-slate-400">CSV revenue (no computa)</span>
-                  <span className="font-medium text-slate-400">{usage.csv_revenue_count}</span>
+                  <span className="text-slate-600">CSV revenue</span>
+                  <span className="font-semibold text-slate-600">{usage.csv_revenue_count}</span>
                 </div>
               </div>
             )}
-          </section>
+          </DarkCard>
 
-          {/* Registros y propiedades */}
-          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              Registros añadidos este mes
+          {/* Propiedades activas */}
+          <DarkCard>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+              Propiedades activas
             </p>
-            <div className="mt-3 text-3xl font-semibold text-slate-900">
-              {usage?.created_this_month ?? 0}
-            </div>
-            <div className="mt-2 text-sm text-slate-600 flex items-center gap-2">
-              <Activity className="w-4 h-4 text-slate-400" />
-              Evaluaciones ingresadas
-            </div>
-
-            {properties.length > 0 && (
-              <div className="mt-4 pt-4 border-t border-slate-100">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
-                  Propiedades activas
-                </p>
-                <div className="space-y-1">
-                  {properties.slice(0, 4).map((p) => (
-                    <div key={p.id} className="flex items-center gap-2 text-xs text-slate-600">
-                      <Building2 className="w-3 h-3 text-slate-400 shrink-0" />
-                      <span className="truncate">{p.name}</span>
-                      {p.location && (
-                        <span className="text-slate-400 shrink-0">{p.location}</span>
-                      )}
-                    </div>
-                  ))}
-                  {properties.length > 4 && (
-                    <div className="text-xs text-slate-400">+{properties.length - 4} más</div>
-                  )}
+            <div className="mt-3 text-3xl font-bold text-white">{properties.length}</div>
+            <div className="mt-3 space-y-1.5">
+              {properties.slice(0, 4).map((p) => (
+                <div key={p.id} className="flex items-center gap-2 text-xs text-slate-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                  <span className="truncate font-medium text-slate-300">{p.name}</span>
+                  {p.location && <span className="text-slate-600 shrink-0">{p.location}</span>}
                 </div>
-              </div>
-            )}
-          </section>
+              ))}
+              {properties.length > 4 && (
+                <div className="text-xs text-slate-600">+{properties.length - 4} más</div>
+              )}
+            </div>
+          </DarkCard>
+
+          {/* Conexión PMS */}
+          <PmsConnectionCard
+            pmsConn={pmsConn}
+            pmsLoading={pmsLoading}
+            onGoToWizard={() => navigate("/app/integraciones/pms")}
+          />
         </div>
       </div>
 
-      {/* ─── BLOQUE 2: PROPIEDAD SELECCIONADA ────────────────────────── */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {/* ÁREA 2: INTELIGENCIA DE RIESGO                                 */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
       <div>
-        <SectionTitle
-          icon={<Building2 className="w-4 h-4" />}
-          label={
-            selectedProperty ? `Propiedad: ${selectedProperty.name}` : "Propiedad"
-          }
+        <AreaHeader
+          icon={<AlertTriangle className="w-4 h-4" />}
+          label="Inteligencia de Riesgo"
+          sub={selectedProperty ? `Propiedad: ${selectedProperty.name}` : "Organización"}
         />
 
         {!selectedPropertyId && properties.length === 0 ? (
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm text-sm text-slate-500">
-            Sin propiedades configuradas en esta organización.
-          </div>
+          <DarkCard>
+            <p className="text-sm text-slate-500">Sin propiedades configuradas.</p>
+          </DarkCard>
         ) : revLoading ? (
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm text-sm text-slate-500">
-            Cargando datos de la propiedad...
-          </div>
+          <DarkCard>
+            <div className="flex items-center gap-2 text-slate-500 text-sm">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              Cargando datos de la propiedad...
+            </div>
+          </DarkCard>
         ) : !rev ? (
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm text-sm text-slate-500">
-            Sin datos de revenue para esta propiedad este mes.
-          </div>
+          <DarkCard>
+            <p className="text-sm text-slate-500">
+              Sin datos de revenue para esta propiedad este mes.
+            </p>
+          </DarkCard>
         ) : (
           <div className="space-y-4">
-            {/* KPIs de impacto económico */}
-            <div className="grid gap-4 md:grid-cols-4">
+            {/* KPIs de riesgo */}
+            <div className="grid gap-4 md:grid-cols-3">
               <KpiCard
-                label="Incidencias"
+                label="Incidencias activas"
                 value={String(rev.impact.incidents_count)}
                 sub="Mes actual"
+                accent="blue"
               />
               <KpiCard
                 label="Pérdida bruta"
                 value={euro(rev.impact.gross_loss)}
                 sub="Roturas, compensaciones, no-shows…"
+                accent="amber"
               />
               <KpiCard
-                label="Recuperado"
-                value={euro(rev.impact.recovered)}
-                sub="Cargos, fianzas, cobros posteriores"
-              />
-              {/* Impacto neto → navega a detalle */}
-              <button
-                type="button"
+                label="Impacto neto"
+                value={euro(rev.impact.net_loss)}
+                sub="Bruto − Recuperado"
+                accent={rev.impact.net_loss > 0 ? "red" : "emerald"}
                 onClick={() => navigate("/app/revenue/fugas")}
-                className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm text-left hover:bg-slate-50 transition-colors"
-                title="Abrir detalle en Fugas de Revenue"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                      Impacto neto
-                    </p>
-                    <div className="mt-2 text-2xl font-semibold text-slate-900">
-                      {euro(rev.impact.net_loss)}
-                    </div>
-                    <div className="mt-1 text-xs text-slate-500">Bruto − Recuperado</div>
-                  </div>
-                  <div className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-indigo-700">
-                    Ver detalle <ArrowRight className="w-4 h-4" />
-                  </div>
-                </div>
-              </button>
+              />
             </div>
 
-            {/* Tendencia + Top plataformas */}
+            {/* Comparativa entre propiedades */}
+            {dash.property_comparison.length > 0 && (
+              <ComparisonBlock
+                rows={dash.property_comparison}
+                onNavigate={() => navigate("/app/revenue/fugas")}
+              />
+            )}
+          </div>
+        )}
+
+        {/* Próximas alarmas */}
+        <div className="mt-4">
+          <div className="flex items-center gap-2 mb-3">
+            <AlertCircle className="w-3.5 h-3.5 text-slate-500" />
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+              Próximas alarmas de riesgo
+            </span>
+          </div>
+          <AlertsBlock
+            alerts={dash.upcoming_risk_alerts}
+            onViewGuest={(key) =>
+              navigate(`/app/riesgo/cliente?identity_key=${encodeURIComponent(key)}`)
+            }
+          />
+        </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {/* ÁREA 3: REVENUE INTELLIGENCE                                   */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      <div>
+        <AreaHeader
+          icon={<TrendingUp className="w-4 h-4" />}
+          label="Revenue Intelligence"
+          sub="Análisis de ingresos y tendencias"
+        />
+
+        {!pmsConn && !pmsLoading ? (
+          /* Estado vacío sin PMS */
+          <DarkCard className="flex flex-col items-center justify-center py-10 text-center">
+            <div className="w-12 h-12 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center mb-4">
+              <TrendingUp className="w-6 h-6 text-slate-600" />
+            </div>
+            <p className="text-white font-semibold mb-1">
+              Conecta tu PMS para activar Revenue Intelligence
+            </p>
+            <p className="text-sm text-slate-500 mb-5 max-w-xs">
+              Accede a métricas de ADR, RevPAR, ocupación y revenue en tiempo real desde tu PMS.
+            </p>
+            <button
+              type="button"
+              onClick={() => navigate("/app/integraciones/pms")}
+              className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-bold bg-blue-500 text-white hover:bg-blue-400 transition-colors shadow-[0_0_15px_rgba(59,130,246,0.3)]"
+            >
+              <Zap className="w-4 h-4" />
+              Conectar PMS
+            </button>
+          </DarkCard>
+        ) : rev ? (
+          <div className="space-y-4">
+            {/* KPIs de Revenue — placeholders hasta PMS activo */}
+            <div className="grid gap-4 md:grid-cols-4">
+              {(["ADR", "RevPAR", "Ocupación", "Total Revenue"] as const).map((label) => (
+                <DarkCard key={label}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                    {label}
+                  </p>
+                  <div className="mt-2 text-2xl font-bold text-slate-600">—</div>
+                  <div className="mt-1 text-xs text-slate-600">Disponible con PMS conectado</div>
+                </DarkCard>
+              ))}
+            </div>
+
+            {/* Tendencia 6 meses + top plataformas */}
             <div className="grid gap-4 lg:grid-cols-3">
-              {/* Tendencia 6 meses */}
-              <section className="lg:col-span-2 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                <div className="flex items-center justify-between">
+              <section className="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-900/50 p-6 shadow-sm">
+                <div className="flex items-center justify-between mb-5">
                   <div>
-                    <h3 className="text-sm font-semibold text-slate-900">
-                      Tendencia (últimos 6 meses)
-                    </h3>
+                    <h3 className="text-sm font-bold text-white">Tendencia (últimos 6 meses)</h3>
                     <p className="text-xs text-slate-500">Impacto neto agregado por mes</p>
                   </div>
                   <div className="flex items-center gap-2 text-xs text-slate-500">
-                    <BarChart3 className="w-4 h-4 text-slate-400" />
+                    <BarChart3 className="w-4 h-4 text-slate-600" />
                     {rev.month}
                   </div>
                 </div>
 
-                <div className="mt-5 grid grid-cols-6 gap-3 items-end">
+                <div className="grid grid-cols-6 gap-3 items-end">
                   {trend.map((m) => {
                     const h = Math.round((Math.abs(m.net_loss) / maxTrend) * 100);
                     return (
                       <div key={m.month} className="flex flex-col items-center gap-2">
-                        <div className="w-full h-24 bg-slate-50 rounded-xl border border-slate-100 flex items-end p-1">
+                        <div className="w-full h-24 bg-slate-800/50 rounded-xl border border-slate-800 flex items-end p-1">
                           <div
-                            className="w-full rounded-lg bg-indigo-600/80"
+                            className="w-full rounded-lg bg-blue-500/70"
                             style={{ height: `${Math.max(6, h)}%` }}
                             title={`${m.month}: ${euro(m.net_loss)}`}
                           />
                         </div>
-                        <span className="text-[10px] font-medium text-slate-500">
+                        <span className="text-[10px] font-bold text-slate-500">
                           {m.month.slice(5)}
                         </span>
                       </div>
@@ -708,73 +927,64 @@ export default function DashboardHome() {
                   })}
                 </div>
 
-                <div className="mt-4 text-[11px] text-slate-500">
-                  Vista agregada (sin PII). Útil para control de margen y operativa.
+                <div className="mt-4 text-[10px] text-slate-600">
+                  Vista agregada (sin PII) · Útil para control de margen y operativa.
                 </div>
               </section>
 
-              {/* Top plataformas */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                <h3 className="text-sm font-semibold text-slate-900">Top plataformas (mes)</h3>
-                <p className="text-xs text-slate-500">Ordenado por impacto neto</p>
+              <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 shadow-sm">
+                <h3 className="text-sm font-bold text-white">Top plataformas</h3>
+                <p className="text-xs text-slate-500 mb-4">Ordenado por impacto neto</p>
 
-                <div className="mt-4 space-y-3">
+                <div className="space-y-3">
                   {rev.by_platform.length === 0 ? (
                     <div className="text-sm text-slate-500">Sin datos este mes.</div>
                   ) : (
                     rev.by_platform.slice(0, 6).map((p) => (
                       <div
                         key={p.platform}
-                        className="flex items-center justify-between border-b border-slate-100 pb-2"
+                        className="flex items-center justify-between border-b border-slate-800 pb-2"
                       >
                         <div className="min-w-0">
-                          <div className="text-xs font-semibold text-slate-800 truncate">
-                            {p.platform}
-                          </div>
-                          <div className="text-[11px] text-slate-500">
-                            {p.incidents} incidencias
-                          </div>
+                          <div className="text-xs font-bold text-white truncate">{p.platform}</div>
+                          <div className="text-[10px] text-slate-500">{p.incidents} incidencias</div>
                         </div>
-                        <div className="text-xs font-bold text-slate-900">{euro(p.net_loss)}</div>
+                        <div className="text-xs font-bold text-slate-200">{euro(p.net_loss)}</div>
                       </div>
                     ))
                   )}
                 </div>
 
-                <div className="mt-4 text-[11px] text-slate-500">
+                <div className="mt-4 text-[10px] text-slate-600">
                   Si una plataforma concentra el net loss, revisa políticas y depósitos.
                 </div>
               </section>
             </div>
+
+            {/* Recuperado + Actividad */}
+            <div className="grid gap-4 md:grid-cols-2">
+              <KpiCard
+                label="Recuperado"
+                value={euro(rev.impact.recovered)}
+                sub="Cargos, fianzas, cobros posteriores"
+                accent="emerald"
+              />
+              <DarkCard>
+                <div className="flex items-center gap-2 mb-1">
+                  <Activity className="w-4 h-4 text-slate-500" />
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                    Registros añadidos este mes
+                  </p>
+                </div>
+                <div className="text-2xl font-bold text-white">{usage?.created_this_month ?? 0}</div>
+                <div className="mt-1 text-xs text-slate-500">Evaluaciones ingresadas</div>
+              </DarkCard>
+            </div>
           </div>
-        )}
+        ) : null}
       </div>
 
-      {/* ─── BLOQUE 3: COMPARATIVA ENTRE PROPIEDADES ─────────────────── */}
-      <div>
-        <SectionTitle
-          icon={<BarChart3 className="w-4 h-4" />}
-          label="Comparativa entre propiedades"
-        />
-        <ComparisonBlock
-          rows={dash.property_comparison}
-          onNavigate={() => navigate("/app/revenue/fugas")}
-        />
-      </div>
-
-      {/* ─── BLOQUE 4: PRÓXIMAS ALARMAS DE RIESGO ────────────────────── */}
-      <div>
-        <SectionTitle
-          icon={<AlertCircle className="w-4 h-4" />}
-          label="Próximas alarmas de riesgo"
-        />
-        <AlertsBlock
-          alerts={dash.upcoming_risk_alerts}
-          onViewGuest={(key) =>
-            navigate(`/app/riesgo/cliente?identity_key=${encodeURIComponent(key)}`)
-          }
-        />
-      </div>
+    </div>
     </div>
   );
 }

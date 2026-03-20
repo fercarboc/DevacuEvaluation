@@ -27,6 +27,9 @@ import {
   type RevenueProperty,
 } from "@/modules/revenue-intelligence/services/revenueProperties.service";
 import RevenueImportData from "@/modules/revenue-intelligence/pages/RevenueImportData";
+import { PMSWizardView } from "@/components/PMSWizardView";
+import PmsConsultaView from "@/pages/pms/PmsConsultaView";
+import PmsSyncHistorialView from "@/pages/pms/PmsSyncHistorialView";
 
 // Demo/PAYWALL Revenue
 import RevenueLockedDemo from "@/components/revenue/RevenueLockedDemo";
@@ -61,6 +64,8 @@ import {
   Upload,
   TrendingUp,
   AlertCircle,
+  Plug,
+  Zap,
 } from "lucide-react";
 
 import { PlanType } from "@/types/types";
@@ -97,6 +102,9 @@ const VIEW_PATHS: Record<AuthedView, string> = {
   aud_history:           "/app/auditoria/historico",
   aud_exports:           "/app/auditoria/exportaciones",
   aud_config:            "/app/auditoria/configuracion",
+  pms_wizard:            "/app/integraciones/pms",
+  pms_consulta:          "/app/pms/consulta",
+  pms_historial:         "/app/pms/historial",
 };
 
 const PATH_TO_VIEW = Object.fromEntries(
@@ -145,6 +153,9 @@ function toPlanCode(plan: PlanTier): "FREE" | "BASIC" | "MEDIUM" | "PREMIUM" {
 
 function usesPropertySelector(v: AuthedView) {
   return (
+    v === "pms_wizard" ||
+    v === "pms_consulta" ||
+    v === "pms_historial" ||
     v === "aud_screening_csv" ||
     v === "search" ||
     v === "add" ||
@@ -319,6 +330,7 @@ export default function AuthedApp() {
 
       { view: "aud_screening_csv", path: VIEW_PATHS.aud_screening_csv, label: "Consulta automática (CSV)", icon: FileSpreadsheet, section: "CONSULTAS" },
       { view: "search",            path: VIEW_PATHS.search,            label: "Consulta manual",           icon: Search,          section: "CONSULTAS" },
+      { view: "pms_consulta",      path: VIEW_PATHS.pms_consulta,      label: "Consulta API PMS",          icon: Zap,             section: "CONSULTAS" },
       { view: "add",               path: VIEW_PATHS.add,               label: "Registrar incidencia",      icon: PlusCircle,      section: "CONSULTAS" },
 
       { view: "rev_channels", path: VIEW_PATHS.rev_channels, label: "Análisis por Canal", icon: BarChart3,    section: "REVENUE_RIESGO" },
@@ -338,6 +350,9 @@ export default function AuthedApp() {
       { view: "aud_stats",   path: VIEW_PATHS.aud_stats,   label: "Estadísticas operativas", icon: Activity, section: "AUDITORIA" },
       { view: "aud_history", path: VIEW_PATHS.aud_history, label: "Histórico",               icon: Clock,    section: "AUDITORIA" },
       { view: "aud_exports", path: VIEW_PATHS.aud_exports, label: "Exportaciones",           icon: Download, section: "AUDITORIA" },
+
+      { view: "pms_wizard",    path: VIEW_PATHS.pms_wizard,    label: "Integración PMS",             icon: Plug,  section: "INTEGRACIONES" },
+      { view: "pms_historial", path: VIEW_PATHS.pms_historial, label: "Historial de Sincronización",  icon: Clock, section: "INTEGRACIONES" },
 
       { view: "account", path: VIEW_PATHS.account, label: "Mi cuenta", icon: CreditCard, section: "CUENTA" },
     ],
@@ -590,6 +605,30 @@ export default function AuthedApp() {
       {currentView === "aud_stats" && <StatsViewAuditor currentPlan={currentPlan} />}
       {currentView === "aud_history" && <HistoryViewAuditor />}
       {currentView === "aud_exports" && <ExportsViewAuditor currentPlan={currentPlan} />}
+
+      {currentView === "pms_wizard" && (
+        <PMSWizardView
+          hotelName={selectedProperty?.name ?? "Hotel"}
+          orgId={selectedProperty?.orgId ?? (user as any)?.orgId ?? ""}
+          propertyId={selectedPropertyId}
+          onClose={() => navigate(VIEW_PATHS.dashboard)}
+          onFinish={() => navigate(VIEW_PATHS.dashboard)}
+        />
+      )}
+
+      {currentView === "pms_consulta" && (
+        <PmsConsultaView
+          propertyId={selectedPropertyId}
+          propertyName={selectedProperty?.name ?? null}
+        />
+      )}
+
+      {currentView === "pms_historial" && (
+        <PmsSyncHistorialView
+          propertyId={selectedPropertyId}
+          propertyName={selectedProperty?.name ?? null}
+        />
+      )}
     </AppShell>
   );
 }
