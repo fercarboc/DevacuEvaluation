@@ -787,7 +787,7 @@ useEffect(() => {
                     <div className="md:col-span-2">
                       <label className="text-xs font-semibold text-slate-600">Nombre del hotel *</label>
                       <input
-                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                         value={model.hotel_name}
                         onChange={(e) => setModel((p) => ({ ...p, hotel_name: clampTextLive(e.target.value, 120) }))}
                         placeholder="Ej: Hotel La Rasilla"
@@ -797,7 +797,7 @@ useEffect(() => {
                     <div>
                       <label className="text-xs font-semibold text-slate-600">Tipo de alojamiento *</label>
                       <select
-                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm bg-white"
+                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                         value={model.property_type}
                         onChange={(e) => setModel((p) => ({ ...p, property_type: e.target.value as any }))}
                       >
@@ -813,7 +813,7 @@ useEffect(() => {
                     <div>
                       <label className="text-xs font-semibold text-slate-600">Categoría (★) *</label>
                       <select
-                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm bg-white"
+                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                         value={model.hotel_category}
                         onChange={(e) =>
                           setModel((p) => ({ ...p, hotel_category: e.target.value === "" ? "" : (Number(e.target.value) as any) }))
@@ -842,7 +842,7 @@ useEffect(() => {
                     <div>
                       <label className="text-xs font-semibold text-slate-600">País *</label>
                       <input
-                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                         value={model.country}
                         onChange={(e) => setModel((p) => ({ ...p, country: clampText(e.target.value, 60) }))}
                         placeholder="España"
@@ -851,7 +851,7 @@ useEffect(() => {
                     <div>
                       <label className="text-xs font-semibold text-slate-600">Provincia *</label>
                       <input
-                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                         value={model.province}
                         onChange={(e) => setModel((p) => ({ ...p, province: clampText(e.target.value, 60) }))}
                         placeholder="Cantabria"
@@ -860,7 +860,7 @@ useEffect(() => {
                     <div>
                       <label className="text-xs font-semibold text-slate-600">Ciudad *</label>
                       <input
-                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                         value={model.city}
                         onChange={(e) => setModel((p) => ({ ...p, city: clampText(e.target.value, 60) }))}
                         placeholder="Torrelavega"
@@ -893,7 +893,7 @@ useEffect(() => {
                       <input
                         type="number"
                         min={0}
-                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                         value={model.monthly_stays_estimated}
                         onChange={(e) =>
                           setModel((p) => ({
@@ -914,7 +914,7 @@ useEffect(() => {
                         type="number"
                         min={0}
                         step="0.01"
-                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                         value={model.adr_real}
                         onChange={(e) =>
                           setModel((p) => ({
@@ -945,7 +945,7 @@ useEffect(() => {
                         step="0.01"
                         min={1}
                         max={3}
-                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                         value={model.season_mult_high}
                         onChange={(e) => setModel((p) => ({ ...p, season_mult_high: Number(e.target.value) }))}
                       />
@@ -959,7 +959,7 @@ useEffect(() => {
                         step="0.01"
                         min={0.5}
                         max={1}
-                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                         value={model.season_mult_low}
                         onChange={(e) => setModel((p) => ({ ...p, season_mult_low: Number(e.target.value) }))}
                       />
@@ -1229,7 +1229,7 @@ useEffect(() => {
                       <div className="md:col-span-2">
                         <label className="text-xs font-semibold text-slate-600">Artículo estándar</label>
                         <select
-                          className="mt-1 w-full border rounded-lg px-3 py-2 text-sm bg-white"
+                          className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                           value={selectedPredefinedCode}
                           onChange={(e) => setSelectedPredefinedCode(e.target.value)}
                         >
@@ -1271,7 +1271,7 @@ useEffect(() => {
                       <div>
                         <label className="text-xs font-semibold text-slate-600">Código (opcional)</label>
                         <input
-                          className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+                          className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                           value={newItem.item_code}
                           onChange={(e) => setNewItem((p) => ({ ...p, item_code: clampTextLive(e.target.value, 40) }))}
                           placeholder="EJ: PHOTO_FRAME"
@@ -1281,7 +1281,7 @@ useEffect(() => {
                       <div className="md:col-span-2">
                         <label className="text-xs font-semibold text-slate-600">Artículo *</label>
                         <input
-                          className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+                          className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                           value={newItem.title}
                           onChange={(e) => setNewItem((p) => ({ ...p, title: clampTextLive(e.target.value, 120) }))}
                           placeholder="Ej: Marco fotos"
@@ -1291,7 +1291,7 @@ useEffect(() => {
                       <div>
                         <label className="text-xs font-semibold text-slate-600">Categoría *</label>
                         <select
-                          className="mt-1 w-full border rounded-lg px-3 py-2 text-sm bg-white"
+                          className="mt-1 w-full border rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                           value={newItem.category}
                           onChange={(e) => setNewItem((p) => ({ ...p, category: e.target.value as ItemCategory }))}
                         >

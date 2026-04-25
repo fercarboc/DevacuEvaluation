@@ -58,7 +58,21 @@ function unwrapPayload<T>(res: any): T {
 
 export async function getHotelProfile(): Promise<HotelProfileGetResponse> {
   const resRaw = await callEvalFn<any>("debacu_eval_hotel_profile_get", {});
-  return unwrapPayload<HotelProfileGetResponse>(resRaw);
+  const res = unwrapPayload<any>(resRaw);
+
+  // Edge function returns { meta: { customer_id, org_id }, profile }
+  // Wizard expects { customer: { id }, profile: { customer_id } }
+  const metaCustomerId: string | undefined = res?.meta?.customer_id;
+  if (metaCustomerId) {
+    if (!res.customer) {
+      res.customer = { id: metaCustomerId, name: "", email: "", phone: null, isAdmin: false };
+    }
+    if (res.profile && !res.profile.customer_id) {
+      res.profile.customer_id = metaCustomerId;
+    }
+  }
+
+  return res as HotelProfileGetResponse;
 }
 
 export async function upsertHotelProfile(

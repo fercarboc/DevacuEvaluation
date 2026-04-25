@@ -495,7 +495,11 @@ async function sendAuthEmailWithRedirect(
     return { ok: false, action: "ERROR" as const, auth_user_id: null, detail: String(inviteErr.message ?? inviteErr) };
   }
 
-  const { error: recErr } = await sb.auth.admin.resetPasswordForEmail(email, { redirectTo });
+  const { error: recErr } = await sb.auth.admin.generateLink({
+    type: "recovery",
+    email,
+    options: { redirectTo },
+  });
   if (recErr) {
     return { ok: false, action: "ERROR" as const, auth_user_id: null, detail: String(recErr.message ?? recErr) };
   }
