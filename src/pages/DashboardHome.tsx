@@ -16,7 +16,10 @@ import {
   WifiOff,
   Zap,
   RefreshCw,
+  Settings,
 } from "lucide-react";
+import { HotelProfileWizardDialog } from "@/components/HotelProfileWizardDialog";
+import { getHotelProfile } from "@/services/debacu_eval_hotel_profile.service";
 
 import {
   getClientDashboardV2,
@@ -466,6 +469,8 @@ export default function DashboardHome() {
 
   const [pmsConn, setPmsConn] = useState<PmsConnection | null>(null);
   const [pmsLoading, setPmsLoading] = useState(false);
+  const [profileIncomplete, setProfileIncomplete] = useState(false);
+  const [showWizard, setShowWizard] = useState(false);
 
   // ── Carga inicial ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -555,6 +560,19 @@ export default function DashboardHome() {
     };
   }, [selectedPropertyId]);
 
+  // Check if hotel profile exists but is incomplete (banner reminder, not auto-wizard)
+  useEffect(() => {
+    let cancelled = false;
+    getHotelProfile()
+      .then((res) => {
+        if (!cancelled && res.ok && res.profile !== null && !res.profile.is_complete) {
+          setProfileIncomplete(true);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   // ── Datos derivados ───────────────────────────────────────────────────
   const properties = dash?.properties ?? [];
   const selectedProperty = properties.find((p) => p.id === selectedPropertyId) ?? null;
@@ -604,6 +622,28 @@ export default function DashboardHome() {
   // ── Render principal ──────────────────────────────────────────────────
   return (
     <div className="-mx-4 md:-mx-6 -mt-6 -mb-6 px-4 md:px-6 pt-6 pb-10 bg-[#0f172a] min-h-screen">
+
+      {profileIncomplete && (
+        <div className="flex items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 mb-6 -mx-0">
+          <Settings className="w-4 h-4 text-amber-400 flex-shrink-0" />
+          <p className="flex-1 text-sm text-amber-300">
+            <span className="font-semibold">Configuración incompleta</span> — Completa el perfil de tu establecimiento para activar cálculos de riesgo ajustados y revenue intelligence.
+          </p>
+          <button
+            onClick={() => setShowWizard(true)}
+            className="text-xs font-semibold text-amber-300 border border-amber-500/40 rounded-lg px-3 py-1.5 hover:bg-amber-500/20 transition-colors whitespace-nowrap"
+          >
+            Configurar ahora
+          </button>
+        </div>
+      )}
+
+      <HotelProfileWizardDialog
+        open={showWizard}
+        onClose={() => setShowWizard(false)}
+        onCompleted={() => { setShowWizard(false); setProfileIncomplete(false); }}
+      />
+
     <div className="space-y-10">
 
       {/* ─── HEADER ─────────────────────────────────────────────────── */}

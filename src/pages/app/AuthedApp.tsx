@@ -30,6 +30,11 @@ import RevenueImportData from "@/modules/revenue-intelligence/pages/RevenueImpor
 import { PMSWizardView } from "@/components/PMSWizardView";
 import PmsConsultaView from "@/pages/pms/PmsConsultaView";
 import PmsSyncHistorialView from "@/pages/pms/PmsSyncHistorialView";
+import { HotelProfileWizardDialog } from "@/components/HotelProfileWizardDialog";
+import ChatWidget from "@/components/ChatWidget";
+import { getHotelProfile } from "@/services/debacu_eval_hotel_profile.service";
+import { callEvalFn } from "@/services/callEvalFn";
+import { getNotificationsCount, markNotificationsRead } from "@/services/notificationsService";
 
 // Demo/PAYWALL Revenue
 import RevenueLockedDemo from "@/components/revenue/RevenueLockedDemo";
@@ -200,6 +205,8 @@ export default function AuthedApp() {
   const [revenueProperties, setRevenueProperties] = React.useState<RevenueProperty[]>([]);
   const [selectedPropertyId, setSelectedPropertyId] = React.useState<string | null>(null);
   const [propertiesLoading, setPropertiesLoading] = React.useState(false);
+  const [showOnboarding, setShowOnboarding] = React.useState(false);
+  const [notificationCount, setNotificationCount] = React.useState(0);
 
   const handleLogout = async () => {
     await signOut();
@@ -318,6 +325,40 @@ export default function AuthedApp() {
       localStorage.removeItem(ACTIVE_PROPERTY_STORAGE_KEY);
     }
   }, [selectedPropertyId]);
+
+  // Poll notification count on mount and every 5 minutes
+  React.useEffect(() => {
+    let cancelled = false;
+    const fetch = () => {
+      getNotificationsCount().then((n) => { if (!cancelled) setNotificationCount(n); }).catch(() => {});
+    };
+    fetch();
+    const id = setInterval(fetch, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleClearNotifications = React.useCallback(() => {
+    setNotificationCount(0);
+    markNotificationsRead().catch(() => {});
+  }, []);
+
+  // Trigger onboarding wizard + queue welcome email for new users (profile === null)
+  React.useEffect(() => {
+    let cancelled = false;
+    getHotelProfile()
+      .then((res) => {
+        if (cancelled) return;
+        if (res.ok && res.profile === null) {
+          setShowOnboarding(true);
+          // Queue welcome email (sent 1h later by cron). Fire-and-forget.
+          callEvalFn("debacu_eval_welcome_email", {}).catch(() => {});
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const selectedProperty = React.useMemo(() => {
     return revenueProperties.find((p) => p.id === selectedPropertyId) ?? null;
@@ -472,6 +513,7 @@ export default function AuthedApp() {
   }, [currentView, propertiesLoading, revenueProperties, selectedPropertyId]);
 
   return (
+    <>
     <AppShell
       userEmail={(user as any).email}
       userName={(user as any).fullName}
@@ -481,6 +523,8 @@ export default function AuthedApp() {
       navItems={navItems}
       currentPlanCode={currentPlanCode}
       headerLeft={headerLeft}
+      notificationCount={notificationCount}
+      onClearNotifications={handleClearNotifications}
     >
       {currentView === "dashboard" && <DashboardHome />}
       {currentView === "alarmas" && <AlarmasPage />}
@@ -629,6 +673,14 @@ export default function AuthedApp() {
           propertyName={selectedProperty?.name ?? null}
         />
       )}
+
+      <HotelProfileWizardDialog
+        open={showOnboarding}
+        onClose={() => setShowOnboarding(false)}
+        onCompleted={() => setShowOnboarding(false)}
+      />
     </AppShell>
+    <ChatWidget />
+    </>
   );
 }

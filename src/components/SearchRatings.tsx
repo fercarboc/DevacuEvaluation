@@ -1,14 +1,18 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Calendar,
+  Clock,
   FileText,
   Fingerprint,
   Info,
   LockKeyhole,
+  PlusCircle,
   Search,
   Shield,
   ShieldAlert,
   ShieldCheck,
+  X,
 } from "lucide-react";
 
 import { callEvalFn } from "@/services/callEvalFn";
@@ -95,6 +99,16 @@ type ManualCheckResponse = {
   previousRiskLevel: RiskLevel | null;
   currentRiskLevel: RiskLevel | null;
   debug?: Record<string, unknown> | null;
+};
+
+type RecentSearch = {
+  id: string;
+  query: string;
+  queryMasked: string | null;
+  riskLevel: RiskLevel | null;
+  hasSignals: boolean;
+  mode: ViewMode;
+  searchedAt: string;
 };
 
 interface SearchRatingsProps {
@@ -376,6 +390,7 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({
   selectedPropertyId,
   selectedPropertyName,
 }) => {
+  const navigate = useNavigate();
   const [mode, setMode] = useState<ViewMode>("GLOBAL");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
@@ -387,6 +402,14 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({
   const [riskLoading, setRiskLoading] = useState(false);
   const [riskError, setRiskError] = useState("");
   const [riskSnap, setRiskSnap] = useState<GlobalRiskSnapshot | null>(null);
+  const [recentSearches, setRecentSearches] = useState<RecentSearch[]>(() => {
+    try {
+      const stored = localStorage.getItem("debacu_recent_searches");
+      return stored ? (JSON.parse(stored) as RecentSearch[]) : [];
+    } catch {
+      return [];
+    }
+  });
 
   const activePropertyId = useMemo(() => {
     return clean(selectedPropertyId) || clean(window.localStorage.getItem("selectedPropertyId")) || "";
@@ -481,6 +504,21 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({
       });
 
       setResult(data);
+
+      const entry: RecentSearch = {
+        id: data.checkId,
+        query: q,
+        queryMasked: data.criteria?.valueMasked ?? null,
+        riskLevel: data.globalSummary?.riskLevel ?? data.mineSummary?.riskLevel ?? null,
+        hasSignals: data.globalSummary?.hasSignals ?? (data.mineSummary?.totalMatches ?? 0) > 0,
+        mode,
+        searchedAt: new Date().toISOString(),
+      };
+      setRecentSearches((prev) => {
+        const updated = [entry, ...prev.filter((s) => s.id !== entry.id)].slice(0, 10);
+        try { localStorage.setItem("debacu_recent_searches", JSON.stringify(updated)); } catch {}
+        return updated;
+      });
     } catch (error: any) {
       console.error(error);
       setErrorMsg(error?.message ?? "No se ha podido completar la consulta.");
@@ -629,6 +667,67 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({
           </div>
         )}
       </div>
+
+      {recentSearches.length > 0 && (
+        <div className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Clock className="h-4 w-4 text-slate-400" />
+              <h4 className="text-sm font-semibold text-slate-700">Búsquedas recientes</h4>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setRecentSearches([]);
+                try { localStorage.removeItem("debacu_recent_searches"); } catch {}
+              }}
+              className="text-[11px] text-slate-400 hover:text-slate-600 transition-colors"
+            >
+              Borrar historial
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {recentSearches.slice(0, 8).map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => {
+                  setQuery(s.query);
+                  if (s.mode !== mode) setMode(s.mode);
+                }}
+                className="group flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-700 transition-colors hover:border-slate-300 hover:bg-white"
+              >
+                <span
+                  className={`h-2 w-2 rounded-full flex-shrink-0 ${
+                    s.riskLevel === "HIGH"
+                      ? "bg-red-400"
+                      : s.riskLevel === "MEDIUM"
+                        ? "bg-amber-400"
+                        : s.riskLevel === "LOW"
+                          ? "bg-emerald-400"
+                          : "bg-slate-300"
+                  }`}
+                />
+                <span className="max-w-[120px] truncate font-medium">
+                  {s.queryMasked ?? s.query}
+                </span>
+                <span className="text-slate-400">{s.mode === "MINE" ? "Propio" : "Global"}</span>
+                <X
+                  className="h-3 w-3 text-slate-300 opacity-0 transition-opacity group-hover:opacity-100"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRecentSearches((prev) => {
+                      const updated = prev.filter((r) => r.id !== s.id);
+                      try { localStorage.setItem("debacu_recent_searches", JSON.stringify(updated)); } catch {}
+                      return updated;
+                    });
+                  }}
+                />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-4">
         <section className="lg:col-span-1">
@@ -954,6 +1053,74 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({
                             Este resultado no confirma identidades ni muestra PII. Se limita a señales agregadas para apoyo operativo.
                           </div>
 
+                          {globalSummary.hasSignals && (
+                            <div className={`mb-4 rounded-2xl border p-4 text-sm ${
+                              globalSummary.riskLevel === "HIGH"
+                                ? "border-red-200 bg-red-50"
+                                : globalSummary.riskLevel === "MEDIUM"
+                                  ? "border-amber-100 bg-amber-50"
+                                  : "border-emerald-100 bg-emerald-50"
+                            }`}>
+                              <div className="mb-2 flex items-center gap-2">
+                                <Info className={`h-4 w-4 flex-shrink-0 ${
+                                  globalSummary.riskLevel === "HIGH"
+                                    ? "text-red-500"
+                                    : globalSummary.riskLevel === "MEDIUM"
+                                      ? "text-amber-600"
+                                      : "text-emerald-600"
+                                }`} />
+                                <span className="font-semibold text-slate-800">
+                                  ¿Por qué este nivel de riesgo?
+                                </span>
+                              </div>
+                              <ul className="space-y-1 text-xs text-slate-700">
+                                {(globalSummary.incidentsTotal ?? 0) > 0 && (
+                                  <li>
+                                    · Se han registrado{" "}
+                                    <strong>{globalSummary.incidentsTotal}</strong>{" "}
+                                    {globalSummary.incidentsTotal === 1 ? "incidencia" : "incidencias"}{" "}
+                                    en la plataforma para esta identidad.
+                                  </li>
+                                )}
+                                {(globalSummary.incidentsCritical ?? 0) > 0 && (
+                                  <li>
+                                    · <strong>{globalSummary.incidentsCritical}</strong>{" "}
+                                    {(globalSummary.incidentsCritical ?? 0) === 1
+                                      ? "incidencia es de nivel crítico"
+                                      : "incidencias son de nivel crítico"}.
+                                  </li>
+                                )}
+                                {(globalSummary.incidentsHigh ?? 0) > 0 && (
+                                  <li>
+                                    · <strong>{globalSummary.incidentsHigh}</strong>{" "}
+                                    {(globalSummary.incidentsHigh ?? 0) === 1
+                                      ? "incidencia es de severidad alta"
+                                      : "incidencias son de severidad alta"}.
+                                  </li>
+                                )}
+                                {(globalSummary.distinctOrgsCount ?? 0) > 1 && (
+                                  <li>
+                                    · Reportado por{" "}
+                                    <strong>{globalSummary.distinctOrgsCount}</strong>{" "}
+                                    establecimientos distintos.
+                                  </li>
+                                )}
+                                {(globalSummary.totalNetLoss ?? 0) > 0 && (
+                                  <li>
+                                    · Pérdida económica neta acumulada:{" "}
+                                    <strong>{formatMoneyEUR(globalSummary.totalNetLoss)}</strong>.
+                                  </li>
+                                )}
+                                {globalSummary.lastIncidentAt && (
+                                  <li>
+                                    · Última incidencia registrada:{" "}
+                                    <strong>{formatTimeWindow(globalSummary.lastIncidentAt)}</strong>.
+                                  </li>
+                                )}
+                              </ul>
+                            </div>
+                          )}
+
                           <div className="flex flex-wrap gap-2 text-xs">
                             <span className="rounded-full border bg-white px-3 py-1 text-slate-700">
                               Coincidencias: <span className="font-semibold">{globalSummary.hasSignals ? "Sí" : "No"}</span>
@@ -1066,6 +1233,19 @@ export const SearchRatings: React.FC<SearchRatingsProps> = ({
                 </>
               )}
             </div>
+
+            {searched && (
+              <div className="mt-4 border-t border-slate-100 pt-4">
+                <button
+                  type="button"
+                  onClick={() => navigate("/app/registrar")}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:border-slate-300 hover:bg-white"
+                >
+                  <PlusCircle className="h-4 w-4 text-slate-500" />
+                  Registrar incidencia sobre este criterio
+                </button>
+              </div>
+            )}
           </div>
         </section>
 

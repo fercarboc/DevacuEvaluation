@@ -6,6 +6,7 @@ import {
   getClientDashboardV2,
   type UpcomingRiskAlert,
 } from "@/services/clientService";
+import { markNotificationsRead } from "@/services/notificationsService";
 
 function fmtDate(v: string): string {
   const dt = new Date(v);
@@ -25,6 +26,11 @@ export default function AlarmasPage() {
   const [loading, setLoading] = useState(true);
   const [alerts, setAlerts] = useState<UpcomingRiskAlert[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Mark all unread alerts as read when the user opens this page
+    markNotificationsRead().catch(() => {});
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

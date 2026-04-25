@@ -79,6 +79,8 @@ type Props = {
   showAccountActions?: boolean;
   currentPlanCode?: string;
   headerLeft?: React.ReactNode;
+  notificationCount?: number;
+  onClearNotifications?: () => void;
 };
 
 function classNames(...parts: Array<string | false | null | undefined>) {
@@ -98,8 +100,9 @@ const NavItemButton: React.FC<{
   disabled?: boolean;
   locked?: boolean;
   active: boolean;
+  badge?: number;
   onClick: () => void;
-}> = React.memo(({ view, label, icon: Icon, disabled, locked, active, onClick }) => {
+}> = React.memo(({ view, label, icon: Icon, disabled, locked, active, badge, onClick }) => {
   const isLocked = !!locked && !disabled;
 
   return (
@@ -120,22 +123,21 @@ const NavItemButton: React.FC<{
       )}
       aria-current={active ? "page" : undefined}
       data-view={view}
-      title={isLocked ? "Disponible en MEDIUM / PREMIUM" : undefined}
+      title={isLocked ? "Función de Revenue Intelligence — disponible en plan PROFESSIONAL o ENTERPRISE. Actualiza en Mi cuenta." : undefined}
     >
       <Icon
         className={classNames(
           "w-4 h-4",
-          disabled
-            ? "text-slate-300"
-            : active
-            ? "text-blue-600"
-            : isLocked
-            ? "text-slate-400"
-            : "text-slate-400"
+          disabled ? "text-slate-300" : active ? "text-blue-600" : "text-slate-400"
         )}
       />
-      <span className="font-medium tracking-tight">{label}</span>
-      {isLocked ? <Lock className="w-4 h-4 text-slate-400 ml-auto" /> : null}
+      <span className="font-medium tracking-tight flex-1 text-left">{label}</span>
+      {badge != null && badge > 0 && (
+        <span className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] rounded-full bg-red-500 text-white text-[10px] font-bold px-1">
+          {badge > 99 ? "99+" : badge}
+        </span>
+      )}
+      {isLocked && !badge ? <Lock className="w-4 h-4 text-slate-400 ml-auto" /> : null}
     </button>
   );
 });
@@ -162,6 +164,8 @@ export default function AppShell({
   showAccountActions = true,
   currentPlanCode,
   headerLeft,
+  notificationCount = 0,
+  onClearNotifications,
 }: Props) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -246,8 +250,10 @@ export default function AppShell({
         disabled={i.disabled}
         locked={i.locked}
         active={location.pathname === i.path}
+        badge={i.view === "alarmas" && notificationCount > 0 ? notificationCount : undefined}
         onClick={() => {
           if (i.disabled) return;
+          if (i.view === "alarmas") onClearNotifications?.();
           handleNavigate(i);
         }}
       />
@@ -424,6 +430,24 @@ export default function AppShell({
 
             <div className="flex items-center gap-3 shrink-0">
               <div className="text-sm text-slate-600 hidden lg:block">{userEmail || ""}</div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  onClearNotifications?.();
+                  navigate("/app/alarmas");
+                }}
+                className="relative rounded-xl border border-slate-200 bg-white p-2 text-slate-600 hover:bg-slate-50 transition-colors"
+                title="Alarmas de riesgo"
+                aria-label={notificationCount > 0 ? `${notificationCount} alarmas sin leer` : "Sin alarmas pendientes"}
+              >
+                <Bell className="w-5 h-5" />
+                {notificationCount > 0 && (
+                  <span className="absolute -top-1 -right-1 inline-flex items-center justify-center min-w-[16px] h-4 rounded-full bg-red-500 text-white text-[9px] font-bold px-1 ring-2 ring-white">
+                    {notificationCount > 99 ? "99+" : notificationCount}
+                  </span>
+                )}
+              </button>
 
               {showAccountActions && (
                 <button
