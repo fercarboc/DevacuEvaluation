@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Debacu Evaluation360 — Arquitectura del sistema</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f4f2ed;
+    --surface: #ffffff;
+    --surface2: #eae7e0;
+    --border: rgba(0,0,0,0.09);
+    --border-strong: rgba(0,0,0,0.16);
+    --text: #1a1917;
+    --text-dim: #6b6a65;
+    --font: 'IBM Plex Sans', sans-serif;
+    --mono: 'IBM Plex Mono', monospace;
+
+    --purple-fill: #EEEDFE; --purple-stroke: #534AB7; --purple-title: #3C3489; --purple-sub: #534AB7;
+    --teal-fill: #E1F5EE;   --teal-stroke: #0F6E56;   --teal-title: #085041;   --teal-sub: #0F6E56;
+    --blue-fill: #E6F1FB;   --blue-stroke: #185FA5;   --blue-title: #0C447C;   --blue-sub: #185FA5;
+    --coral-fill: #FAECE7;  --coral-stroke: #993C1D;  --coral-title: #712B13;  --coral-sub: #993C1D;
+    --amber-fill: #FAEEDA;  --amber-stroke: #854F0B;  --amber-title: #633806;  --amber-sub: #854F0B;
+    --gray-fill: #F1EFE8;   --gray-stroke: #5F5E5A;   --gray-title: #444441;   --gray-sub: #5F5E5A;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141412;
+      --surface: #1e1e1b;
+      --surface2: #272724;
+      --border: rgba(255,255,255,0.07);
+      --border-strong: rgba(255,255,255,0.14);
+      --text: #e8e6df;
+      --text-dim: #9e9c95;
+
+      --purple-fill: #3C3489; --purple-stroke: #AFA9EC; --purple-title: #CECBF6; --purple-sub: #AFA9EC;
+      --teal-fill: #085041;   --teal-stroke: #5DCAA5;   --teal-title: #9FE1CB;   --teal-sub: #5DCAA5;
+      --blue-fill: #0C447C;   --blue-stroke: #85B7EB;   --blue-title: #B5D4F4;   --blue-sub: #85B7EB;
+      --coral-fill: #712B13;  --coral-stroke: #F0997B;  --coral-title: #F5C4B3;  --coral-sub: #F0997B;
+      --amber-fill: #633806;  --amber-stroke: #EF9F27;  --amber-title: #FAC775;  --amber-sub: #EF9F27;
+      --gray-fill: #444441;   --gray-stroke: #B4B2A9;   --gray-title: #D3D1C7;   --gray-sub: #B4B2A9;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 40px 32px 60px;
+  }
+  header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 36px;
+    gap: 24px;
+  }
+  header h1 {
+    font-size: 22px;
+    font-weight: 500;
+    line-height: 1.2;
+    color: var(--text);
+  }
+  header p {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 6px;
+  }
+  .version {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-dim);
+    background: var(--surface2);
+    border: 0.5px solid var(--border-strong);
+    border-radius: 6px;
+    padding: 4px 10px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-top: 4px;
+  }
+
+  /* ── CAPAS ── */
+  .layer {
+    border-radius: 14px;
+    border: 0.5px solid;
+    padding: 16px;
+    margin-bottom: 10px;
+  }
+  .layer-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  .layer-purple { background: var(--purple-fill); border-color: var(--purple-stroke); }
+  .layer-purple .layer-label { color: var(--purple-title); }
+  .layer-teal   { background: var(--teal-fill);   border-color: var(--teal-stroke); }
+  .layer-teal   .layer-label { color: var(--teal-title); }
+  .layer-blue   { background: var(--blue-fill);   border-color: var(--blue-stroke); }
+  .layer-blue   .layer-label { color: var(--blue-title); }
+  .layer-coral  { background: var(--coral-fill);  border-color: var(--coral-stroke); }
+  .layer-coral  .layer-label { color: var(--coral-title); }
+  .layer-amber  { background: var(--amber-fill);  border-color: var(--amber-stroke); }
+  .layer-amber  .layer-label { color: var(--amber-title); }
+
+  /* ── CARDS DENTRO DE CAPAS ── */
+  .cards { display: flex; flex-wrap: wrap; gap: 8px; }
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    background: var(--surface);
+    border: 0.5px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 10px 14px;
+    flex: 1 1 160px;
+    cursor: default;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .card:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+  .card-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .card-sub {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  /* ── FLECHA ENTRE CAPAS ── */
+  .arrow-sep {
+    text-align: center;
+    font-size: 16px;
+    color: var(--text-dim);
+    margin: 2px 0;
+    line-height: 1;
+  }
+
+  /* ── REGLA FUNDAMENTAL ── */
+  .rule {
+    background: var(--gray-fill);
+    border: 0.5px solid var(--gray-stroke);
+    border-radius: 10px;
+    padding: 12px 18px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--gray-title);
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .rule::before {
+    content: "!";
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--gray-stroke);
+    color: var(--gray-fill);
+    font-weight: 500;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+
+  /* ── LEYENDA DE COLORES ── */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 32px;
+    padding-top: 20px;
+    border-top: 0.5px solid var(--border-strong);
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+  .dot-purple { background: var(--purple-stroke); }
+  .dot-teal   { background: var(--teal-stroke); }
+  .dot-blue   { background: var(--blue-stroke); }
+  .dot-coral  { background: var(--coral-stroke); }
+  .dot-amber  { background: var(--amber-stroke); }
+
+  footer {
+    margin-top: 16px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: right;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Debacu Evaluation360</h1>
+    <p>Arquitectura del sistema — DEBACU HOTELS S.L. · B-55381214</p>
+  </div>
+  <span class="version">v1.0 · 2025</span>
+</header>
+
+<!-- CAPA 1: CLIENTE -->
+<div class="layer layer-purple">
+  <div class="layer-label">Capa cliente</div>
+  <div class="cards">
+    <div class="card">
+      <span class="card-title">React + TypeScript</span>
+      <span class="card-sub">frontend SPA · Vite</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Vercel</span>
+      <span class="card-sub">hosting + CI/CD</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Stripe</span>
+      <span class="card-sub">billing + suscripciones</span>
+    </div>
+  </div>
+</div>
+
+<div class="arrow-sep">↓</div>
+
+<!-- CAPA 2: EDGE FUNCTIONS -->
+<div class="layer layer-teal">
+  <div class="layer-label">Edge Functions — Supabase / Deno · toda la lógica de negocio vive aquí</div>
+  <div class="cards">
+    <div class="card">
+      <span class="card-title">Screening de huéspedes</span>
+      <span class="card-sub">detección de riesgo y fraude</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Revenue Intelligence</span>
+      <span class="card-sub">ADR · RevPAR · pickup · forecast</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Detección de anomalías</span>
+      <span class="card-sub">alertas automáticas</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Análisis de canal</span>
+      <span class="card-sub">mix OTA / directo</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Importación CSV</span>
+      <span class="card-sub">pipeline desde PMS</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Email (Resend)</span>
+      <span class="card-sub">notificaciones · onboarding</span>
+    </div>
+  </div>
+</div>
+
+<div class="arrow-sep">↓</div>
+
+<!-- CAPA 3: BASE DE DATOS -->
+<div class="layer layer-blue">
+  <div class="layer-label">Base de datos — PostgreSQL / Supabase</div>
+  <div class="cards">
+    <div class="card">
+      <span class="card-title">Multi-tenant RLS</span>
+      <span class="card-sub">org_id + property_id</span>
+    </div>
+    <div class="card">
+      <span class="card-title">GDPR — PII hasheado</span>
+      <span class="card-sub">HMAC + pepper · sin datos en claro</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Supabase Auth</span>
+      <span class="card-sub">auth.uid() en todas las políticas</span>
+    </div>
+    <div class="card">
+      <span class="card-title">app_settings</span>
+      <span class="card-sub">pepper global · configuración</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Tablas + índices</span>
+      <span class="card-sub">constraints · triggers updated_at</span>
+    </div>
+  </div>
+</div>
+
+<div class="arrow-sep">↓</div>
+
+<!-- CAPA 4: SERVICIOS EXTERNOS -->
+<div class="layer layer-coral">
+  <div class="layer-label">Servicios externos</div>
+  <div class="cards">
+    <div class="card">
+      <span class="card-title">Stripe</span>
+      <span class="card-sub">webhooks · planes</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Resend</span>
+      <span class="card-sub">email transaccional</span>
+    </div>
+    <div class="card">
+      <span class="card-title">PMS (CSV)</span>
+      <span class="card-sub">importación de reservas</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Anthropic API</span>
+      <span class="card-sub">agentes IA · scoring</span>
+    </div>
+  </div>
+</div>
+
+<!-- CAPA 5: SEGURIDAD TRANSVERSAL -->
+<div class="layer layer-amber" style="margin-top: 10px;">
+  <div class="layer-label">Seguridad transversal</div>
+  <div class="cards">
+    <div class="card">
+      <span class="card-title">RLS en todas las tablas</span>
+      <span class="card-sub">habilitado · sin excepciones</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Aislamiento org / property</span>
+      <span class="card-sub">ningún hotel ve datos de otro</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Audit log</span>
+      <span class="card-sub">operaciones sensibles trazadas</span>
+    </div>
+    <div class="card">
+      <span class="card-title">Privacidad by design</span>
+      <span class="card-sub">PII hasheado antes de almacenar</span>
+    </div>
+  </div>
+</div>
+
+<!-- REGLA FUNDAMENTAL -->
+<div class="rule">
+  Regla fundamental: cero RPCs de Postgres — toda la lógica de negocio vive en Edge Functions. La DB solo contiene tablas, índices, constraints y triggers de updated_at.
+</div>
+
+<!-- LEYENDA -->
+<div class="legend">
+  <div class="legend-item"><span class="legend-dot dot-purple"></span>Capa cliente (React + Vercel + Stripe)</div>
+  <div class="legend-item"><span class="legend-dot dot-teal"></span>Edge Functions (lógica de negocio)</div>
+  <div class="legend-item"><span class="legend-dot dot-blue"></span>Base de datos (PostgreSQL + Auth)</div>
+  <div class="legend-item"><span class="legend-dot dot-coral"></span>Servicios externos</div>
+  <div class="legend-item"><span class="legend-dot dot-amber"></span>Seguridad transversal</div>
+</div>
+
+<footer>Generado · DEBACU HOTELS S.L. · debacu-arquitectura.html</footer>
+
+</body>
+</html>
