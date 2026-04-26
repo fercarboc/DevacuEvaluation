@@ -234,13 +234,6 @@ export default function AuthedApp() {
 
   const loadRevenueProperties = React.useCallback(
     async (preferredPropertyId?: string | null) => {
-      if (!canAccessRevenue) {
-        setRevenueProperties([]);
-        setSelectedPropertyId(null);
-        localStorage.removeItem(ACTIVE_PROPERTY_STORAGE_KEY);
-        return;
-      }
-
       try {
         setPropertiesLoading(true);
 
@@ -278,7 +271,7 @@ export default function AuthedApp() {
         setPropertiesLoading(false);
       }
     },
-    [canAccessRevenue, selectedPropertyId],
+    [selectedPropertyId],
   );
 
   React.useEffect(() => {
