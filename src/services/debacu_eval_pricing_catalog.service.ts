@@ -140,10 +140,8 @@ export async function upsertHotelItem(input: UpsertHotelItemInput) {
 
  
 
-export async function listHotelMergedItems(customerId: string) {
-  // Edge Function recomendada: debacu_eval_catalog_items_list
-  // Respuesta: { items: ItemRow[] }
-  return await callEvalFn<{ items: any[] }>("debacu_eval_catalog_items_list", { customerId });
+export async function listHotelMergedItems(_customerId: string) {
+  return await callEvalFn<{ items: any[] }>("debacu_eval_item_catalog_list", {});
 }
 
 export async function upsertHotelItemCatalogForCustomer(
