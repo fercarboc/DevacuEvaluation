@@ -24,6 +24,7 @@ import EventsSeasonsPage from "@/modules/revenue-intelligence/pages/EventsSeason
 import PropertySelector from "@/modules/revenue-intelligence/components/PropertySelector";
 import {
   getProperties,
+  createProperty,
   type RevenueProperty,
 } from "@/modules/revenue-intelligence/services/revenueProperties.service";
 import RevenueImportData from "@/modules/revenue-intelligence/pages/RevenueImportData";
@@ -241,6 +242,37 @@ export default function AuthedApp() {
         setRevenueProperties(rows);
 
         if (!rows.length) {
+          // Red de seguridad: si no hay propiedades, intentar crear una desde el perfil del hotel
+          try {
+            const profileRes = await getHotelProfile();
+            const p = profileRes?.profile;
+            if (p?.hotel_name) {
+              const name = p.hotel_name.trim();
+              const code = name
+                .toUpperCase()
+                .normalize("NFD")
+                .replace(/[̀-ͯ]/g, "")
+                .replace(/[^A-Z0-9]+/g, "_")
+                .replace(/^_+|_+$/g, "")
+                .slice(0, 20) || "PROP_01";
+              await createProperty({
+                code,
+                name,
+                category: p.hotel_category ?? null,
+                city: p.city ?? null,
+                country: p.country ?? null,
+              });
+              const newRows = await getProperties();
+              if (newRows.length) {
+                setRevenueProperties(newRows);
+                setSelectedPropertyId(newRows[0].id);
+                localStorage.setItem(ACTIVE_PROPERTY_STORAGE_KEY, newRows[0].id);
+                return;
+              }
+            }
+          } catch (autoErr) {
+            console.warn("auto-create property failed (non-fatal):", autoErr);
+          }
           setSelectedPropertyId(null);
           localStorage.removeItem(ACTIVE_PROPERTY_STORAGE_KEY);
           return;

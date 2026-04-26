@@ -13,6 +13,10 @@ import {
   listHotelMergedItems,
   upsertHotelItemCatalogForCustomer,
 } from "@/services/debacu_eval_pricing_catalog.service";
+import {
+  getProperties,
+  createProperty,
+} from "@/modules/revenue-intelligence/services/revenueProperties.service";
 
 type PropertyType = "HOTEL" | "RURAL_HOUSE" | "HOSTEL" | "APARTMENTS" | "OTHER";
 type WizardStepKey =
@@ -536,6 +540,34 @@ useEffect(() => {
     onClose();
   };
 
+  const ensureDefaultProperty = async () => {
+    try {
+      const existing = await getProperties();
+      if (existing.length > 0) return;
+
+      const name = (model.hotel_name || "Mi establecimiento").trim();
+      const code = name
+        .toUpperCase()
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "")
+        .replace(/[^A-Z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 20) || "PROP_01";
+
+      await createProperty({
+        code,
+        name,
+        category: model.hotel_category ? Number(model.hotel_category) : null,
+        city: model.city || null,
+        country: model.country || null,
+      });
+
+      window.dispatchEvent(new CustomEvent("revenue:properties-changed"));
+    } catch (e) {
+      console.warn("[wizard] ensureDefaultProperty failed (non-fatal):", e);
+    }
+  };
+
   const finish = async () => {
     const saved = await doUpsert();
     if (!saved.ok) return;
@@ -544,6 +576,8 @@ useEffect(() => {
       setMessage("Aún faltan datos. Completa los campos requeridos.");
       return;
     }
+
+    await ensureDefaultProperty();
 
     setMessage(null);
     onCompleted?.();
