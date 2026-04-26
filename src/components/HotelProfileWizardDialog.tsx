@@ -869,7 +869,7 @@ useEffect(() => {
                     <div>
                       <label className="text-xs font-semibold text-slate-600">Moneda *</label>
                       <input
-                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm uppercase"
+                        className="mt-1 w-full border rounded-lg px-3 py-2 text-sm uppercase text-slate-900 bg-white focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/50"
                         value={upper(model.currency || "EUR").slice(0, 3)}
                         onChange={(e) => setModel((p) => ({ ...p, currency: upper(e.target.value).slice(0, 3) }))}
                         placeholder="EUR"
