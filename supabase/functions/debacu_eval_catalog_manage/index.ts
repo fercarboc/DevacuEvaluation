@@ -1,38 +1,10 @@
 // supabase/functions/debacu_eval_catalog_manage/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { json, preflight } from "../_shared/cors.ts";
 
 const FN = "debacu_eval_catalog_manage";
 const APP_ID = "DEBACU_EVAL";
-
-/** ======================================================
- * CORS (shared-like, pero inline)
- * ====================================================== */
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function corsHeaders(origin: string | null) {
-  const o = origin ?? "";
-  const allowOrigin = ALLOWED_ORIGINS.has(o) ? o : "https://debacu.com";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Vary": "Origin",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(origin: string | null, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(origin), "Content-Type": "application/json; charset=utf-8" },
-  });
-}
 
 /** ======================================================
  * ENV
@@ -196,10 +168,8 @@ function clampInt(v: any, min: number, max: number) {
  * MAIN
  * ====================================================== */
 Deno.serve(async (req) => {
-  const origin = req.headers.get("origin");
-
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(origin) });
-  if (req.method !== "POST") return json(origin, 405, { ok: false, error: "method_not_allowed" });
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
   try {
     const body = (await req.json().catch(() => ({}))) as Partial<Body>;
@@ -207,7 +177,7 @@ Deno.serve(async (req) => {
     const payload = body?.payload ?? {};
     const org_id = safeStr(body?.org_id);
 
-    if (!action) return json(origin, 400, { ok: false, error: "missing_action" });
+    if (!action) return json(req, 400, { ok: false, error: "missing_action" });
 
     // 1) AuthN: JWT real
     const user = await requireUser(req);
@@ -229,7 +199,7 @@ Deno.serve(async (req) => {
     // ----------------------
     if (action === "ITEM_OVERRIDE_UPSERT") {
       const item_code = toUpperSnake(payload?.item_code ?? "");
-      if (!item_code) return json(origin, 400, { ok: false, error: "missing_item_code" });
+      if (!item_code) return json(req, 400, { ok: false, error: "missing_item_code" });
 
       const is_active = asBool(payload?.is_active, true);
       const unit_price = asNumOrNull(payload?.unit_price);
@@ -241,8 +211,8 @@ Deno.serve(async (req) => {
         .eq("item_code", item_code)
         .maybeSingle();
 
-      if (gErr) return json(origin, 500, { ok: false, error: "db_error", detail: gErr.message });
-      if (!g) return json(origin, 400, { ok: false, error: `global_item_not_found:${item_code}` });
+      if (gErr) return json(req, 500, { ok: false, error: "db_error", detail: gErr.message });
+      if (!g) return json(req, 400, { ok: false, error: `global_item_not_found:${item_code}` });
 
       const row = {
         customer_id: customerId,
@@ -260,9 +230,9 @@ Deno.serve(async (req) => {
         .from("debacu_hotel_item_catalog")
         .upsert(row, { onConflict: "customer_id,item_code" });
 
-      if (uErr) return json(origin, 500, { ok: false, error: "db_error", detail: uErr.message });
+      if (uErr) return json(req, 500, { ok: false, error: "db_error", detail: uErr.message });
 
-      return json(origin, 200, { ok: true, action, customerId, item_code });
+      return json(req, 200, { ok: true, action, customerId, item_code });
     }
 
     // ----------------------
@@ -274,11 +244,11 @@ Deno.serve(async (req) => {
       const item_code = toUpperSnake(payload?.item_code ?? "");
       const title = clampText(payload?.title ?? "", 120);
 
-      if (!item_code) return json(origin, 400, { ok: false, error: "missing_item_code" });
-      if (!title) return json(origin, 400, { ok: false, error: "missing_title" });
+      if (!item_code) return json(req, 400, { ok: false, error: "missing_item_code" });
+      if (!title) return json(req, 400, { ok: false, error: "missing_title" });
 
       const unit_price = asNumOrNull(payload?.unit_price);
-      if (unit_price === null) return json(origin, 400, { ok: false, error: "missing_or_invalid_unit_price" });
+      if (unit_price === null) return json(req, 400, { ok: false, error: "missing_or_invalid_unit_price" });
 
       const row = {
         customer_id: customerId,
@@ -296,14 +266,14 @@ Deno.serve(async (req) => {
         .from("debacu_hotel_item_catalog")
         .upsert(row, { onConflict: "customer_id,item_code" });
 
-      if (uErr) return json(origin, 500, { ok: false, error: "db_error", detail: uErr.message });
+      if (uErr) return json(req, 500, { ok: false, error: "db_error", detail: uErr.message });
 
-      return json(origin, 200, { ok: true, action, customerId, item_code });
+      return json(req, 200, { ok: true, action, customerId, item_code });
     }
 
     if (action === "ITEM_CUSTOM_DISABLE") {
       const item_code = toUpperSnake(payload?.item_code ?? "");
-      if (!item_code) return json(origin, 400, { ok: false, error: "missing_item_code" });
+      if (!item_code) return json(req, 400, { ok: false, error: "missing_item_code" });
 
       const { error: uErr } = await sb
         .from("debacu_hotel_item_catalog")
@@ -311,9 +281,9 @@ Deno.serve(async (req) => {
         .eq("customer_id", customerId)
         .eq("item_code", item_code);
 
-      if (uErr) return json(origin, 500, { ok: false, error: "db_error", detail: uErr.message });
+      if (uErr) return json(req, 500, { ok: false, error: "db_error", detail: uErr.message });
 
-      return json(origin, 200, { ok: true, action, customerId, item_code });
+      return json(req, 200, { ok: true, action, customerId, item_code });
     }
 
     // ----------------------
@@ -322,7 +292,7 @@ Deno.serve(async (req) => {
     // ----------------------
     if (action === "INC_OVERRIDE_UPSERT") {
       const incident_type = toUpperSnake(payload?.incident_type ?? "");
-      if (!incident_type) return json(origin, 400, { ok: false, error: "missing_incident_type" });
+      if (!incident_type) return json(req, 400, { ok: false, error: "missing_incident_type" });
 
       const { data: g, error: gErr } = await sb
         .from("debacu_incident_catalog")
@@ -330,8 +300,8 @@ Deno.serve(async (req) => {
         .eq("incident_type", incident_type)
         .maybeSingle();
 
-      if (gErr) return json(origin, 500, { ok: false, error: "db_error", detail: gErr.message });
-      if (!g) return json(origin, 400, { ok: false, error: `global_incident_not_found:${incident_type}` });
+      if (gErr) return json(req, 500, { ok: false, error: "db_error", detail: gErr.message });
+      if (!g) return json(req, 400, { ok: false, error: `global_incident_not_found:${incident_type}` });
 
       const row = {
         customer_id: customerId,
@@ -357,9 +327,9 @@ Deno.serve(async (req) => {
         .from("debacu_hotel_incident_overrides")
         .upsert(row, { onConflict: "customer_id,incident_type" });
 
-      if (uErr) return json(origin, 500, { ok: false, error: "db_error", detail: uErr.message });
+      if (uErr) return json(req, 500, { ok: false, error: "db_error", detail: uErr.message });
 
-      return json(origin, 200, { ok: true, action, customerId, incident_type });
+      return json(req, 200, { ok: true, action, customerId, incident_type });
     }
 
     // ----------------------
@@ -370,8 +340,8 @@ Deno.serve(async (req) => {
       const incident_type = toUpperSnake(payload?.incident_type ?? "");
       const title = clampText(payload?.title ?? "", 120);
 
-      if (!incident_type) return json(origin, 400, { ok: false, error: "missing_incident_type" });
-      if (!title) return json(origin, 400, { ok: false, error: "missing_title" });
+      if (!incident_type) return json(req, 400, { ok: false, error: "missing_incident_type" });
+      if (!title) return json(req, 400, { ok: false, error: "missing_title" });
 
       const sevRaw = payload?.severity;
       const sev =
@@ -397,14 +367,14 @@ Deno.serve(async (req) => {
         .from("debacu_hotel_incident_custom")
         .upsert(row, { onConflict: "customer_id,incident_type" });
 
-      if (uErr) return json(origin, 500, { ok: false, error: "db_error", detail: uErr.message });
+      if (uErr) return json(req, 500, { ok: false, error: "db_error", detail: uErr.message });
 
-      return json(origin, 200, { ok: true, action, customerId, incident_type });
+      return json(req, 200, { ok: true, action, customerId, incident_type });
     }
 
     if (action === "INC_CUSTOM_DISABLE") {
       const incident_type = toUpperSnake(payload?.incident_type ?? "");
-      if (!incident_type) return json(origin, 400, { ok: false, error: "missing_incident_type" });
+      if (!incident_type) return json(req, 400, { ok: false, error: "missing_incident_type" });
 
       const { error: uErr } = await sb
         .from("debacu_hotel_incident_custom")
@@ -412,12 +382,12 @@ Deno.serve(async (req) => {
         .eq("customer_id", customerId)
         .eq("incident_type", incident_type);
 
-      if (uErr) return json(origin, 500, { ok: false, error: "db_error", detail: uErr.message });
+      if (uErr) return json(req, 500, { ok: false, error: "db_error", detail: uErr.message });
 
-      return json(origin, 200, { ok: true, action, customerId, incident_type });
+      return json(req, 200, { ok: true, action, customerId, incident_type });
     }
 
-    return json(origin, 400, { ok: false, error: `unknown_action:${action}` });
+    return json(req, 400, { ok: false, error: `unknown_action:${action}` });
   } catch (e: any) {
     const msg = String(e?.message ?? e);
 
@@ -427,6 +397,6 @@ Deno.serve(async (req) => {
       msg.startsWith("MISSING_ENV:") ? 500 :
       500;
 
-    return json(origin, status, { ok: false, error: "request_failed", detail: msg, fn: FN });
+    return json(req, status, { ok: false, error: "request_failed", detail: msg, fn: FN });
   }
 });

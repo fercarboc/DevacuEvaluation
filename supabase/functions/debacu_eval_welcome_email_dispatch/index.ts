@@ -64,7 +64,7 @@ function buildEmailHtml(name: string | null, plan: string | null) {
 
       <!-- CTA -->
       <div style="text-align:center;margin:28px 0;">
-        <a href="https://debacu.com/app" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-size:15px;font-weight:600;letter-spacing:0.2px;">
+        <a href="https://www.debacuapp.com/app" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-size:15px;font-weight:600;letter-spacing:0.2px;">
           Acceder al panel →
         </a>
       </div>
@@ -98,7 +98,7 @@ function buildEmailText(name: string | null, plan: string | null) {
     "  2. Realiza tu primera consulta manual de un huésped.",
     "  3. Registra incidencias previas para enriquecer tu base de datos.",
     "",
-    "Accede al panel: https://debacu.com/app",
+    "Accede al panel: https://www.debacuapp.com/app",
     "",
     "— Equipo Debacu",
   ].join("\n");

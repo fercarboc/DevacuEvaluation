@@ -81,7 +81,7 @@ function buildDigestHtml(orgName: string, alerts: AlertRow[]) {
         <tbody>${rows}</tbody>
       </table>
       <div style="text-align:center;margin-top:28px;">
-        <a href="https://debacu.com/app/alarmas" style="display:inline-block;background:#ef4444;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-size:14px;font-weight:700;">
+        <a href="https://www.debacuapp.com/app/alarmas" style="display:inline-block;background:#ef4444;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-size:14px;font-weight:700;">
           Ver todas las alarmas →
         </a>
       </div>
@@ -104,7 +104,7 @@ function buildDigestText(orgName: string, alerts: AlertRow[]) {
     `${alerts.length} reserva(s) con riesgo alto o medio en las próximas fechas:`,
     ...lines,
     "",
-    "Ver alertas: https://debacu.com/app/alarmas",
+    "Ver alertas: https://www.debacuapp.com/app/alarmas",
   ].join("\n");
 }
 

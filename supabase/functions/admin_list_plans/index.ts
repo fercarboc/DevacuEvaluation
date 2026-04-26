@@ -1,31 +1,7 @@
 // supabase/functions/admin_list_plans/index.ts
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://debacu.com",
-  "https://www.debacu.com",
-]);
-
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : "*";
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
-function json(req: Request, status: number, body: any) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(req), "content-type": "application/json; charset=utf-8" },
-  });
-}
+import { json, preflight } from "../_shared/cors.ts";
 
 function requireEnv(name: string) {
   const v = Deno.env.get(name);
@@ -83,7 +59,7 @@ type Body = {
 };
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
+  if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") return json(req, 405, { ok: false, error: "method_not_allowed" });
 
   const admin = await requireAdmin(req);
