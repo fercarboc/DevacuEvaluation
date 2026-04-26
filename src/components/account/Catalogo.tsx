@@ -723,7 +723,7 @@ export const Catalogo: React.FC = () => {
                       <input
                         value={eff.unit_price_str}
                         onChange={(e) => setItemDraft(it.item_code, { unit_price: e.target.value })}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
                         placeholder="Ej: 15.00"
                       />
                       <div className="mt-1 text-[11px] text-slate-500">
@@ -826,7 +826,7 @@ export const Catalogo: React.FC = () => {
                       <input
                         value={eff.title}
                         onChange={(e) => setIncidentDraft(ic.incident_type, { title: e.target.value })}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
                         placeholder="Título"
                       />
                     </div>
@@ -836,7 +836,7 @@ export const Catalogo: React.FC = () => {
                       <input
                         value={eff.description}
                         onChange={(e) => setIncidentDraft(ic.incident_type, { description: e.target.value })}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
                         placeholder="Descripción"
                       />
                     </div>
@@ -846,7 +846,7 @@ export const Catalogo: React.FC = () => {
                       <input
                         value={eff.severity}
                         onChange={(e) => setIncidentDraft(ic.incident_type, { severity: e.target.value })}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
                         placeholder="2"
                       />
                     </div>
@@ -856,7 +856,7 @@ export const Catalogo: React.FC = () => {
                       <input
                         value={eff.default_gross_min}
                         onChange={(e) => setIncidentDraft(ic.incident_type, { default_gross_min: e.target.value })}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
                         placeholder="Ej: 10"
                       />
                     </div>
@@ -866,7 +866,7 @@ export const Catalogo: React.FC = () => {
                       <input
                         value={eff.default_gross_max}
                         onChange={(e) => setIncidentDraft(ic.incident_type, { default_gross_max: e.target.value })}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
                         placeholder="Ej: 200"
                       />
                     </div>
@@ -876,7 +876,7 @@ export const Catalogo: React.FC = () => {
                       <input
                         value={eff.default_recovery_pct}
                         onChange={(e) => setIncidentDraft(ic.incident_type, { default_recovery_pct: e.target.value })}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
                         placeholder="Ej: 100"
                       />
                     </div>
@@ -888,7 +888,7 @@ export const Catalogo: React.FC = () => {
                       <input
                         value={eff.suggested_actions}
                         onChange={(e) => setIncidentDraft(ic.incident_type, { suggested_actions: e.target.value })}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
                         placeholder="Ej: Inventario, fotos, cargo…"
                       />
                       <div className="mt-1 text-[11px] text-slate-500">
@@ -934,7 +934,7 @@ export const Catalogo: React.FC = () => {
                   item_code: p.allow_edit_code ? p.item_code : toCodeUpperSnake(v),
                 }));
               }}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
               placeholder="Ej: Cargador iPhone"
             />
           </div>
@@ -944,7 +944,7 @@ export const Catalogo: React.FC = () => {
             <input
               value={newItem.category}
               onChange={(e) => setNewItem((p) => ({ ...p, category: e.target.value }))}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
               placeholder="Ej: ROOM / ELECTRONICS"
             />
           </div>
@@ -954,7 +954,7 @@ export const Catalogo: React.FC = () => {
             <input
               value={newItem.unit_price}
               onChange={(e) => setNewItem((p) => ({ ...p, unit_price: e.target.value }))}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
               placeholder="Ej: 15.00"
             />
           </div>
@@ -964,7 +964,7 @@ export const Catalogo: React.FC = () => {
             <input
               value={newItem.currency}
               onChange={(e) => setNewItem((p) => ({ ...p, currency: e.target.value.toUpperCase().slice(0, 3) }))}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
               placeholder="EUR"
             />
           </div>
@@ -974,7 +974,7 @@ export const Catalogo: React.FC = () => {
             <input
               value={newItem.description}
               onChange={(e) => setNewItem((p) => ({ ...p, description: e.target.value }))}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
               placeholder="Opcional"
             />
           </div>
@@ -1013,7 +1013,7 @@ export const Catalogo: React.FC = () => {
               <input
                 value={newItem.item_code}
                 onChange={(e) => setNewItem((p) => ({ ...p, item_code: toCodeUpperSnake(e.target.value) }))}
-                className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-mono"
+                className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-mono text-slate-900 bg-white"
                 disabled={!newItem.allow_edit_code}
               />
               <div className="mt-1 text-[11px] text-slate-500">
@@ -1063,7 +1063,7 @@ export const Catalogo: React.FC = () => {
                   incident_type: p.allow_edit_code ? p.incident_type : toCodeUpperSnake(v),
                 }));
               }}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
               placeholder="Ej: Mascotas no permitidas"
             />
           </div>
@@ -1073,7 +1073,7 @@ export const Catalogo: React.FC = () => {
             <input
               value={newIncident.severity}
               onChange={(e) => setNewIncident((p) => ({ ...p, severity: e.target.value }))}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
               placeholder="2"
             />
           </div>
@@ -1083,7 +1083,7 @@ export const Catalogo: React.FC = () => {
             <input
               value={newIncident.description}
               onChange={(e) => setNewIncident((p) => ({ ...p, description: e.target.value }))}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
               placeholder="Opcional"
             />
           </div>
@@ -1093,7 +1093,7 @@ export const Catalogo: React.FC = () => {
             <input
               value={newIncident.default_gross_min}
               onChange={(e) => setNewIncident((p) => ({ ...p, default_gross_min: e.target.value }))}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
               placeholder="Ej: 10"
             />
           </div>
@@ -1103,7 +1103,7 @@ export const Catalogo: React.FC = () => {
             <input
               value={newIncident.default_gross_max}
               onChange={(e) => setNewIncident((p) => ({ ...p, default_gross_max: e.target.value }))}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
               placeholder="Ej: 200"
             />
           </div>
@@ -1113,7 +1113,7 @@ export const Catalogo: React.FC = () => {
             <input
               value={newIncident.default_recovery_pct}
               onChange={(e) => setNewIncident((p) => ({ ...p, default_recovery_pct: e.target.value }))}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
               placeholder="Ej: 100"
             />
           </div>
@@ -1123,7 +1123,7 @@ export const Catalogo: React.FC = () => {
             <input
               value={newIncident.suggested_actions}
               onChange={(e) => setNewIncident((p) => ({ ...p, suggested_actions: e.target.value }))}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm text-slate-900 bg-white"
               placeholder="Ej: Registrar, fotos, aviso…"
             />
           </div>
@@ -1162,7 +1162,7 @@ export const Catalogo: React.FC = () => {
               <input
                 value={newIncident.incident_type}
                 onChange={(e) => setNewIncident((p) => ({ ...p, incident_type: toCodeUpperSnake(e.target.value) }))}
-                className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-mono"
+                className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-mono text-slate-900 bg-white"
                 disabled={!newIncident.allow_edit_code}
               />
               <div className="mt-1 text-[11px] text-slate-500">
