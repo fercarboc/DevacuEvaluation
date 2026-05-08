@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE article PUBLIC "-//OASIS//DTD DocBook XML V4.1.2//EN" "http://www.oasis-open.org/docbook/xml/4.1.2/docbookx.dtd">
+<article lang="">
+  <para>&lt;?xml version="1.0" encoding="UTF-8"?&gt;</para>
+  <para>&lt;urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"&gt;</para>
+  <para/>
+  <para>  &lt;url&gt;</para>
+  <para>    &lt;loc&gt;https://www.debacuapp.com/&lt;/loc&gt;</para>
+  <para>    &lt;priority&gt;1.0&lt;/priority&gt;</para>
+  <para>  &lt;/url&gt;</para>
+  <para/>
+  <para>  &lt;url&gt;</para>
+  <para>    &lt;loc&gt;https://www.debacuapp.com/precios&lt;/loc&gt;</para>
+  <para>    &lt;priority&gt;0.9&lt;/priority&gt;</para>
+  <para>  &lt;/url&gt;</para>
+  <para/>
+  <para>  &lt;url&gt;</para>
+  <para>    &lt;loc&gt;https://www.debacuapp.com/solicitardemo&lt;/loc&gt;</para>
+  <para>    &lt;priority&gt;0.8&lt;/priority&gt;</para>
+  <para>  &lt;/url&gt;</para>
+  <para/>
+  <para>  &lt;url&gt;</para>
+  <para>    &lt;loc&gt;https://www.debacuapp.com/evaluacion&lt;/loc&gt;</para>
+  <para>    &lt;priority&gt;0.9&lt;/priority&gt;</para>
+  <para>  &lt;/url&gt;</para>
+  <para/>
+  <para>&lt;/urlset&gt;</para>
+</article>
