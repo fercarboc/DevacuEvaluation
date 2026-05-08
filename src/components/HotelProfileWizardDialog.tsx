@@ -324,8 +324,38 @@ export const HotelProfileWizardDialog: React.FC<HotelProfileWizardDialogProps> =
       cid ? listHotelMergedItems(cid) : Promise.resolve({ items: [] }),
     ]);
 
-    setIncidents(Array.isArray((incRes as any)?.incidents) ? (incRes as any).incidents : []);
-    setItems(Array.isArray((itemRes as any)?.items) ? (itemRes as any).items : []);
+    const loadedInc: IncidentRow[] = Array.isArray((incRes as any)?.incidents)
+      ? (incRes as any).incidents
+      : [];
+    const loadedItems: ItemRow[] = Array.isArray((itemRes as any)?.items)
+      ? (itemRes as any).items
+      : [];
+
+    setIncidents(loadedInc);
+    setItems(loadedItems);
+
+    // Auto-init pricing draft from loaded data (only if no draft exists yet)
+    if (loadedInc.length > 0) {
+      setPricingDraft((prev) => {
+        if (Object.keys(prev).length > 0) return prev;
+        const nextDraft: Record<string, PricingOverrideDraft> = {};
+        for (const i of loadedInc) {
+          if (!i.is_active) continue;
+          const k = keyIncident(i.incident_type);
+          nextDraft[k] = {
+            incident_type: i.incident_type,
+            item_code: null,
+            unit_price_override: null,
+            gross_min_override: null,
+            gross_max_override: null,
+            recovery_pct_override: null,
+            notes: null,
+            is_active: i.override?.is_active ?? true,
+          };
+        }
+        return nextDraft;
+      });
+    }
   };
 
   // ---------------- load when open ----------------

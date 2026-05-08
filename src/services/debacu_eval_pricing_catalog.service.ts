@@ -157,5 +157,12 @@ export async function upsertHotelItemCatalogForCustomer(
 ) {
   // Edge Function recomendada: debacu_eval_catalog_item_upsert
   // Inserta/actualiza en tabla "customer_item_catalog"
-  return await callEvalFn<{ ok: boolean }>("debacu_eval_catalog_item_upsert", { customerId, item });
+  return await callEvalFn<{ ok: boolean }>("debacu_eval_item_catalog_upsert", {
+    item_code: item.item_code,
+    title: item.title,
+    category: item.category,
+    unit_price: item.unit_price,
+    currency: item.currency,
+    is_active: item.is_active,
+  });
 }
